@@ -5,9 +5,9 @@ use openjill_core::CoreState;
 use openjill_render::Renderer;
 
 pub struct GameApp {
-    pub core: CoreState,
-    pub renderer: Renderer,
-    pub audio: AudioBackend,
+    core: CoreState,
+    renderer: Renderer,
+    audio: AudioBackend,
 }
 
 impl GameApp {
@@ -17,5 +17,17 @@ impl GameApp {
             renderer,
             audio,
         }
+    }
+
+    pub fn core(&self) -> &CoreState {
+        &self.core
+    }
+
+    pub fn renderer(&self) -> &Renderer {
+        &self.renderer
+    }
+
+    pub fn audio(&self) -> &AudioBackend {
+        &self.audio
     }
 }

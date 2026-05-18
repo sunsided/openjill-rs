@@ -33,21 +33,27 @@ enum DataCommand {
 }
 
 #[derive(Args, Debug)]
-struct RunArgs {
+struct DataDirArgs {
     #[arg(long, default_value = "data/original/jill1")]
     data_dir: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct RunArgs {
+    #[command(flatten)]
+    common: DataDirArgs,
 }
 
 #[derive(Args, Debug)]
 struct DumpArgs {
-    #[arg(long, default_value = "data/original/jill1")]
-    data_dir: PathBuf,
+    #[command(flatten)]
+    common: DataDirArgs,
 }
 
 #[derive(Args, Debug)]
 struct VerifyArgs {
-    #[arg(long, default_value = "data/original/jill1")]
-    data_dir: PathBuf,
+    #[command(flatten)]
+    common: DataDirArgs,
 }
 
 fn main() -> Result<()> {
@@ -66,7 +72,7 @@ fn dispatch(command: Command) -> Result<()> {
 }
 
 fn run_command(args: RunArgs) -> Result<()> {
-    let core = CoreState::new(DataDirectory::new(args.data_dir));
+    let core = CoreState::new(DataDirectory::new(args.common.data_dir));
     let _game = GameApp::new(core, Renderer::new(), AudioBackend::new());
     println!("'run' command is currently a workspace-foundation stub.");
     Ok(())
@@ -75,7 +81,7 @@ fn run_command(args: RunArgs) -> Result<()> {
 fn data_verify_command(args: VerifyArgs) -> Result<()> {
     println!(
         "'data verify' command is currently a workspace-foundation stub for {}.",
-        args.data_dir.display()
+        args.common.data_dir.display()
     );
     Ok(())
 }
@@ -83,7 +89,7 @@ fn data_verify_command(args: VerifyArgs) -> Result<()> {
 fn dump_command(args: DumpArgs) -> Result<()> {
     println!(
         "'dump' command is currently a workspace-foundation stub for {}.",
-        args.data_dir.display()
+        args.common.data_dir.display()
     );
     Ok(())
 }
