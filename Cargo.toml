@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/openjill-data",
+    "crates/openjill-core",
+    "crates/openjill-game",
+    "crates/openjill-render",
+    "crates/openjill-audio",
+    "crates/openjill-cli",
+    "tools/openjill-dump",
+]
+resolver = "3"
+
+[workspace.package]
+authors = ["OpenJill contributors"]
+edition = "2024"
+license = "MPL-2.0"
+rust-version = "1.95"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.51", features = ["derive"] }

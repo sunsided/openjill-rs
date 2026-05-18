@@ -23,3 +23,6 @@
 *.iml
 /.idea/
 /sha-file-edit/target/
+/target/
+/data/original/
+/data/extracted/
