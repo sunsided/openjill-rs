@@ -1,0 +1,20 @@
+[package]
+name = "openjill-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "openjill-rs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+openjill-audio = { path = "../openjill-audio" }
+openjill-core = { path = "../openjill-core" }
+openjill-data = { path = "../openjill-data" }
+openjill-game = { path = "../openjill-game" }
+openjill-render = { path = "../openjill-render" }
