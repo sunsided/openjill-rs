@@ -9,6 +9,7 @@ use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use openjill_audio::AudioBackend;
 use openjill_core::CoreState;
+use openjill_data::ByteReader;
 use openjill_data::cfg::CfgFile;
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::JnFile;
@@ -420,19 +421,6 @@ impl DumpRequest {
     }
 }
 
-/// Metadata captured for one parsed dump source file.
-#[derive(Debug)]
-struct DumpSourceFile {
-    /// File requested from the data directory.
-    requested_file: String,
-    /// Case-insensitive path resolved relative to the data directory.
-    resolved_file: PathBuf,
-    /// Source file size in bytes.
-    source_size: usize,
-    /// Lowercase hexadecimal SHA-256 digest of the source bytes.
-    source_sha256: String,
-}
-
 /// Writes the requested dump framework output.
 fn write_dump(request: DumpRequest) -> Result<()> {
     match request.format {
@@ -450,7 +438,7 @@ fn write_dump(request: DumpRequest) -> Result<()> {
         write_json_file(&output_file, &sha_dump.metadata_json, request.force)?;
         write_binary_file(&atlas_file, &sha_dump.atlas_indexed_png, request.force)?;
     } else {
-        let json = render_dump_json(&request, &output_file)?;
+        let json = render_dump_json(&request)?;
         write_json_file(&output_file, &json, request.force)?;
     }
     println!(
@@ -462,14 +450,11 @@ fn write_dump(request: DumpRequest) -> Result<()> {
 }
 
 /// Renders JSON for the selected dump request.
-fn render_dump_json(request: &DumpRequest, output_file: &Path) -> Result<String> {
+fn render_dump_json(request: &DumpRequest) -> Result<String> {
     match request.kind {
         DumpFrameworkKind::Dma => dma_dump_json(&request.data_dir),
         DumpFrameworkKind::Vcl => vcl_dump_json(&request.data_dir),
-        DumpFrameworkKind::Jn => {
-            let sources = collect_dump_sources(request.kind, &request.data_dir)?;
-            dump_framework_json(request, output_file, &sources)
-        }
+        DumpFrameworkKind::Jn => jn_dump_json(&request.data_dir),
         DumpFrameworkKind::Sha => {
             unreachable!("SHA dumps are rendered through the dedicated payload writer")
         }
@@ -481,6 +466,8 @@ fn render_dump_json(request: &DumpRequest, output_file: &Path) -> Result<String>
 struct DumpInputSource {
     /// Raw source bytes loaded from disk.
     bytes: Vec<u8>,
+    /// Case-insensitive path resolved relative to the data directory.
+    resolved_path: PathBuf,
     /// Source file size in bytes.
     source_size: usize,
     /// Lowercase hexadecimal SHA-256 digest for the source bytes.
@@ -507,6 +494,7 @@ fn read_dump_input_source(
 
     Ok(DumpInputSource {
         bytes,
+        resolved_path,
         source_size,
         source_sha256,
     })
@@ -539,6 +527,7 @@ fn dma_dump_json(data_dir: &Path) -> Result<String> {
         bytes,
         source_size,
         source_sha256,
+        ..
     } = source;
     let dma = parse_dma_source(bytes)?;
 
@@ -587,6 +576,7 @@ fn vcl_dump_json(data_dir: &Path) -> Result<String> {
         bytes,
         source_size,
         source_sha256,
+        ..
     } = source;
     let vcl = parse_vcl_source(bytes)?;
 
@@ -615,6 +605,135 @@ fn vcl_dump_json(data_dir: &Path) -> Result<String> {
         .map_err(|error| anyhow::anyhow!("failed to serialize dump metadata: {error}"))?;
     rendered.push('\n');
     Ok(rendered)
+}
+
+/// Builds metadata JSON for `dump jn`.
+fn jn_dump_json(data_dir: &Path) -> Result<String> {
+    let directory = DataDirectory::new(data_dir.to_path_buf());
+    let required_files = DumpFrameworkKind::Jn.fixed_source_files();
+    let mut requested_files = required_files
+        .iter()
+        .map(|file| (*file).to_string())
+        .collect::<Vec<_>>();
+    requested_files.extend(
+        discover_episode_one_jn1_files(data_dir)?
+            .into_iter()
+            .filter(|file| {
+                !required_files
+                    .iter()
+                    .any(|required| file.eq_ignore_ascii_case(required))
+            }),
+    );
+
+    let files = requested_files
+        .iter()
+        .map(|requested_file| jn_dump_file_json(&directory, requested_file))
+        .collect::<Result<Vec<_>>>()?;
+
+    let json = serde_json::json!({
+        "data_dir": data_dir.display().to_string(),
+        "files": files,
+    });
+    let mut rendered = serde_json::to_string_pretty(&json)
+        .map_err(|error| anyhow::anyhow!("failed to serialize dump metadata: {error}"))?;
+    rendered.push('\n');
+    Ok(rendered)
+}
+
+/// Builds metadata JSON for one `*.JN1` source file.
+fn jn_dump_file_json(directory: &DataDirectory, requested_file: &str) -> Result<serde_json::Value> {
+    let DumpInputSource {
+        bytes,
+        resolved_path,
+        source_size,
+        source_sha256,
+    } = read_dump_input_source(directory, requested_file)?;
+    let mut reader = ByteReader::from_bytes(bytes);
+    let jn = JnFile::parse(&mut reader)
+        .map_err(|error| anyhow::anyhow!("failed to parse input file {requested_file}: {error}"))?;
+
+    let map_codes = jn.background().map_codes();
+    let map_code_min = map_codes.iter().min().copied().unwrap_or(0);
+    let map_code_max = map_codes.iter().max().copied().unwrap_or(0);
+    let nonzero_cell_count = map_codes.iter().filter(|&&map_code| map_code != 0).count();
+
+    let object_entries = jn
+        .objects()
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "index": entry.index(),
+                "source_offset": entry.offset(),
+                "object_type": entry.object_type(),
+                "x": entry.x(),
+                "y": entry.y(),
+                "x_speed": entry.x_speed(),
+                "y_speed": entry.y_speed(),
+                "width": entry.width(),
+                "height": entry.height(),
+                "state": entry.state(),
+                "sub_state": entry.sub_state(),
+                "state_count": entry.state_count(),
+                "counter": entry.counter(),
+                "flags": entry.flags(),
+                "pointer": entry.pointer(),
+                "info1": entry.info1(),
+                "zap_hold": entry.zap_hold(),
+                "string_index": entry.string_index(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let string_entries = jn
+        .strings()
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            serde_json::json!({
+                "index": index,
+                "source_offset": entry.offset(),
+                "size_in_file": entry.size_in_file(),
+                "terminator": entry.terminator(),
+                "text": entry.value(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let total_bytes_in_file = jn
+        .strings()
+        .iter()
+        .map(openjill_data::jn::JnString::size_in_file)
+        .sum::<usize>();
+
+    Ok(serde_json::json!({
+        "requested_file": requested_file,
+        "resolved_file": path_relative_to_data_dir(directory.as_path(), &resolved_path).display().to_string(),
+        "source_size": source_size,
+        "source_sha256": source_sha256,
+        "background": {
+            "width": jn.background().width(),
+            "height": jn.background().height(),
+            "cell_count": map_codes.len(),
+            "map_code_min": map_code_min,
+            "map_code_max": map_code_max,
+            "nonzero_cell_count": nonzero_cell_count,
+        },
+        "objects": {
+            "count": jn.objects().len(),
+            "entries": object_entries,
+        },
+        "save_data": {
+            "source_offset": jn.save_data().offset(),
+            "level": jn.save_data().level(),
+            "health": jn.save_data().health(),
+            "score": jn.save_data().score(),
+            "inventory_word_count": jn.save_data().inventory().len(),
+        },
+        "strings": {
+            "count": jn.strings().len(),
+            "total_bytes_in_file": total_bytes_in_file,
+            "entries": string_entries,
+        },
+    }))
 }
 
 /// Complete deterministic output artifacts generated by one `dump sha` request,
@@ -668,6 +787,7 @@ fn sha_dump_output(data_dir: &Path) -> Result<ShaDumpOutput> {
         bytes,
         source_size,
         source_sha256,
+        ..
     } = source;
     let sha = parse_sha_source(bytes)?;
     let atlas = pack_sha_tiles_row_major(&sha);
@@ -885,85 +1005,6 @@ fn format_u16_hex(value: u16) -> String {
     format!("0x{value:04x}")
 }
 
-/// Collects and parses the source files required by a dump kind.
-fn collect_dump_sources(kind: DumpFrameworkKind, data_dir: &Path) -> Result<Vec<DumpSourceFile>> {
-    let directory = DataDirectory::new(data_dir.to_path_buf());
-    let mut requested_files = kind
-        .fixed_source_files()
-        .iter()
-        .map(|file| (*file).to_string())
-        .collect::<Vec<_>>();
-
-    if kind == DumpFrameworkKind::Jn {
-        requested_files.extend(
-            discover_episode_one_jn1_files(data_dir)?
-                .into_iter()
-                .filter(|file| {
-                    !file.eq_ignore_ascii_case("INTRO.JN1") && !file.eq_ignore_ascii_case("MAP.JN1")
-                }),
-        );
-    }
-
-    requested_files
-        .into_iter()
-        .map(|file| collect_dump_source(kind, &directory, &file))
-        .collect()
-}
-
-/// Collects and parses one source file for dump framework output.
-fn collect_dump_source(
-    kind: DumpFrameworkKind,
-    directory: &DataDirectory,
-    requested_file: &str,
-) -> Result<DumpSourceFile> {
-    let resolved_path = directory
-        .resolve_path_case_insensitive(requested_file)
-        .map_err(|error| anyhow::anyhow!("missing input file {requested_file}: {error}"))?;
-    let bytes = fs::read(&resolved_path)
-        .map_err(|error| anyhow::anyhow!("failed to read input file {requested_file}: {error}"))?;
-
-    parse_dump_source(kind, requested_file, &bytes)?;
-
-    Ok(DumpSourceFile {
-        requested_file: requested_file.to_string(),
-        resolved_file: path_relative_to_data_dir(directory.as_path(), &resolved_path),
-        source_size: bytes.len(),
-        source_sha256: sha256_lower_hex(&bytes),
-    })
-}
-
-/// Parses one source file according to the dump kind for early error reporting.
-fn parse_dump_source(kind: DumpFrameworkKind, requested_file: &str, bytes: &[u8]) -> Result<()> {
-    match kind {
-        DumpFrameworkKind::Dma => {
-            DmaFile::from_bytes(bytes.to_vec())
-                .map(|_| ())
-                .map_err(|error| {
-                    anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
-                })
-        }
-        DumpFrameworkKind::Vcl => {
-            VclFile::from_bytes(bytes.to_vec())
-                .map(|_| ())
-                .map_err(|error| {
-                    anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
-                })
-        }
-        DumpFrameworkKind::Sha => {
-            ShaFile::from_bytes(bytes.to_vec())
-                .map(|_| ())
-                .map_err(|error| {
-                    anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
-                })
-        }
-        DumpFrameworkKind::Jn => JnFile::from_bytes(bytes.to_vec())
-            .map(|_| ())
-            .map_err(|error| {
-                anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
-            }),
-    }
-}
-
 /// Resolves and validates the concrete metadata file path for a dump request.
 fn resolve_dump_output_file(request: &DumpRequest) -> Result<PathBuf> {
     reject_original_data_output(&request.output)?;
@@ -1152,37 +1193,6 @@ fn ensure_output_may_be_written(path: &Path, force: bool) -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// Builds the framework-level JSON metadata for a dump command.
-fn dump_framework_json(
-    request: &DumpRequest,
-    output_file: &Path,
-    sources: &[DumpSourceFile],
-) -> Result<String> {
-    let source_files = sources
-        .iter()
-        .map(|source| {
-            serde_json::json!({
-                "requested_file": &source.requested_file,
-                "resolved_file": source.resolved_file.display().to_string(),
-                "source_size": source.source_size,
-                "source_sha256": &source.source_sha256,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let json = serde_json::json!({
-        "kind": request.kind.as_str(),
-        "data_dir": request.data_dir.display().to_string(),
-        "output_file": output_file.display().to_string(),
-        "payload_implemented": false,
-        "source_files": source_files,
-    });
-    let mut rendered = serde_json::to_string_pretty(&json)
-        .map_err(|error| anyhow::anyhow!("failed to serialize dump metadata: {error}"))?;
-    rendered.push('\n');
-    Ok(rendered)
 }
 
 /// Verifies required episode-1 files and discovered `*.JN1` files in `data_dir`.
@@ -1775,17 +1785,25 @@ mod tests {
         check!(atlas_pixels[17] == 9);
     }
 
-    /// Unit under test: dump framework output creation for directory-based dumps.
+    /// Unit under test: `dump jn` payload rendering.
     ///
-    /// Preconditions: a complete synthetic fixture exists and the caller
-    /// chooses a directory output path outside `data/original/`.
+    /// Preconditions: a complete synthetic fixture exists, required JN files
+    /// are replaced with custom metadata-rich payloads, and additional JN files
+    /// are created in mixed case.
     ///
-    /// Invariants asserted: the command writes `metadata.json` below the
-    /// selected output directory.
+    /// Invariants asserted: the dump contains background/object/save/string
+    /// summaries, discovered files are ordered deterministically and
+    /// case-insensitively, and output stays metadata-only.
     #[test]
-    fn dump_writes_framework_metadata_to_selected_directory() {
-        let temp_dir = TempDirGuard::new("openjill-cli-dump-dir");
+    fn dump_writes_jn_payload_metadata_with_deterministic_discovery_order() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-jn-dir");
         write_valid_episode_one_fixture(temp_dir.path());
+        fs::write(temp_dir.path().join("Intro.Jn1"), valid_jn_dump_bytes())
+            .expect("write Intro.Jn1");
+        fs::write(temp_dir.path().join("MAP.JN1"), valid_jn_dump_bytes()).expect("write MAP.JN1");
+        fs::write(temp_dir.path().join("BETA.jn1"), valid_jn_dump_bytes()).expect("write BETA.jn1");
+        fs::write(temp_dir.path().join("alpha.JN1"), valid_jn_dump_bytes())
+            .expect("write alpha.JN1");
         let output = temp_dir.path().join("jn-dump");
 
         let cli = Cli::try_parse_from([
@@ -1801,10 +1819,84 @@ mod tests {
 
         dispatch(cli.command).expect("dump command should succeed");
 
-        let json = fs::read_to_string(output.join("metadata.json")).expect("read dump output");
-        check!(json.contains("\"kind\": \"jn\""));
-        check!(json.contains("\"requested_file\": \"INTRO.JN1\""));
-        check!(json.contains("\"requested_file\": \"MAP.JN1\""));
+        let json = read_json_file(&output.join("metadata.json"));
+        check!(json["data_dir"] == Value::from(temp_dir.path().display().to_string()));
+        check!(json["files"][0]["requested_file"] == Value::from("INTRO.JN1"));
+        check!(json["files"][1]["requested_file"] == Value::from("MAP.JN1"));
+        check!(json["files"][2]["requested_file"] == Value::from("alpha.JN1"));
+        check!(json["files"][3]["requested_file"] == Value::from("BETA.jn1"));
+        check!(json["files"][0]["background"]["width"] == Value::from(128));
+        check!(json["files"][0]["background"]["height"] == Value::from(64));
+        check!(json["files"][0]["background"]["cell_count"] == Value::from(8192));
+        check!(json["files"][0]["background"]["map_code_min"] == Value::from(0));
+        check!(json["files"][0]["background"]["map_code_max"] == Value::from(0x0abc));
+        check!(json["files"][0]["background"]["nonzero_cell_count"] == Value::from(2));
+        check!(json["files"][0]["objects"]["count"] == Value::from(2));
+        check!(json["files"][0]["objects"]["entries"][0]["index"] == Value::from(0));
+        check!(json["files"][0]["objects"]["entries"][0]["source_offset"] == Value::from(16386));
+        check!(json["files"][0]["objects"]["entries"][0]["object_type"] == Value::from(7));
+        check!(json["files"][0]["objects"]["entries"][0]["x"] == Value::from(10));
+        check!(json["files"][0]["objects"]["entries"][0]["y"] == Value::from(20));
+        check!(json["files"][0]["objects"]["entries"][0]["x_speed"] == Value::from(-3));
+        check!(json["files"][0]["objects"]["entries"][0]["y_speed"] == Value::from(4));
+        check!(json["files"][0]["objects"]["entries"][0]["pointer"] == Value::from(0x1111_1111u64));
+        check!(json["files"][0]["objects"]["entries"][0]["string_index"] == Value::from(0));
+        check!(json["files"][0]["objects"]["entries"][1]["index"] == Value::from(1));
+        check!(json["files"][0]["objects"]["entries"][1]["source_offset"] == Value::from(16417));
+        check!(json["files"][0]["objects"]["entries"][1]["string_index"] == Value::Null);
+        check!(json["files"][0]["save_data"]["source_offset"] == Value::from(16448));
+        check!(json["files"][0]["save_data"]["level"] == Value::from(2));
+        check!(json["files"][0]["save_data"]["health"] == Value::from(99));
+        check!(json["files"][0]["save_data"]["score"] == Value::from(0x0102_0304u64));
+        check!(json["files"][0]["save_data"]["inventory_word_count"] == Value::from(3));
+        check!(json["files"][0]["strings"]["count"] == Value::from(2));
+        check!(json["files"][0]["strings"]["total_bytes_in_file"] == Value::from(14));
+        check!(json["files"][0]["strings"]["entries"][0]["index"] == Value::from(0));
+        check!(json["files"][0]["strings"]["entries"][0]["source_offset"] == Value::from(16518));
+        check!(json["files"][0]["strings"]["entries"][0]["size_in_file"] == Value::from(8));
+        check!(json["files"][0]["strings"]["entries"][0]["terminator"] == Value::from(0));
+        check!(json["files"][0]["strings"]["entries"][0]["text"] == Value::from("HELLO"));
+        check!(json["files"][0]["strings"]["entries"][1]["index"] == Value::from(1));
+        check!(json["files"][0]["strings"]["entries"][1]["source_offset"] == Value::from(16526));
+        check!(json["files"][0]["strings"]["entries"][1]["size_in_file"] == Value::from(6));
+        check!(json["files"][0]["strings"]["entries"][1]["terminator"] == Value::from(255));
+        check!(json["files"][0]["strings"]["entries"][1]["text"] == Value::from("BYE"));
+        check!(json["files"][0].get("payload_implemented").is_none());
+        check!(json["files"][0].get("source_bytes").is_none());
+    }
+
+    /// Unit under test: parser-error reporting for `dump jn`.
+    ///
+    /// Preconditions: a synthetic fixture contains a truncated discovered JN
+    /// file in addition to required files.
+    ///
+    /// Invariants asserted: command execution fails with parse context naming
+    /// the malformed discovered source file.
+    #[test]
+    fn dump_jn_reports_parser_errors_with_file_context() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-jn-parse-error");
+        write_valid_episode_one_fixture(temp_dir.path());
+        fs::write(temp_dir.path().join("BADLEVEL.jn1"), [0u8; 4])
+            .expect("write malformed BADLEVEL.jn1");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "jn",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        let Err(error) = dispatch(cli.command) else {
+            panic!("dump should fail for malformed jn");
+        };
+
+        check!(
+            error
+                .to_string()
+                .contains("failed to parse input file BADLEVEL.jn1")
+        );
     }
 
     /// Unit under test: dump output overwrite safeguards.
@@ -2291,6 +2383,134 @@ mod tests {
     /// Builds one valid synthetic `*.JN1` file with empty object and string sections.
     fn valid_jn_bytes() -> Vec<u8> {
         vec![0u8; 16_456]
+    }
+
+    /// Builds one valid synthetic `*.JN1` file with nontrivial metadata content.
+    fn valid_jn_dump_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend((0xf234u16).to_le_bytes());
+        bytes.extend((0u16).to_le_bytes());
+        bytes.extend((0x0abcu16).to_le_bytes());
+        bytes.resize(16_384, 0);
+
+        bytes.extend((2u16).to_le_bytes());
+        write_jn_object(
+            &mut bytes,
+            JnObjectFixture {
+                object_type: 7,
+                x: 10,
+                y: 20,
+                x_speed: -3,
+                y_speed: 4,
+                width: 5,
+                height: 6,
+                state: -7,
+                sub_state: 8,
+                state_count: 9,
+                counter: -10,
+                flags: 11,
+                pointer: 0x1111_1111,
+                info1: -12,
+                zap_hold: 13,
+            },
+        );
+        write_jn_object(
+            &mut bytes,
+            JnObjectFixture {
+                object_type: 8,
+                x: 30,
+                y: 40,
+                x_speed: -13,
+                y_speed: 14,
+                width: 15,
+                height: 16,
+                state: -17,
+                sub_state: 18,
+                state_count: 19,
+                counter: -20,
+                flags: 21,
+                pointer: 0,
+                info1: -22,
+                zap_hold: 23,
+            },
+        );
+
+        bytes.extend((2u16).to_le_bytes());
+        bytes.extend((99u16).to_le_bytes());
+        bytes.extend((3u16).to_le_bytes());
+        bytes.extend((100u16).to_le_bytes());
+        bytes.extend((101u16).to_le_bytes());
+        bytes.extend((102u16).to_le_bytes());
+        for _ in 0..13 {
+            bytes.extend((0u16).to_le_bytes());
+        }
+        bytes.extend((0x0102_0304u32).to_le_bytes());
+        bytes.extend(std::iter::repeat_n(
+            0xa5u8,
+            openjill_data::jn::SAVE_HOLE_LEN,
+        ));
+
+        bytes.extend((5u16).to_le_bytes());
+        bytes.extend(b"HELLO");
+        bytes.push(0);
+
+        bytes.extend((3u16).to_le_bytes());
+        bytes.extend(b"BYE");
+        bytes.push(255);
+        bytes
+    }
+
+    /// Writes one synthetic JN object record in parser field order.
+    fn write_jn_object(bytes: &mut Vec<u8>, fixture: JnObjectFixture) {
+        bytes.push(fixture.object_type);
+        bytes.extend(fixture.x.to_le_bytes());
+        bytes.extend(fixture.y.to_le_bytes());
+        bytes.extend(fixture.x_speed.to_le_bytes());
+        bytes.extend(fixture.y_speed.to_le_bytes());
+        bytes.extend(fixture.width.to_le_bytes());
+        bytes.extend(fixture.height.to_le_bytes());
+        bytes.extend(fixture.state.to_le_bytes());
+        bytes.extend(fixture.sub_state.to_le_bytes());
+        bytes.extend(fixture.state_count.to_le_bytes());
+        bytes.extend(fixture.counter.to_le_bytes());
+        bytes.extend(fixture.flags.to_le_bytes());
+        bytes.extend(fixture.pointer.to_le_bytes());
+        bytes.extend(fixture.info1.to_le_bytes());
+        bytes.extend(fixture.zap_hold.to_le_bytes());
+    }
+
+    /// Synthetic object fixture used to construct deterministic JN object bytes.
+    struct JnObjectFixture {
+        /// Object type identifier.
+        object_type: u8,
+        /// Object X coordinate.
+        x: u16,
+        /// Object Y coordinate.
+        y: u16,
+        /// Signed horizontal speed.
+        x_speed: i16,
+        /// Signed vertical speed.
+        y_speed: i16,
+        /// Object width.
+        width: u16,
+        /// Object height.
+        height: u16,
+        /// Signed state value.
+        state: i16,
+        /// Unsigned sub-state value.
+        sub_state: u16,
+        /// Unsigned state counter.
+        state_count: u16,
+        /// Signed counter value.
+        counter: i16,
+        /// Object flags.
+        flags: u16,
+        /// Raw string pointer marker.
+        pointer: u32,
+        /// Signed auxiliary field.
+        info1: i16,
+        /// Unsigned zap/hold field.
+        zap_hold: u16,
     }
 
     /// Reads and deserializes a JSON file written by dump commands.
