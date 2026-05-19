@@ -4,8 +4,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use anyhow::{Result, bail};
+use clap::{Args, Parser, Subcommand};
 use openjill_audio::AudioBackend;
 use openjill_core::CoreState;
 use openjill_data::cfg::CfgFile;
@@ -18,18 +18,16 @@ use openjill_game::GameApp;
 use openjill_render::Renderer;
 use sha2::{Digest, Sha256};
 
-/// Environment variable used as a fallback data directory for `data verify` and `dump`.
+/// Environment variable used as a fallback data directory for data utility commands.
 const OPENJILL_DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
+/// Task-runner environment variable used as a data directory override.
+const DATA_DIR_ENV: &str = "DATA_DIR";
 /// Workspace-relative fallback path used when no flag or environment override is supplied.
 const DEFAULT_DATA_DIR: &str = "data/original/JILL1";
-/// Default output path for `dump dma` relative to the current working directory.
-const DUMP_DMA_OUTPUT: &str = "data/extracted/JILL1/debug/dma.json";
-/// Default output path for `dump vcl` relative to the current working directory.
-const DUMP_VCL_OUTPUT: &str = "data/extracted/JILL1/debug/vcl-text.json";
-/// Default output directory for `dump sha` relative to the current working directory.
-const DUMP_SHA_OUTPUT: &str = "data/extracted/JILL1/debug/sha";
-/// Default output directory for `dump jn` relative to the current working directory.
-const DUMP_JN_OUTPUT: &str = "data/extracted/JILL1/debug/jn";
+/// Default root for generated debug dumps.
+const DEFAULT_DUMP_ROOT: &str = "data/extracted/JILL1/debug";
+/// Repository-relative directory that must never receive generated output.
+const ORIGINAL_DATA_ROOT: &str = "data/original";
 /// Required fixed files for episode 1 verification.
 const REQUIRED_FILES: [(&str, ParserDomain); 6] = [
     ("JILL.DMA", ParserDomain::Dma),
@@ -54,11 +52,7 @@ enum Command {
         #[command(subcommand)]
         command: DataCommand,
     },
-    /// Produce debug dumps of episode 1 data files.
-    Dump {
-        #[command(subcommand)]
-        command: DumpCommand,
-    },
+    Dump(DumpArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -78,48 +72,34 @@ struct RunArgs {
     common: DataDirArgs,
 }
 
-/// Subcommands available under the `dump` command group.
-#[derive(Debug, Subcommand)]
-enum DumpCommand {
-    /// Dump `JILL.DMA` map-code table metadata as JSON.
-    Dma(DumpKindArgs),
-    /// Dump `JILL1.VCL` text-entry metadata as JSON.
-    Vcl(DumpKindArgs),
-    /// Dump `JILL1.SHA` tileset and atlas metadata as JSON.
-    Sha(DumpKindArgs),
-    /// Dump `*.JN1` level and save metadata as JSON.
-    Jn(DumpKindArgs),
-}
-
-/// Output format for `dump` subcommands.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum DumpFormat {
-    /// Structured JSON output.
-    Json,
-}
-
-/// Shared arguments accepted by every `dump` subcommand.
 #[derive(Args, Debug)]
-struct DumpKindArgs {
-    /// Data directory containing episode 1 game files.
-    ///
-    /// Resolved in order: this flag, then `OPENJILL_DATA_DIR`, then
-    /// `data/original/JILL1`.
+struct DumpArgs {
+    /// Specific dump kind requested by the caller.
+    #[command(subcommand)]
+    kind: DumpKind,
+}
+
+#[derive(Debug, Subcommand)]
+enum DumpKind {
+    /// Build the DMA dump framework output.
+    Dma(DumpCommandArgs),
+    /// Build the VCL dump framework output.
+    Vcl(DumpCommandArgs),
+    /// Build the SHA dump framework output.
+    Sha(DumpCommandArgs),
+    /// Build the JN dump framework output.
+    Jn(DumpCommandArgs),
+}
+
+#[derive(Args, Debug)]
+struct DumpCommandArgs {
+    /// Optional directory containing the original episode data files.
     #[arg(long)]
     data_dir: Option<PathBuf>,
-
-    /// Output path or directory for the dump.
-    ///
-    /// Defaults to a kind-specific path under
-    /// `data/extracted/JILL1/debug/`.
+    /// Optional output file or directory for the dump.
     #[arg(long)]
     output: Option<PathBuf>,
-
-    /// Output format; currently only `json` is supported.
-    #[arg(long, default_value = "json")]
-    format: DumpFormat,
-
-    /// Overwrite an existing output file without prompting.
+    /// Overwrite an existing output path.
     #[arg(long)]
     force: bool,
 }
@@ -141,7 +121,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Data {
             command: DataCommand::Verify(args),
         } => data_verify_command(args),
-        Command::Dump { command } => dispatch_dump(command),
+        Command::Dump(args) => dump_command(args),
     }
 }
 
@@ -163,250 +143,9 @@ fn data_verify_command(args: VerifyArgs) -> Result<()> {
     }
 }
 
-/// Dispatches a `dump` subcommand to the appropriate per-kind handler.
-fn dispatch_dump(command: DumpCommand) -> Result<()> {
-    match command {
-        DumpCommand::Dma(args) => dump_dma_command(args),
-        DumpCommand::Vcl(args) => dump_vcl_command(args),
-        DumpCommand::Sha(args) => dump_sha_command(args),
-        DumpCommand::Jn(args) => dump_jn_command(args),
-    }
-}
-
-/// Runs the `dump dma` command stub, validating data-dir and output paths.
-///
-/// Opens `JILL.DMA` to surface missing-input errors early. The actual
-/// serialization payload is implemented in a later issue.
-fn dump_dma_command(args: DumpKindArgs) -> Result<()> {
-    let data_dir = resolve_dump_data_dir(args.data_dir);
-    let output = args.output.unwrap_or_else(|| PathBuf::from(DUMP_DMA_OUTPUT));
-    let workspace_root = find_workspace_root();
-    validate_dump_output_path(&output, workspace_root.as_deref())?;
-
-    let directory = DataDirectory::new(data_dir.clone());
-    let _reader = directory
-        .open_reader("JILL.DMA")
-        .with_context(|| format!("failed to open JILL.DMA from {}", data_dir.display()))?;
-
-    println!(
-        "'dump dma' payload is not yet implemented (output: {})",
-        output.display()
-    );
-    Ok(())
-}
-
-/// Runs the `dump vcl` command stub, validating data-dir and output paths.
-///
-/// Opens `JILL1.VCL` to surface missing-input errors early. The actual
-/// serialization payload is implemented in a later issue.
-fn dump_vcl_command(args: DumpKindArgs) -> Result<()> {
-    let data_dir = resolve_dump_data_dir(args.data_dir);
-    let output = args.output.unwrap_or_else(|| PathBuf::from(DUMP_VCL_OUTPUT));
-    let workspace_root = find_workspace_root();
-    validate_dump_output_path(&output, workspace_root.as_deref())?;
-
-    let directory = DataDirectory::new(data_dir.clone());
-    let _reader = directory
-        .open_reader("JILL1.VCL")
-        .with_context(|| format!("failed to open JILL1.VCL from {}", data_dir.display()))?;
-
-    println!(
-        "'dump vcl' payload is not yet implemented (output: {})",
-        output.display()
-    );
-    Ok(())
-}
-
-/// Runs the `dump sha` command stub, validating data-dir and output paths.
-///
-/// Opens `JILL1.SHA` to surface missing-input errors early. The actual
-/// serialization payload is implemented in a later issue.
-fn dump_sha_command(args: DumpKindArgs) -> Result<()> {
-    let data_dir = resolve_dump_data_dir(args.data_dir);
-    let output = args.output.unwrap_or_else(|| PathBuf::from(DUMP_SHA_OUTPUT));
-    let workspace_root = find_workspace_root();
-    validate_dump_output_path(&output, workspace_root.as_deref())?;
-
-    let directory = DataDirectory::new(data_dir.clone());
-    let _reader = directory
-        .open_reader("JILL1.SHA")
-        .with_context(|| format!("failed to open JILL1.SHA from {}", data_dir.display()))?;
-
-    println!(
-        "'dump sha' payload is not yet implemented (output: {})",
-        output.display()
-    );
-    Ok(())
-}
-
-/// Runs the `dump jn` command stub, validating data-dir and output paths.
-///
-/// Opens `INTRO.JN1` to surface missing-input errors early. The actual
-/// serialization payload is implemented in a later issue.
-fn dump_jn_command(args: DumpKindArgs) -> Result<()> {
-    let data_dir = resolve_dump_data_dir(args.data_dir);
-    let output = args.output.unwrap_or_else(|| PathBuf::from(DUMP_JN_OUTPUT));
-    let workspace_root = find_workspace_root();
-    validate_dump_output_path(&output, workspace_root.as_deref())?;
-
-    let directory = DataDirectory::new(data_dir.clone());
-    let _reader = directory
-        .open_reader("INTRO.JN1")
-        .with_context(|| format!("failed to open INTRO.JN1 from {}", data_dir.display()))?;
-
-    println!(
-        "'dump jn' payload is not yet implemented (output: {})",
-        output.display()
-    );
-    Ok(())
-}
-
-/// Resolves the dump data directory using the CLI flag, env variable, and default fallback.
-fn resolve_dump_data_dir(explicit: Option<PathBuf>) -> PathBuf {
-    resolve_dump_data_dir_with_env(explicit, std::env::var_os(OPENJILL_DATA_DIR_ENV))
-}
-
-/// Inner helper that resolves the dump data directory with an explicit env override for testability.
-fn resolve_dump_data_dir_with_env(
-    explicit: Option<PathBuf>,
-    env_override: Option<std::ffi::OsString>,
-) -> PathBuf {
-    if let Some(path) = explicit {
-        return path;
-    }
-    if let Some(path) = env_override {
-        return PathBuf::from(path);
-    }
-    PathBuf::from(DEFAULT_DATA_DIR)
-}
-
-/// Locates the workspace root by walking parent directories looking for a
-/// `Cargo.toml` file that contains a `[workspace]` section.
-///
-/// Returns `None` when the workspace root cannot be found from the current
-/// working directory.
-fn find_workspace_root() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
-    let mut current = cwd.as_path();
-    loop {
-        let cargo_toml = current.join("Cargo.toml");
-        if cargo_toml.is_file()
-            && fs::read_to_string(&cargo_toml)
-                .ok()
-                .is_some_and(|c| c.contains("[workspace]"))
-        {
-            return Some(current.to_path_buf());
-        }
-        current = current.parent()?;
-    }
-}
-
-/// Canonicalizes `path`, falling back to the nearest existing ancestor when the
-/// path itself does not yet exist on disk.
-///
-/// This makes it safe to compare paths that refer to future output files in
-/// directories that have not been created yet.
-fn canonicalize_or_ancestor(path: &Path) -> PathBuf {
-    if let Ok(p) = path.canonicalize() {
-        return p;
-    }
-    let mut remaining: Vec<std::ffi::OsString> = Vec::new();
-    let mut current = path;
-    while let Some(parent) = current.parent() {
-        // Always accumulate the current component name before checking whether
-        // the parent is canonicalizable, so it is included in the result.
-        if let Some(name) = current.file_name() {
-            remaining.push(name.to_owned());
-        }
-        if let Ok(canonical_parent) = parent.canonicalize() {
-            let mut result = canonical_parent;
-            for component in remaining.into_iter().rev() {
-                result = result.join(component);
-            }
-            return result;
-        }
-        current = parent;
-    }
-    path.to_path_buf()
-}
-
-/// Validates that `output` is a safe destination for a dump file.
-///
-/// Rejects paths inside `data/original/` (proprietary game data) and paths
-/// inside the workspace that are outside `data/extracted/` (tracked sources).
-/// Passes paths that are either outside the workspace entirely or under
-/// `data/extracted/`.
-///
-/// `workspace_root` is `None` when no workspace can be detected, in which case
-/// no workspace-relative checks are performed.
-fn validate_dump_output_path(output: &Path, workspace_root: Option<&Path>) -> Result<()> {
-    let canonical_output = canonicalize_or_ancestor(output);
-
-    if let Some(workspace) = workspace_root {
-        let canonical_workspace = canonicalize_or_ancestor(workspace);
-        let original_data = canonical_workspace.join("data").join("original");
-        let extracted_data = canonical_workspace.join("data").join("extracted");
-
-        if canonical_output.starts_with(&original_data) {
-            bail!(
-                "output path {} is inside data/original/ which contains proprietary game data; \
-                 choose a path under data/extracted/ or outside the workspace",
-                output.display()
-            );
-        }
-
-        if canonical_output.starts_with(&canonical_workspace)
-            && !canonical_output.starts_with(&extracted_data)
-        {
-            bail!(
-                "output path {} is inside the workspace but outside data/extracted/; \
-                 choose a path under data/extracted/ or outside the workspace",
-                output.display()
-            );
-        }
-    }
-
-    Ok(())
-}
-
-/// Writes `content` to `output` atomically using a temporary sibling file and rename.
-///
-/// Creates missing parent directories after path checks have passed.  Rejects
-/// writing when `output` already exists and `force` is `false`.  The temporary
-/// file is removed on rename failure to avoid leaving partial output on disk.
-///
-/// This function is part of the dump framework and will be called by individual
-/// dump-kind implementations introduced in later issues.
-#[allow(dead_code)]
-fn write_dump_atomic(output: &Path, content: &[u8], force: bool) -> Result<()> {
-    if output.exists() && !force {
-        bail!(
-            "output file {} already exists; use --force to overwrite",
-            output.display()
-        );
-    }
-
-    let parent = output.parent().unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create output directory {}", parent.display()))?;
-
-    let file_name = output
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("dump");
-    let tmp_path = parent.join(format!(".{file_name}.tmp"));
-
-    fs::write(&tmp_path, content)
-        .with_context(|| format!("failed to write temporary file {}", tmp_path.display()))?;
-
-    fs::rename(&tmp_path, output).map_err(|error| {
-        let _ = fs::remove_file(&tmp_path);
-        anyhow::anyhow!(
-            "failed to rename {} to {}: {error}",
-            tmp_path.display(),
-            output.display()
-        )
-    })
+fn dump_command(args: DumpArgs) -> Result<()> {
+    let request = DumpRequest::from_args(args);
+    write_dump(request)
 }
 
 /// Data-format parser domain used by verification output.
@@ -540,14 +279,27 @@ impl VerificationReport {
 
 /// Resolves the data directory for `data verify` using CLI flag, environment, and fallback order.
 fn resolve_verify_data_dir(args: &VerifyArgs) -> PathBuf {
-    resolve_verify_data_dir_with_env(
+    resolve_data_dir_with_env(
         args.data_dir.clone(),
-        std::env::var_os(OPENJILL_DATA_DIR_ENV),
+        nonempty_env_os(DATA_DIR_ENV).or_else(|| nonempty_env_os(OPENJILL_DATA_DIR_ENV)),
     )
 }
 
-/// Resolves data-directory overrides for verification.
-fn resolve_verify_data_dir_with_env(
+/// Resolves the data directory for `dump` using CLI flag, environment, and fallback order.
+fn resolve_dump_data_dir(args: &DumpCommandArgs) -> PathBuf {
+    resolve_data_dir_with_env(
+        args.data_dir.clone(),
+        nonempty_env_os(DATA_DIR_ENV).or_else(|| nonempty_env_os(OPENJILL_DATA_DIR_ENV)),
+    )
+}
+
+/// Reads an environment variable, treating empty values as absent.
+fn nonempty_env_os(key: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(key).filter(|value| !value.is_empty())
+}
+
+/// Resolves data-directory overrides shared by data utility commands.
+fn resolve_data_dir_with_env(
     explicit: Option<PathBuf>,
     env_override: Option<std::ffi::OsString>,
 ) -> PathBuf {
@@ -560,6 +312,293 @@ fn resolve_verify_data_dir_with_env(
     }
 
     PathBuf::from(DEFAULT_DATA_DIR)
+}
+
+/// Supported dump framework kinds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DumpFrameworkKind {
+    /// DMA metadata dump framework.
+    Dma,
+    /// VCL metadata dump framework.
+    Vcl,
+    /// SHA metadata dump framework.
+    Sha,
+    /// JN metadata dump framework.
+    Jn,
+}
+
+impl DumpFrameworkKind {
+    /// Returns the lowercase CLI name for this dump kind.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dma => "dma",
+            Self::Vcl => "vcl",
+            Self::Sha => "sha",
+            Self::Jn => "jn",
+        }
+    }
+
+    /// Returns `true` when this dump writes a directory containing `metadata.json`.
+    fn writes_directory(self) -> bool {
+        matches!(self, Self::Sha | Self::Jn)
+    }
+
+    /// Returns the default repository-relative output path for this dump kind.
+    fn default_output(self) -> PathBuf {
+        match self {
+            Self::Dma => PathBuf::from(DEFAULT_DUMP_ROOT).join("dma.json"),
+            Self::Vcl => PathBuf::from(DEFAULT_DUMP_ROOT).join("vcl-text.json"),
+            Self::Sha => PathBuf::from(DEFAULT_DUMP_ROOT).join("sha"),
+            Self::Jn => PathBuf::from(DEFAULT_DUMP_ROOT).join("jn"),
+        }
+    }
+
+    /// Returns the required source files for this dump kind.
+    fn fixed_source_files(self) -> &'static [&'static str] {
+        match self {
+            Self::Dma => &["JILL.DMA"],
+            Self::Vcl => &["JILL1.VCL"],
+            Self::Sha => &["JILL1.SHA"],
+            Self::Jn => &["INTRO.JN1", "MAP.JN1"],
+        }
+    }
+}
+
+/// Parsed request for one dump framework command.
+#[derive(Debug)]
+struct DumpRequest {
+    /// Dump kind selected by the caller.
+    kind: DumpFrameworkKind,
+    /// Data directory resolved from CLI flags, environment, or fallback.
+    data_dir: PathBuf,
+    /// User-selected output path, or the default path for the kind.
+    output: PathBuf,
+    /// Whether existing output may be overwritten.
+    force: bool,
+}
+
+impl DumpRequest {
+    /// Converts clap arguments into a resolved dump request.
+    fn from_args(args: DumpArgs) -> Self {
+        match args.kind {
+            DumpKind::Dma(command) => Self::from_command(DumpFrameworkKind::Dma, command),
+            DumpKind::Vcl(command) => Self::from_command(DumpFrameworkKind::Vcl, command),
+            DumpKind::Sha(command) => Self::from_command(DumpFrameworkKind::Sha, command),
+            DumpKind::Jn(command) => Self::from_command(DumpFrameworkKind::Jn, command),
+        }
+    }
+
+    /// Converts one dump subcommand into a resolved request.
+    fn from_command(kind: DumpFrameworkKind, command: DumpCommandArgs) -> Self {
+        let data_dir = resolve_dump_data_dir(&command);
+        let output = command.output.unwrap_or_else(|| kind.default_output());
+        Self {
+            kind,
+            data_dir,
+            output,
+            force: command.force,
+        }
+    }
+}
+
+/// Metadata captured for one parsed dump source file.
+#[derive(Debug)]
+struct DumpSourceFile {
+    /// File requested from the data directory.
+    requested_file: String,
+    /// Case-insensitive path resolved relative to the data directory.
+    resolved_file: PathBuf,
+    /// Source file size in bytes.
+    source_size: usize,
+    /// Lowercase hexadecimal SHA-256 digest of the source bytes.
+    source_sha256: String,
+}
+
+/// Writes the requested dump framework output.
+fn write_dump(request: DumpRequest) -> Result<()> {
+    let sources = collect_dump_sources(request.kind, &request.data_dir)?;
+    let output_file = resolve_dump_output_file(&request)?;
+    write_json_file(
+        &output_file,
+        &dump_framework_json(&request, &output_file, &sources)?,
+        request.force,
+    )?;
+    println!(
+        "wrote {} dump framework metadata to {}",
+        request.kind.as_str(),
+        output_file.display()
+    );
+    Ok(())
+}
+
+/// Collects and parses the source files required by a dump kind.
+fn collect_dump_sources(kind: DumpFrameworkKind, data_dir: &Path) -> Result<Vec<DumpSourceFile>> {
+    let directory = DataDirectory::new(data_dir.to_path_buf());
+    let mut requested_files = kind
+        .fixed_source_files()
+        .iter()
+        .map(|file| (*file).to_string())
+        .collect::<Vec<_>>();
+
+    if kind == DumpFrameworkKind::Jn {
+        requested_files.extend(
+            discover_episode_one_jn1_files(data_dir)?
+                .into_iter()
+                .filter(|file| {
+                    !file.eq_ignore_ascii_case("INTRO.JN1") && !file.eq_ignore_ascii_case("MAP.JN1")
+                }),
+        );
+    }
+
+    requested_files
+        .into_iter()
+        .map(|file| collect_dump_source(kind, &directory, &file))
+        .collect()
+}
+
+/// Collects and parses one source file for dump framework output.
+fn collect_dump_source(
+    kind: DumpFrameworkKind,
+    directory: &DataDirectory,
+    requested_file: &str,
+) -> Result<DumpSourceFile> {
+    let resolved_path = directory
+        .resolve_path_case_insensitive(requested_file)
+        .map_err(|error| anyhow::anyhow!("missing input file {requested_file}: {error}"))?;
+    let bytes = fs::read(&resolved_path)
+        .map_err(|error| anyhow::anyhow!("failed to read input file {requested_file}: {error}"))?;
+
+    parse_dump_source(kind, requested_file, &bytes)?;
+
+    Ok(DumpSourceFile {
+        requested_file: requested_file.to_string(),
+        resolved_file: path_relative_to_data_dir(directory.as_path(), &resolved_path),
+        source_size: bytes.len(),
+        source_sha256: sha256_lower_hex(&bytes),
+    })
+}
+
+/// Parses one source file according to the dump kind for early error reporting.
+fn parse_dump_source(kind: DumpFrameworkKind, requested_file: &str, bytes: &[u8]) -> Result<()> {
+    match kind {
+        DumpFrameworkKind::Dma => {
+            DmaFile::from_bytes(bytes.to_vec())
+                .map(|_| ())
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
+                })
+        }
+        DumpFrameworkKind::Vcl => {
+            VclFile::from_bytes(bytes.to_vec())
+                .map(|_| ())
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
+                })
+        }
+        DumpFrameworkKind::Sha => {
+            ShaFile::from_bytes(bytes.to_vec())
+                .map(|_| ())
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
+                })
+        }
+        DumpFrameworkKind::Jn => JnFile::from_bytes(bytes.to_vec())
+            .map(|_| ())
+            .map_err(|error| {
+                anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
+            }),
+    }
+}
+
+/// Resolves and validates the concrete metadata file path for a dump request.
+fn resolve_dump_output_file(request: &DumpRequest) -> Result<PathBuf> {
+    reject_original_data_output(&request.output)?;
+    if request.kind.writes_directory() {
+        Ok(request.output.join("metadata.json"))
+    } else {
+        Ok(request.output.clone())
+    }
+}
+
+/// Rejects output paths that target the original data tree.
+fn reject_original_data_output(output: &Path) -> Result<()> {
+    let current_dir = std::env::current_dir()?;
+    let output_abs = absolute_path_for_check(&current_dir, output);
+    let original_abs = current_dir.join(ORIGINAL_DATA_ROOT);
+    if output_abs.starts_with(&original_abs) {
+        bail!(
+            "refusing to write dump output under {}",
+            PathBuf::from(ORIGINAL_DATA_ROOT).display()
+        );
+    }
+    Ok(())
+}
+
+/// Returns an absolute path suitable for lexical safety checks.
+fn absolute_path_for_check(current_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        current_dir.join(path)
+    }
+}
+
+/// Writes JSON through a temporary file and atomically renames it into place.
+fn write_json_file(path: &Path, json: &str, force: bool) -> Result<()> {
+    if path.exists() && !force {
+        bail!(
+            "refusing to overwrite existing dump output {} without --force",
+            path.display()
+        );
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| anyhow::anyhow!("failed to create {}: {error}", parent.display()))?;
+    }
+
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(OsStr::to_str)
+            .unwrap_or("openjill")
+    ));
+    fs::write(&tmp_path, json)
+        .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", tmp_path.display()))?;
+    fs::rename(&tmp_path, path)
+        .map_err(|error| anyhow::anyhow!("failed to finalize {}: {error}", path.display()))?;
+    Ok(())
+}
+
+/// Builds the framework-level JSON metadata for a dump command.
+fn dump_framework_json(
+    request: &DumpRequest,
+    output_file: &Path,
+    sources: &[DumpSourceFile],
+) -> Result<String> {
+    let source_files = sources
+        .iter()
+        .map(|source| {
+            serde_json::json!({
+                "requested_file": &source.requested_file,
+                "resolved_file": source.resolved_file.display().to_string(),
+                "source_size": source.source_size,
+                "source_sha256": &source.source_sha256,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let json = serde_json::json!({
+        "kind": request.kind.as_str(),
+        "data_dir": request.data_dir.display().to_string(),
+        "output_file": output_file.display().to_string(),
+        "payload_implemented": false,
+        "source_files": source_files,
+    });
+    let mut rendered = serde_json::to_string_pretty(&json)
+        .map_err(|error| anyhow::anyhow!("failed to serialize dump metadata: {error}"))?;
+    rendered.push('\n');
+    Ok(rendered)
 }
 
 /// Verifies required episode-1 files and discovered `*.JN1` files in `data_dir`.
@@ -756,10 +795,8 @@ fn print_file_report(label: &str, file: &FileVerification) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Command, DataCommand, DumpCommand, FileVerification, VerificationStatus,
-        DUMP_DMA_OUTPUT, DUMP_JN_OUTPUT, DUMP_SHA_OUTPUT, DUMP_VCL_OUTPUT, dispatch,
-        resolve_dump_data_dir_with_env, resolve_verify_data_dir_with_env,
-        validate_dump_output_path, verify_data_directory, write_dump_atomic,
+        Cli, Command, DataCommand, FileVerification, VerificationStatus, dispatch,
+        resolve_data_dir_with_env, verify_data_directory,
     };
     use assert2::check;
     use clap::Parser;
@@ -790,210 +827,19 @@ mod tests {
     }
 
     #[test]
-    fn accepts_dump_dma_command() {
-        let cli = Cli::try_parse_from(["openjill-rs", "dump", "dma"])
-            .expect("dump dma command should parse");
-        check!(matches!(
-            cli.command,
-            Command::Dump {
-                command: DumpCommand::Dma(_)
-            }
-        ));
+    fn accepts_dump_command() {
+        let cli =
+            Cli::try_parse_from(["openjill-rs", "dump", "dma"]).expect("dump command should parse");
+        check!(matches!(cli.command, Command::Dump(_)));
     }
 
     #[test]
-    fn accepts_dump_vcl_command() {
-        let cli = Cli::try_parse_from(["openjill-rs", "dump", "vcl"])
-            .expect("dump vcl command should parse");
-        check!(matches!(
-            cli.command,
-            Command::Dump {
-                command: DumpCommand::Vcl(_)
-            }
-        ));
-    }
-
-    #[test]
-    fn accepts_dump_sha_command() {
-        let cli = Cli::try_parse_from(["openjill-rs", "dump", "sha"])
-            .expect("dump sha command should parse");
-        check!(matches!(
-            cli.command,
-            Command::Dump {
-                command: DumpCommand::Sha(_)
-            }
-        ));
-    }
-
-    #[test]
-    fn accepts_dump_jn_command() {
-        let cli = Cli::try_parse_from(["openjill-rs", "dump", "jn"])
-            .expect("dump jn command should parse");
-        check!(matches!(
-            cli.command,
-            Command::Dump {
-                command: DumpCommand::Jn(_)
-            }
-        ));
-    }
-
-    /// Unit under test: default output path constants for every dump kind.
-    ///
-    /// Preconditions: no `--output` flag is supplied.
-    ///
-    /// Invariants asserted: every default output path is rooted under the
-    /// approved `data/extracted/` directory.
-    #[test]
-    fn dump_default_output_paths_are_under_data_extracted() {
-        check!(DUMP_DMA_OUTPUT.starts_with("data/extracted/"));
-        check!(DUMP_VCL_OUTPUT.starts_with("data/extracted/"));
-        check!(DUMP_SHA_OUTPUT.starts_with("data/extracted/"));
-        check!(DUMP_JN_OUTPUT.starts_with("data/extracted/"));
-    }
-
-    /// Unit under test: dump data-dir environment fallback.
-    ///
-    /// Preconditions: no `--data-dir` flag is supplied; an env override is present.
-    ///
-    /// Invariants asserted: the resolved data directory equals the env value.
-    #[test]
-    fn dump_uses_environment_fallback_when_flag_is_omitted() {
-        let resolved =
-            resolve_dump_data_dir_with_env(None, Some("/tmp/openjill-data".into()));
-        check!(resolved == PathBuf::from("/tmp/openjill-data"));
-    }
-
-    /// Unit under test: dump data-dir explicit flag precedence over env.
-    ///
-    /// Preconditions: both `--data-dir` and an env override are present.
-    ///
-    /// Invariants asserted: the explicit flag value wins.
-    #[test]
-    fn dump_uses_explicit_flag_over_environment() {
-        let resolved = resolve_dump_data_dir_with_env(
-            Some(PathBuf::from("/explicit/data")),
-            Some("/env/data".into()),
-        );
-        check!(resolved == PathBuf::from("/explicit/data"));
-    }
-
-    /// Unit under test: `validate_dump_output_path` rejection of `data/original/`.
-    ///
-    /// Preconditions: the output path is inside the workspace `data/original/`
-    /// directory.
-    ///
-    /// Invariants asserted: validation returns an error whose message mentions
-    /// `data/original/`.
-    #[test]
-    fn dump_rejects_output_inside_data_original() {
-        let workspace = PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
-        let bad_path = workspace.join("data/original/out.json");
-        let result = validate_dump_output_path(&bad_path, Some(&workspace));
-        check!(result.is_err());
-        check!(result.unwrap_err().to_string().contains("data/original/"));
-    }
-
-    /// Unit under test: `validate_dump_output_path` rejection of tracked workspace paths.
-    ///
-    /// Preconditions: the output path is inside the workspace `crates/` directory
-    /// which is tracked source but outside `data/extracted/`.
-    ///
-    /// Invariants asserted: validation returns an error.
-    #[test]
-    fn dump_rejects_workspace_path_outside_data_extracted() {
-        let workspace = PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
-        let bad_path = workspace.join("crates/out.json");
-        let result = validate_dump_output_path(&bad_path, Some(&workspace));
-        check!(result.is_err());
-    }
-
-    /// Unit under test: `validate_dump_output_path` acceptance of `data/extracted/` paths.
-    ///
-    /// Preconditions: the output path is inside the workspace `data/extracted/`
-    /// directory (the approved in-repo dump location).
-    ///
-    /// Invariants asserted: validation succeeds.
-    #[test]
-    fn dump_accepts_output_inside_data_extracted() {
-        let workspace = PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
-        let ok_path = workspace.join("data/extracted/JILL1/debug/dma.json");
-        let result = validate_dump_output_path(&ok_path, Some(&workspace));
-        check!(result.is_ok());
-    }
-
-    /// Unit under test: `validate_dump_output_path` acceptance of outside-workspace paths.
-    ///
-    /// Preconditions: the output path is under the system temporary directory,
-    /// which is outside any workspace.
-    ///
-    /// Invariants asserted: validation succeeds for paths entirely outside the
-    /// workspace.
-    #[test]
-    fn dump_accepts_output_outside_workspace() {
-        let workspace = PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
-        let ok_path = std::env::temp_dir().join("openjill-dump-test-output.json");
-        let result = validate_dump_output_path(&ok_path, Some(&workspace));
-        check!(result.is_ok());
-    }
-
-    /// Unit under test: `write_dump_atomic` overwrite rejection without `--force`.
-    ///
-    /// Preconditions: the output file already exists on disk.
-    ///
-    /// Invariants asserted: the write fails with an error mentioning `--force`.
-    #[test]
-    fn dump_rejects_overwrite_without_force() {
-        let temp_dir = TempDirGuard::new("openjill-cli-dump-overwrite-reject");
-        let path = temp_dir.path().join("existing.json");
-        fs::write(&path, b"existing content").expect("write existing file");
-
-        let result = write_dump_atomic(&path, b"new content", false);
-        check!(result.is_err());
-        check!(result.unwrap_err().to_string().contains("--force"));
-    }
-
-    /// Unit under test: `write_dump_atomic` overwrite acceptance with `--force`.
-    ///
-    /// Preconditions: the output file already exists on disk; `force` is `true`.
-    ///
-    /// Invariants asserted: the write succeeds and the file contains the new
-    /// content.
-    #[test]
-    fn dump_allows_overwrite_with_force() {
-        let temp_dir = TempDirGuard::new("openjill-cli-dump-overwrite-allow");
-        let path = temp_dir.path().join("existing.json");
-        fs::write(&path, b"existing content").expect("write existing file");
-
-        let result = write_dump_atomic(&path, b"new content", true);
-        check!(result.is_ok());
-        check!(fs::read(&path).expect("read output") == b"new content");
-    }
-
-    /// Unit under test: `dump dma` missing input file error.
-    ///
-    /// Preconditions: a data directory is supplied that does not contain `JILL.DMA`.
-    ///
-    /// Invariants asserted: the command returns an error whose message names
-    /// `JILL.DMA`.
-    #[test]
-    fn dump_dma_reports_error_for_missing_input_file() {
-        let temp_dir = TempDirGuard::new("openjill-cli-dump-dma-missing");
-        let out_path = temp_dir.path().join("out.json");
-        let cli = Cli::try_parse_from([
-            "openjill-rs",
-            "dump",
-            "dma",
-            "--data-dir",
-            temp_dir.path().to_string_lossy().as_ref(),
-            "--output",
-            out_path.to_string_lossy().as_ref(),
-        ])
-        .expect("dump dma should parse");
-
-        let Err(error) = dispatch(cli.command) else {
-            panic!("should fail when JILL.DMA is missing");
-        };
-        check!(error.to_string().contains("JILL.DMA"));
+    fn accepts_all_dump_kinds() {
+        for kind in ["dma", "vcl", "sha", "jn"] {
+            let cli =
+                Cli::try_parse_from(["openjill-rs", "dump", kind]).expect("dump kind should parse");
+            check!(matches!(cli.command, Command::Dump(_)));
+        }
     }
 
     /// Unit under test: `verify_data_directory` success path and deterministic checksums.
@@ -1086,7 +932,20 @@ mod tests {
     /// verify data directory.
     #[test]
     fn data_verify_uses_environment_fallback_when_flag_is_omitted() {
-        let resolved = resolve_verify_data_dir_with_env(None, Some("/tmp/openjill-fixture".into()));
+        let resolved = resolve_data_dir_with_env(None, Some("/tmp/openjill-fixture".into()));
+        check!(resolved == PathBuf::from("/tmp/openjill-fixture"));
+    }
+
+    /// Unit under test: environment-variable fallback in dump data-dir resolution.
+    ///
+    /// Preconditions: no explicit `--data-dir` value is supplied while an
+    /// environment override is provided.
+    ///
+    /// Invariants asserted: the environment value is used as the resolved dump
+    /// data directory.
+    #[test]
+    fn dump_uses_environment_fallback_when_flag_is_omitted() {
+        let resolved = resolve_data_dir_with_env(None, Some("/tmp/openjill-fixture".into()));
         check!(resolved == PathBuf::from("/tmp/openjill-fixture"));
     }
 
@@ -1117,6 +976,159 @@ mod tests {
         };
 
         check!(error.to_string().contains("MAP.JN1"));
+    }
+
+    /// Unit under test: failing preflight status from `dump`.
+    ///
+    /// Preconditions: command dispatch runs `dump` against a fixture with a
+    /// missing required file.
+    ///
+    /// Invariants asserted: command execution returns an error and names the
+    /// missing file in the failure summary before dump work starts.
+    #[test]
+    fn dump_returns_error_when_required_files_are_missing() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-exit");
+        write_valid_episode_one_fixture(temp_dir.path());
+        fs::remove_file(temp_dir.path().join("MAP.JN1")).expect("remove MAP.JN1");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "jn",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        let Err(error) = dispatch(cli.command) else {
+            panic!("dump preflight should fail");
+        };
+
+        check!(error.to_string().contains("MAP.JN1"));
+    }
+
+    /// Unit under test: dump framework output creation for file-based dumps.
+    ///
+    /// Preconditions: a complete synthetic fixture exists and the caller
+    /// chooses a file output path outside `data/original/`.
+    ///
+    /// Invariants asserted: the command succeeds, writes JSON metadata, and
+    /// records the selected dump kind.
+    #[test]
+    fn dump_writes_framework_metadata_to_selected_file() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-file");
+        write_valid_episode_one_fixture(temp_dir.path());
+        let output = temp_dir.path().join("dma.json");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "dma",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        dispatch(cli.command).expect("dump command should succeed");
+
+        let json = fs::read_to_string(output).expect("read dump output");
+        check!(json.contains("\"kind\": \"dma\""));
+        check!(json.contains("\"payload_implemented\": false"));
+        check!(json.contains("\"requested_file\": \"JILL.DMA\""));
+    }
+
+    /// Unit under test: dump framework output creation for directory-based dumps.
+    ///
+    /// Preconditions: a complete synthetic fixture exists and the caller
+    /// chooses a directory output path outside `data/original/`.
+    ///
+    /// Invariants asserted: the command writes `metadata.json` below the
+    /// selected output directory.
+    #[test]
+    fn dump_writes_framework_metadata_to_selected_directory() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-dir");
+        write_valid_episode_one_fixture(temp_dir.path());
+        let output = temp_dir.path().join("jn-dump");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "jn",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        dispatch(cli.command).expect("dump command should succeed");
+
+        let json = fs::read_to_string(output.join("metadata.json")).expect("read dump output");
+        check!(json.contains("\"kind\": \"jn\""));
+        check!(json.contains("\"requested_file\": \"INTRO.JN1\""));
+        check!(json.contains("\"requested_file\": \"MAP.JN1\""));
+    }
+
+    /// Unit under test: dump output overwrite safeguards.
+    ///
+    /// Preconditions: the selected output file already exists.
+    ///
+    /// Invariants asserted: the command refuses to overwrite the file unless
+    /// `--force` is supplied.
+    #[test]
+    fn dump_refuses_to_overwrite_without_force() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-overwrite");
+        write_valid_episode_one_fixture(temp_dir.path());
+        let output = temp_dir.path().join("dma.json");
+        fs::write(&output, "{}").expect("write existing output");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "dma",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        let Err(error) = dispatch(cli.command) else {
+            panic!("dump should refuse to overwrite");
+        };
+
+        check!(error.to_string().contains("--force"));
+    }
+
+    /// Unit under test: dump output destination safety checks.
+    ///
+    /// Preconditions: the caller selects a repository-relative path under
+    /// `data/original/`.
+    ///
+    /// Invariants asserted: the command rejects the output path before writing.
+    #[test]
+    fn dump_rejects_original_data_output_path() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-original-output");
+        write_valid_episode_one_fixture(temp_dir.path());
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "dma",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+            "--output",
+            "data/original/dma.json",
+        ])
+        .expect("dump command should parse");
+
+        let Err(error) = dispatch(cli.command) else {
+            panic!("dump should reject original data output");
+        };
+
+        check!(error.to_string().contains("data/original"));
     }
 
     /// Returns the matching required file report by requested file name.

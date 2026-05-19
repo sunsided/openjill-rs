@@ -84,6 +84,20 @@ tasks:
 
   data:verify:
     desc: Verify original episode 1 data (uses DATA_DIR, OPENJILL_DATA_DIR, or data/original/JILL1)
+    cmds:
+      - task: data:run
+        vars:
+          COMMAND: data verify
+
+  data:dump:
+    desc: Dump original episode 1 data (uses DATA_DIR, OPENJILL_DATA_DIR, or data/original/JILL1; pass args via --)
+    cmds:
+      - task: data:run
+        vars:
+          COMMAND: dump
+
+  data:run:
+    internal: true
     env:
       DATA_DIR: '{{.DATA_DIR | default ""}}'
     cmds:
@@ -91,11 +105,7 @@ tasks:
         if [ -z "$DATA_DIR" ] && [ -z "$OPENJILL_DATA_DIR" ] && [ ! -d data/original/JILL1 ]; then
           task binary:fetch
         fi
-        if [ -n "$DATA_DIR" ]; then
-          cargo run -p openjill-cli --bin openjill-rs -- data verify --data-dir "$DATA_DIR"
-        else
-          cargo run -p openjill-cli --bin openjill-rs -- data verify
-        fi
+        cargo run -p openjill-cli --bin openjill-rs -- {{.COMMAND}} {{.CLI_ARGS}}
 
   data:clean:
     desc: Remove downloaded ZIP and extracted data under data/

@@ -132,3 +132,23 @@ deletion) removes it. Nothing in between should leave the working tree.
   `data/original/`. Requires `ZIP_LINK` and `ZIP_PASS` (sourced from `.env`)
   and `7z` (`p7zip-full`).
 - `task data:clean` — remove `data/original` and any cached ZIP.
+
+## Taskfile utility commands
+
+When adding or changing a user-facing utility command in `openjill-rs`, update
+`Taskfile.dist.yaml` with a matching task so contributors can run it through the
+project's standard task interface. Keep command semantics in the Rust CLI and
+use shared Taskfile wrappers instead of per-command shell logic:
+
+- Use the `data:<command>` namespace for utilities that operate on original
+  game data, such as `task data:verify` and `task data:dump`.
+- Route data utility tasks through the shared internal data-command runner in
+  `Taskfile.dist.yaml` so fetch and override handling stay consistent.
+- In the CLI implementation, respect explicit `--data-dir` flags, the
+  task-runner `DATA_DIR` override, and `OPENJILL_DATA_DIR` before falling back
+  to `data/original/JILL1`.
+- If the Taskfile task needs original data and no override is set, ensure
+  `data/original/JILL1` exists by calling `task binary:fetch` before running
+  the command.
+- Pass through extra command arguments with `{{.CLI_ARGS}}` where the CLI
+  command supports additional flags or subcommands.
