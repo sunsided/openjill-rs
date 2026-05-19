@@ -69,7 +69,7 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
 
-    let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/original/JILL1");
+    let default = Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1");
     if default.is_dir() {
         Some(default)
     } else {

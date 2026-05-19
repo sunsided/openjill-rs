@@ -2,3 +2,7 @@
 ws-build = "build --workspace --all-targets"
 ws-test = "test --workspace --all-targets"
 ws-lint = "clippy --workspace --all-targets -- -D warnings"
+
+[env]
+CARGO_WORKSPACE_DIR = { value = "", relative = true }
+
