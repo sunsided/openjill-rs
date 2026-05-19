@@ -2,31 +2,47 @@ use crate::{ByteReader, ByteReaderError};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+/// Number of bytes occupied by the sound-entry area at the start of a `JILL1.VCL` file.
 const SOUND_ENTRY_SKIP: usize = 400;
+/// Number of text-entry slots in the `JILL1.VCL` text offset/length tables.
 const TEXT_ENTRY_COUNT: usize = 40;
 
+/// A decoded non-empty text entry from a `JILL1.VCL` text table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VclTextEntry {
+    /// Text bytes mapped one-to-one to `char` values (`U+0000..U+00FF`).
     text: String,
+    /// Source byte offset where this text entry starts in the original file.
     offset: usize,
 }
 
 impl VclTextEntry {
+    /// Returns the decoded text payload.
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Returns the source byte offset where this text payload starts.
     pub fn offset(&self) -> usize {
         self.offset
     }
 }
 
+/// Parsed text-table data from a `JILL1.VCL` file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VclFile {
+    /// Non-empty text entries preserved in table order.
     text_entries: Vec<VclTextEntry>,
 }
 
 impl VclFile {
+    /// Parses `JILL1.VCL` text entries from a reader.
+    ///
+    /// Parsing semantics are intentionally OpenJill-compatible:
+    /// - skip the 400-byte sound-entry region
+    /// - read 40 `u32le` text offsets
+    /// - read 40 `u16le` text lengths
+    /// - materialize only non-empty text entries
     pub fn parse(reader: &mut ByteReader) -> Result<Self, VclReadError> {
         reader.skip(SOUND_ENTRY_SKIP).map_err(|source| VclReadError {
             field: "sound_entry_skip",
@@ -76,25 +92,33 @@ impl VclFile {
         Ok(Self { text_entries })
     }
 
+    /// Parses a `VclFile` directly from in-memory bytes.
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self, VclReadError> {
         let mut reader = ByteReader::from_bytes(bytes);
         Self::parse(&mut reader)
     }
 
+    /// Returns all parsed non-empty text entries in table order.
     pub fn text_entries(&self) -> &[VclTextEntry] {
         &self.text_entries
     }
 
+    /// Returns the number of parsed non-empty text entries.
     pub fn text_entry_count(&self) -> usize {
         self.text_entries.len()
     }
 }
 
+/// Error returned when parsing a `JILL1.VCL` text table fails.
 #[derive(Debug, Eq, PartialEq)]
 pub struct VclReadError {
+    /// Name of the field being parsed when the failure occurred.
     pub field: &'static str,
+    /// Optional table index for entry-scoped failures.
     pub entry_index: Option<usize>,
+    /// Source offset associated with the parse failure.
     pub offset: usize,
+    /// Underlying byte-reader failure.
     source: ByteReaderError,
 }
 
@@ -122,6 +146,7 @@ impl Error for VclReadError {
     }
 }
 
+/// Reads a single `u8` field and wraps reader errors with VCL parse context.
 fn read_u8(reader: &mut ByteReader, field: &'static str, entry_index: usize) -> Result<u8, VclReadError> {
     let fallback_offset = reader.offset();
     reader.read_u8().map_err(|source| VclReadError {
@@ -132,6 +157,7 @@ fn read_u8(reader: &mut ByteReader, field: &'static str, entry_index: usize) -> 
     })
 }
 
+/// Reads a single `u16le` field and wraps reader errors with VCL parse context.
 fn read_u16(
     reader: &mut ByteReader,
     field: &'static str,
@@ -146,6 +172,7 @@ fn read_u16(
     })
 }
 
+/// Reads a single `u32le` field and wraps reader errors with VCL parse context.
 fn read_u32(
     reader: &mut ByteReader,
     field: &'static str,
@@ -160,6 +187,7 @@ fn read_u32(
     })
 }
 
+/// Chooses the most useful parse-failure offset to report for a reader error.
 fn error_offset(source: &ByteReaderError, lower_bound_offset: usize) -> usize {
     match source {
         ByteReaderError::UnexpectedEof { offset, .. } | ByteReaderError::OffsetOverflow { offset, .. } => {
