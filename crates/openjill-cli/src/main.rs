@@ -333,7 +333,10 @@ fn verify_file(
         Err(error) => {
             return FileVerification {
                 requested_file: requested_file.to_string(),
-                resolved_file: path_relative_to_data_dir(directory.as_path(), &resolved_path),
+                resolved_file: Some(path_relative_to_data_dir(
+                    directory.as_path(),
+                    &resolved_path,
+                )),
                 parser_domain,
                 status: VerificationStatus::Invalid,
                 size_bytes: None,
@@ -348,7 +351,10 @@ fn verify_file(
     match parser_domain.parse(&bytes) {
         Ok(()) => FileVerification {
             requested_file: requested_file.to_string(),
-            resolved_file: path_relative_to_data_dir(directory.as_path(), &resolved_path),
+            resolved_file: Some(path_relative_to_data_dir(
+                directory.as_path(),
+                &resolved_path,
+            )),
             parser_domain,
             status: VerificationStatus::Present,
             size_bytes: Some(size_bytes),
@@ -357,7 +363,10 @@ fn verify_file(
         },
         Err(parser_error) => FileVerification {
             requested_file: requested_file.to_string(),
-            resolved_file: path_relative_to_data_dir(directory.as_path(), &resolved_path),
+            resolved_file: Some(path_relative_to_data_dir(
+                directory.as_path(),
+                &resolved_path,
+            )),
             parser_domain,
             status: VerificationStatus::Invalid,
             size_bytes: Some(size_bytes),
@@ -400,11 +409,10 @@ fn discover_episode_one_jn1_files(data_dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Returns a path relative to `data_dir` when possible.
-fn path_relative_to_data_dir(data_dir: &Path, path: &Path) -> Option<PathBuf> {
+fn path_relative_to_data_dir(data_dir: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(data_dir)
-        .ok()
         .map(Path::to_path_buf)
-        .or_else(|| Some(path.to_path_buf()))
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Computes a lowercase hexadecimal SHA-256 digest for `bytes`.
@@ -467,6 +475,10 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Expected SHA-256 digest for the bytes returned by [`valid_dma_bytes`].
+    const VALID_DMA_BYTES_SHA256: &str =
+        "e2f0bb468adca6ddc6b907bdcec47aa839ec900b69d4d1a632c08b6564225662";
+
     #[test]
     fn accepts_run_command() {
         let cli = Cli::try_parse_from(["openjill-rs", "run"]).expect("run command should parse");
@@ -528,7 +540,7 @@ mod tests {
         let dma_first = required_file(&first.required_files, "JILL.DMA");
         let dma_second = required_file(&second.required_files, "JILL.DMA");
         check!(dma_first.checksum_sha256 == dma_second.checksum_sha256);
-        check!(let Some(checksum) = &dma_first.checksum_sha256 && checksum == "e2f0bb468adca6ddc6b907bdcec47aa839ec900b69d4d1a632c08b6564225662");
+        check!(let Some(checksum) = &dma_first.checksum_sha256 && checksum == VALID_DMA_BYTES_SHA256);
     }
 
     /// Unit under test: missing required file reporting.
@@ -684,8 +696,8 @@ mod tests {
         }
 
         /// Returns the temporary directory path.
-        fn path(&self) -> &PathBuf {
-            &self.0
+        fn path(&self) -> &std::path::Path {
+            self.0.as_path()
         }
     }
 
