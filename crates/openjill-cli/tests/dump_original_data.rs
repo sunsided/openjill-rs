@@ -186,6 +186,12 @@ fn assert_vcl_dump(json: &Value, source_len: usize) {
 }
 
 /// Asserts structural invariants for a SHA dump JSON document and atlas file.
+///
+/// Invariants asserted: required top-level metadata fields exist with expected
+/// types, declared tileset counts match emitted array lengths, atlas metadata
+/// includes a file entry with positive dimensions, atlas output exists on disk,
+/// and every emitted tile placement remains within atlas bounds while
+/// preserving width/height and indexed-byte-count consistency.
 fn assert_sha_dump(json: &Value, output_dir: &Path, source_len: usize) {
     check!(json["source_file"] == Value::from("JILL1.SHA"));
     check!(json["source_size"] == Value::from(source_len));
