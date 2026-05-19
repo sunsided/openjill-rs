@@ -18,9 +18,11 @@ const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 const SHA256_HEX_LEN: usize = 64;
 /// Number of text entries exposed by the VCL parser.
 const VCL_TEXT_ENTRY_COUNT: usize = 40;
+/// File name used by `dump sha` for indexed atlas pixels.
+const SHA_ATLAS_INDEXED_FILE: &str = "atlas-indexed.png";
 
-/// Unit under test: end-to-end `openjill-rs dump dma` and
-/// `openjill-rs dump vcl` execution against original episode-1 files.
+/// Unit under test: end-to-end `openjill-rs dump dma`, `openjill-rs dump vcl`,
+/// and `openjill-rs dump sha` execution against original episode-1 files.
 ///
 /// Preconditions: either `OPENJILL_DATA_DIR` points at a directory containing
 /// `JILL.DMA` and `JILL1.VCL`, or the workspace-relative
@@ -28,10 +30,11 @@ const VCL_TEXT_ENTRY_COUNT: usize = 40;
 /// test prints a skip message and returns so machines without original data
 /// still pass CI.
 ///
-/// Invariants asserted: both dump commands succeed, write JSON outside the
-/// original data tree, preserve source metadata, report non-empty entry arrays,
-/// keep entry counts consistent with array lengths, and emit per-entry offsets
-/// and table indexes that stay within the source-file structures.
+/// Invariants asserted: all dump commands succeed, write output outside the
+/// original data tree, preserve source metadata, report non-empty entry arrays
+/// for populated payloads, keep entry counts consistent with array lengths,
+/// emit per-entry offsets and indexes that stay within source-file structures,
+/// and produce a SHA atlas file with dimensions matching metadata.
 #[test]
 fn dumps_original_dma_and_vcl_payloads_when_available() {
     let env_override = std::env::var_os(DATA_DIR_ENV);
@@ -54,18 +57,26 @@ fn dumps_original_dma_and_vcl_payloads_when_available() {
         .open_reader("JILL1.VCL")
         .expect("JILL1.VCL must be readable through DataDirectory")
         .len();
+    let sha_len = directory
+        .open_reader("JILL1.SHA")
+        .expect("JILL1.SHA must be readable through DataDirectory")
+        .len();
     let temp_dir = TempDirGuard::new("openjill-cli-dump-original-data");
     let dma_output = temp_dir.path().join("dma.json");
     let vcl_output = temp_dir.path().join("vcl-text.json");
+    let sha_output = temp_dir.path().join("sha");
 
     run_dump_command("dma", &data_dir, &dma_output);
     run_dump_command("vcl", &data_dir, &vcl_output);
+    run_dump_command("sha", &data_dir, &sha_output);
 
     let dma = read_json_file(&dma_output);
     let vcl = read_json_file(&vcl_output);
+    let sha = read_json_file(&sha_output.join("metadata.json"));
 
     assert_dma_dump(&dma, dma_len);
     assert_vcl_dump(&vcl, vcl_len);
+    assert_sha_dump(&sha, &sha_output, sha_len);
 }
 
 /// Runs one CLI dump command and panics with captured output on failure.
@@ -171,6 +182,78 @@ fn assert_vcl_dump(json: &Value, source_len: usize) {
         check!(text.chars().count() == declared_length);
         check!(source_offset < source_len);
         check!(source_offset + declared_length <= source_len);
+    }
+}
+
+/// Asserts structural invariants for a SHA dump JSON document and atlas file.
+fn assert_sha_dump(json: &Value, output_dir: &Path, source_len: usize) {
+    check!(json["source_file"] == Value::from("JILL1.SHA"));
+    check!(json["source_size"] == Value::from(source_len));
+    assert_sha256_hex(&json["source_sha256"]);
+    check!(json["header_entry_count"] == Value::from(128));
+
+    let valid_header_entry_count = json["valid_header_entry_count"]
+        .as_u64()
+        .expect("SHA valid_header_entry_count must be numeric")
+        as usize;
+    let tileset_count = json["tileset_count"]
+        .as_u64()
+        .expect("SHA tileset_count must be numeric") as usize;
+    let tilesets = json["tilesets"]
+        .as_array()
+        .expect("SHA tilesets must be an array");
+    check!(tileset_count == tilesets.len());
+    check!(valid_header_entry_count >= tileset_count);
+
+    let atlas_files = json["atlas_files"]
+        .as_array()
+        .expect("SHA atlas_files must be an array");
+    check!(!atlas_files.is_empty());
+    check!(atlas_files[0]["file_name"] == Value::from(SHA_ATLAS_INDEXED_FILE));
+    check!(atlas_files[0]["pixel_format"] == Value::from("indexed-luma8"));
+    check!(atlas_files[0]["tile_padding"].as_u64().is_some());
+    let atlas_width = json_usize(&atlas_files[0], "width");
+    let atlas_height = json_usize(&atlas_files[0], "height");
+    check!(atlas_width > 0);
+    check!(atlas_height > 0);
+    check!(output_dir.join(SHA_ATLAS_INDEXED_FILE).is_file());
+
+    for tileset in tilesets {
+        check!(tileset["entry_index"].as_u64().is_some());
+        check!(tileset["source_offset"].as_u64().is_some());
+        check!(tileset["declared_size"].as_u64().is_some());
+        check!(tileset["tile_count"].as_u64().is_some());
+        check!(tileset["image_count"].as_u64().is_some());
+        check!(tileset["rotations"].as_u64().is_some());
+        check!(tileset["cga_size"].as_u64().is_some());
+        check!(tileset["ega_size"].as_u64().is_some());
+        check!(tileset["vga_size"].as_u64().is_some());
+        check!(tileset["bit_depth"].as_u64().is_some());
+        check!(tileset["flags"].as_u64().is_some());
+        check!(tileset["is_font"].as_bool().is_some());
+        check!(tileset["is_level_tileset"].as_bool().is_some());
+        check!(tileset["color_map_entry_count"].as_u64().is_some());
+
+        let tiles = tileset["tiles"]
+            .as_array()
+            .expect("SHA tiles must be an array");
+        let image_count = tileset["image_count"]
+            .as_u64()
+            .expect("SHA image_count must be numeric") as usize;
+        check!(image_count == tiles.len());
+        for tile in tiles {
+            check!(tile["image_index"].as_u64().is_some());
+            let source_offset = json_usize(tile, "source_offset");
+            let width = json_usize(tile, "width");
+            let height = json_usize(tile, "height");
+            check!(tile["data_format"].as_u64().is_some());
+            check!(json_usize(tile, "indexed_byte_count") == width * height);
+            check!(source_offset < source_len);
+            check!(json_usize(tile, "atlas_x") + json_usize(tile, "atlas_width") <= atlas_width);
+            check!(json_usize(tile, "atlas_y") + json_usize(tile, "atlas_height") <= atlas_height);
+            check!(json_usize(tile, "atlas_width") == width);
+            check!(json_usize(tile, "atlas_height") == height);
+        }
     }
 }
 
