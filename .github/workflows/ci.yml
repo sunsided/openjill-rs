@@ -46,5 +46,5 @@ jobs:
 
       - name: cargo test (workspace)
         env:
-          OPENJILL_ORIGINAL_DATA_DIR: ${{ github.workspace }}/data/original/JILL1
+          OPENJILL_DATA_DIR: ${{ github.workspace }}/data/original/JILL1
         run: cargo test --workspace --all-targets --locked

@@ -3,26 +3,34 @@ use openjill_data::DataDirectory;
 use std::path::{Path, PathBuf};
 
 const TILESET_MASK: u8 = 0x3f;
+const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 
 #[test]
 fn parses_original_jill_dma_when_available() {
-    let data_dir = original_data_dir();
-    if !data_dir.is_dir() {
-        eprintln!(
-            "skipping integration test; original data directory is missing: {}",
-            data_dir.display()
-        );
-        return;
-    }
-
-    let directory = DataDirectory::new(data_dir);
-    let mut reader = match directory.open_reader("JILL.DMA") {
-        Ok(reader) => reader,
-        Err(error) => {
-            eprintln!("skipping integration test; JILL.DMA is unavailable: {error}");
+    let env_override = std::env::var_os(DATA_DIR_ENV);
+    let data_dir = match resolve_data_dir(env_override.as_deref()) {
+        Some(dir) => dir,
+        None => {
+            eprintln!(
+                "skipping integration test; {DATA_DIR_ENV} is not set and default data directory is missing"
+            );
             return;
         }
     };
+
+    assert!(
+        data_dir.is_dir(),
+        "data directory must exist when configured: {}",
+        data_dir.display()
+    );
+
+    let directory = DataDirectory::new(&data_dir);
+    let mut reader = directory.open_reader("JILL.DMA").unwrap_or_else(|error| {
+        panic!(
+            "JILL.DMA must be readable from configured data directory {}: {error}",
+            data_dir.display()
+        )
+    });
     let file_len = reader.len();
 
     let dma = DmaFile::parse(&mut reader).expect("JILL.DMA from original data should parse");
@@ -56,12 +64,15 @@ fn parses_original_jill_dma_when_available() {
     }
 }
 
-fn original_data_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os("OPENJILL_ORIGINAL_DATA_DIR") {
-        return PathBuf::from(path);
+fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    if let Some(path) = env_override {
+        return Some(PathBuf::from(path));
     }
 
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../data/original/JILL1")
-        .to_path_buf()
+    let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/original/JILL1");
+    if default.is_dir() {
+        Some(default)
+    } else {
+        None
+    }
 }
