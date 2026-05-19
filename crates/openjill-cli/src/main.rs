@@ -466,6 +466,8 @@ fn render_dump_json(request: &DumpRequest) -> Result<String> {
 struct DumpInputSource {
     /// Raw source bytes loaded from disk.
     bytes: Vec<u8>,
+    /// Case-insensitive path resolved relative to the data directory.
+    resolved_path: PathBuf,
     /// Source file size in bytes.
     source_size: usize,
     /// Lowercase hexadecimal SHA-256 digest for the source bytes.
@@ -492,6 +494,7 @@ fn read_dump_input_source(
 
     Ok(DumpInputSource {
         bytes,
+        resolved_path,
         source_size,
         source_sha256,
     })
@@ -524,6 +527,7 @@ fn dma_dump_json(data_dir: &Path) -> Result<String> {
         bytes,
         source_size,
         source_sha256,
+        ..
     } = source;
     let dma = parse_dma_source(bytes)?;
 
@@ -572,6 +576,7 @@ fn vcl_dump_json(data_dir: &Path) -> Result<String> {
         bytes,
         source_size,
         source_sha256,
+        ..
     } = source;
     let vcl = parse_vcl_source(bytes)?;
 
@@ -637,13 +642,12 @@ fn jn_dump_json(data_dir: &Path) -> Result<String> {
 
 /// Builds metadata JSON for one `*.JN1` source file.
 fn jn_dump_file_json(directory: &DataDirectory, requested_file: &str) -> Result<serde_json::Value> {
-    let resolved_path = directory
-        .resolve_path_case_insensitive(requested_file)
-        .map_err(|error| anyhow::anyhow!("missing input file {requested_file}: {error}"))?;
-    let bytes = fs::read(&resolved_path)
-        .map_err(|error| anyhow::anyhow!("failed to read input file {requested_file}: {error}"))?;
-    let source_size = bytes.len();
-    let source_sha256 = sha256_lower_hex(&bytes);
+    let DumpInputSource {
+        bytes,
+        resolved_path,
+        source_size,
+        source_sha256,
+    } = read_dump_input_source(directory, requested_file)?;
     let mut reader = ByteReader::from_bytes(bytes);
     let jn = JnFile::parse(&mut reader)
         .map_err(|error| anyhow::anyhow!("failed to parse input file {requested_file}: {error}"))?;
@@ -783,6 +787,7 @@ fn sha_dump_output(data_dir: &Path) -> Result<ShaDumpOutput> {
         bytes,
         source_size,
         source_sha256,
+        ..
     } = source;
     let sha = parse_sha_source(bytes)?;
     let atlas = pack_sha_tiles_row_major(&sha);
