@@ -25,11 +25,10 @@ The Rust implementation should inspect and touch these areas:
   belong below the CLI.
 - `crates/openjill-cli`: user-facing `openjill-rs data verify` and
   `openjill-rs dump ...` commands.
-- `tools/openjill-dump`: developer convenience binary only. The canonical
-  command shape for this epic is `openjill-rs`; `openjill-dump` may either
-  delegate to shared dump code if a small shared module emerges or stay a thin
-  stub that points developers at `openjill-rs dump`. If `openjill-rs dump` is functional,
-  there is no need for an additional `tools/openjill-dump` binary and it can be removed.
+- `tools/openjill-dump`: developer convenience binary only, with no separate
+  command contract for this epic. Child issues target `openjill-rs` command
+  shapes exclusively; `openjill-dump` may remain a stub or become a thin
+  passthrough wrapper without adding new flags or output behavior.
 - `docs/port/03-asset-debug-tools.md`: this decision-complete subplan.
 
 Do not add dependencies from `openjill-data` to `openjill-cli`,
@@ -47,6 +46,9 @@ openjill-rs dump vcl [--data-dir <path>] [--output <path>] [--format json] [--fo
 openjill-rs dump sha [--data-dir <path>] [--output <dir>] [--format json] [--force]
 openjill-rs dump jn [--data-dir <path>] [--output <dir>] [--format json] [--force]
 ```
+
+There are no additional required user-facing commands in
+`tools/openjill-dump` for this epic.
 
 `--data-dir` resolution is shared by verification and dumps:
 
