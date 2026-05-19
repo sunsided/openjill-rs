@@ -45,6 +45,39 @@ with the task as if it were not relevant.
 - Work needs data → ensure data exists, fetch if missing (unless told not to).
 - Work doesn't need data → ignore `data/` entirely.
 
+### Never commit or leak original game data
+
+The original Jill of the Jungle bytes are copyrighted. They live under
+`data/original/` (and any derivatives under `data/extracted/`) **only as
+in-flight, locally fetched material**. They must never enter the repository or
+any artifact published from it.
+
+Hard rules for agents:
+
+- Do **not** `git add`, `git commit`, or otherwise stage anything under
+  `data/original/` or `data/extracted/`. Both paths are already in
+  `.gitignore` — keep them there.
+- Do **not** remove, narrow, or override those `.gitignore` entries (no
+  `git add -f`, no `!data/original/...` negations, no per-subdir
+  `.gitignore` exceptions).
+- Do **not** copy original game bytes into other tracked locations
+  (`crates/`, `tools/`, test fixtures, docs, screenshots, etc.) to "work
+  around" the ignore. Original bytes stay under `data/`, period.
+- Do **not** embed original bytes (or close derivatives such as raw tile
+  PNG dumps) into source files, test data, generated code, or commit
+  messages. Tests must use the small synthetic fixtures the project
+  already ships, not slices of real game data.
+- Do **not** push, attach, paste, or upload original game bytes anywhere
+  outside the local checkout (PR descriptions, issues, gists, chat logs,
+  CI artifacts, third-party services).
+- If a task seems to require committing original data to make progress,
+  stop and surface the conflict to the user instead of finding a
+  workaround.
+
+The intended lifecycle is: `task binary:fetch` populates `data/original/`
+on demand → code reads from it locally → `task data:clean` (or manual
+deletion) removes it. Nothing in between should leave the working tree.
+
 ## Related tasks
 
 - `task binary:fetch` — download and unpack original game ZIP into
