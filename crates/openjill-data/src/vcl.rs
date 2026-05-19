@@ -43,13 +43,19 @@ impl VclFile {
     /// - read 40 `u32le` text offsets
     /// - read 40 `u16le` text lengths
     /// - materialize only non-empty text entries
+    ///
+    /// On success the reader cursor is restored to the byte immediately after
+    /// the length table, regardless of which text payloads were seeked into,
+    /// so the post-parse position is deterministic for chained consumers.
     pub fn parse(reader: &mut ByteReader) -> Result<Self, VclReadError> {
-        reader.skip(SOUND_ENTRY_SKIP).map_err(|source| VclReadError {
-            field: "sound_entry_skip",
-            entry_index: None,
-            offset: error_offset(&source, 0),
-            source,
-        })?;
+        reader
+            .skip(SOUND_ENTRY_SKIP)
+            .map_err(|source| VclReadError {
+                field: "sound_entry_skip",
+                entry_index: None,
+                offset: error_offset(&source, 0),
+                source,
+            })?;
 
         let mut text_offsets = [0u32; TEXT_ENTRY_COUNT];
         let mut text_lengths = [0u16; TEXT_ENTRY_COUNT];
@@ -61,6 +67,8 @@ impl VclFile {
         for (entry_index, text_length) in text_lengths.iter_mut().enumerate() {
             *text_length = read_u16(reader, "text_length", entry_index)?;
         }
+
+        let post_table_offset = reader.offset();
 
         let mut text_entries = Vec::new();
         for entry_index in 0..TEXT_ENTRY_COUNT {
@@ -88,6 +96,15 @@ impl VclFile {
                 offset: text_offset,
             });
         }
+
+        reader
+            .seek(post_table_offset)
+            .map_err(|source| VclReadError {
+                field: "post_table_restore",
+                entry_index: None,
+                offset: error_offset(&source, post_table_offset),
+                source,
+            })?;
 
         Ok(Self { text_entries })
     }
@@ -147,7 +164,11 @@ impl Error for VclReadError {
 }
 
 /// Reads a single `u8` field and wraps reader errors with VCL parse context.
-fn read_u8(reader: &mut ByteReader, field: &'static str, entry_index: usize) -> Result<u8, VclReadError> {
+fn read_u8(
+    reader: &mut ByteReader,
+    field: &'static str,
+    entry_index: usize,
+) -> Result<u8, VclReadError> {
     let fallback_offset = reader.offset();
     reader.read_u8().map_err(|source| VclReadError {
         field,
@@ -190,9 +211,8 @@ fn read_u32(
 /// Chooses the most useful parse-failure offset to report for a reader error.
 fn error_offset(source: &ByteReaderError, lower_bound_offset: usize) -> usize {
     match source {
-        ByteReaderError::UnexpectedEof { offset, .. } | ByteReaderError::OffsetOverflow { offset, .. } => {
-            *offset
-        }
+        ByteReaderError::UnexpectedEof { offset, .. }
+        | ByteReaderError::OffsetOverflow { offset, .. } => *offset,
         ByteReaderError::InvalidSeek { requested, .. } => *requested,
     }
     .max(lower_bound_offset)
@@ -201,7 +221,7 @@ fn error_offset(source: &ByteReaderError, lower_bound_offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{SOUND_ENTRY_SKIP, TEXT_ENTRY_COUNT, VclFile, VclReadError};
-    use crate::ByteReaderError;
+    use crate::{ByteReader, ByteReaderError};
     use assert2::check;
 
     #[test]
@@ -265,6 +285,21 @@ mod tests {
                     },
                 }
         );
+    }
+
+    #[test]
+    fn parse_leaves_reader_at_deterministic_position_past_tables() {
+        let mut bytes = vec![0; table_end()];
+
+        write_text_entry(&mut bytes, 0, 700, 5);
+        write_text_entry(&mut bytes, 7, 705, 3);
+        write_text_at(&mut bytes, 700, b"HELLO");
+        write_text_at(&mut bytes, 705, b"FOO");
+
+        let mut reader = ByteReader::from_bytes(bytes);
+        VclFile::parse(&mut reader).expect("VCL parse should succeed");
+
+        check!(reader.offset() == table_end());
     }
 
     fn table_end() -> usize {

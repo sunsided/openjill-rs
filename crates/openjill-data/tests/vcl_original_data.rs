@@ -1,6 +1,6 @@
 use assert2::check;
-use openjill_data::vcl::VclFile;
 use openjill_data::DataDirectory;
+use openjill_data::vcl::VclFile;
 use std::path::{Path, PathBuf};
 
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";

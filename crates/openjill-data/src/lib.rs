@@ -137,12 +137,13 @@ impl DataDirectory {
                 Component::CurDir => continue,
                 Component::Normal(segment) => {
                     has_normal_component = true;
-                    let next = find_case_insensitive_entry(&current, segment)?.ok_or_else(|| {
-                        DataDirectoryError::FileNotFoundCaseInsensitive {
-                            requested: requested.to_path_buf(),
-                            searched_in: current.clone(),
-                        }
-                    })?;
+                    let next =
+                        find_case_insensitive_entry(&current, segment)?.ok_or_else(|| {
+                            DataDirectoryError::FileNotFoundCaseInsensitive {
+                                requested: requested.to_path_buf(),
+                                searched_in: current.clone(),
+                            }
+                        })?;
                     current = next;
                 }
                 Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
@@ -162,7 +163,10 @@ impl DataDirectory {
         Ok(current)
     }
 
-    pub fn open_reader(&self, relative_path: impl AsRef<Path>) -> Result<ByteReader, DataDirectoryError> {
+    pub fn open_reader(
+        &self,
+        relative_path: impl AsRef<Path>,
+    ) -> Result<ByteReader, DataDirectoryError> {
         let path = self.resolve_path_case_insensitive(relative_path)?;
         let bytes = fs::read(path)?;
         Ok(ByteReader::from_bytes(bytes))

@@ -136,7 +136,9 @@ impl DmaFile {
     }
 
     pub fn get_by_map_code(&self, map_code: u16) -> Option<&DmaEntry> {
-        self.by_map_code.get(&map_code).map(|index| &self.entries[*index])
+        self.by_map_code
+            .get(&map_code)
+            .map(|index| &self.entries[*index])
     }
 
     pub fn get_by_name(&self, name: &str) -> Option<&DmaEntry> {
@@ -212,9 +214,8 @@ fn read_name(
 
 fn error_offset(source: &ByteReaderError, fallback: usize, entry_offset: usize) -> usize {
     match source {
-        ByteReaderError::UnexpectedEof { offset, .. } | ByteReaderError::OffsetOverflow { offset, .. } => {
-            *offset
-        }
+        ByteReaderError::UnexpectedEof { offset, .. }
+        | ByteReaderError::OffsetOverflow { offset, .. } => *offset,
         ByteReaderError::InvalidSeek { .. } => {
             if fallback >= entry_offset {
                 fallback
@@ -273,11 +274,8 @@ mod tests {
 
     #[test]
     fn preserves_flag_helper_semantics() {
-        let dma = DmaFile::from_bytes(dma_bytes(&[
-            (1, 1, 1, 0x39, "A"),
-            (2, 2, 2, 0x06, "B"),
-        ]))
-        .expect("DMA parse should succeed");
+        let dma = DmaFile::from_bytes(dma_bytes(&[(1, 1, 1, 0x39, "A"), (2, 2, 2, 0x06, "B")]))
+            .expect("DMA parse should succeed");
 
         let all_messages = &dma.entries()[0];
         check!(all_messages.is_msg_touch());
