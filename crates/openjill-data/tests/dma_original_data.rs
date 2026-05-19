@@ -1,3 +1,4 @@
+use assert2::check;
 use openjill_data::dma::DmaFile;
 use openjill_data::DataDirectory;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,7 @@ fn parses_original_jill_dma_when_available() {
         }
     };
 
-    assert!(
+    check!(
         data_dir.is_dir(),
         "data directory must exist when configured: {}",
         data_dir.display()
@@ -34,30 +35,29 @@ fn parses_original_jill_dma_when_available() {
     let file_len = reader.len();
 
     let dma = DmaFile::parse(&mut reader).expect("JILL.DMA from original data should parse");
-    assert!(!dma.entries().is_empty(), "JILL.DMA should contain entries");
-    assert_eq!(dma.entry_count(), dma.entries().len());
+    check!(!dma.entries().is_empty(), "JILL.DMA should contain entries");
+    check!(dma.entry_count() == dma.entries().len());
 
     for (index, entry) in dma.entries().iter().enumerate() {
-        assert_eq!(entry.index(), index, "entry index should be preserved");
-        assert!(entry.offset() < file_len, "entry offset must point into file");
-        assert_eq!(
-            entry.tileset() & !TILESET_MASK,
-            0,
+        check!(entry.index() == index, "entry index should be preserved");
+        check!(entry.offset() < file_len, "entry offset must point into file");
+        check!(
+            entry.tileset() & !TILESET_MASK == 0,
             "tileset must be masked to 6 bits"
         );
 
-        assert!(
+        check!(
             dma.get_by_map_code(entry.map_code()).is_some(),
             "map code lookup should resolve for parsed entry"
         );
-        assert!(
+        check!(
             dma.get_by_name(entry.name()).is_some(),
             "name lookup should resolve for parsed entry"
         );
     }
 
     for window in dma.entries().windows(2) {
-        assert!(
+        check!(
             window[0].offset() < window[1].offset(),
             "entry offsets should increase monotonically"
         );

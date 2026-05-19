@@ -229,6 +229,7 @@ fn error_offset(source: &ByteReaderError, fallback: usize, entry_offset: usize) 
 mod tests {
     use super::{DmaFile, DmaReadError};
     use crate::ByteReaderError;
+    use assert2::check;
 
     #[test]
     fn parses_entries_offsets_indexes_names_and_lookups() {
@@ -239,38 +240,35 @@ mod tests {
         ]);
 
         let dma = DmaFile::from_bytes(bytes).expect("DMA parse should succeed");
-        assert_eq!(dma.entry_count(), 3);
+        check!(dma.entry_count() == 3);
 
         let first = &dma.entries()[0];
-        assert_eq!(first.index(), 0);
-        assert_eq!(first.offset(), 0);
-        assert_eq!(first.name(), "STONE");
+        check!(first.index() == 0);
+        check!(first.offset() == 0);
+        check!(first.name() == "STONE");
 
         let second = &dma.entries()[1];
-        assert_eq!(second.index(), 1);
-        assert_eq!(second.offset(), 12);
-        assert_eq!(second.name(), "VINE");
+        check!(second.index() == 1);
+        check!(second.offset() == 12);
+        check!(second.name() == "VINE");
 
-        let third = dma
-            .get_by_map_code(0x3456)
-            .expect("third entry should be found by map code");
-        assert_eq!(third.index(), 2);
-        assert_eq!(third.offset(), 23);
-        assert_eq!(third.name(), "LADDER");
+        check!(
+            let Some(third) = dma.get_by_map_code(0x3456)
+                && third.index() == 2
+                && third.offset() == 23
+                && third.name() == "LADDER"
+        );
 
-        let by_name = dma
-            .get_by_name("VINE")
-            .expect("entry should be found by name");
-        assert_eq!(by_name.map_code(), 0x2345);
-        assert!(dma.get_by_map_code(0xffff).is_none());
-        assert!(dma.get_by_name("missing").is_none());
+        check!(let Some(by_name) = dma.get_by_name("VINE") && by_name.map_code() == 0x2345);
+        check!(dma.get_by_map_code(0xffff).is_none());
+        check!(dma.get_by_name("missing").is_none());
     }
 
     #[test]
     fn masks_tileset_value_to_lower_six_bits() {
         let dma = DmaFile::from_bytes(dma_bytes(&[(0x1000, 0x10, 0xff, 0, "MASK")]))
             .expect("DMA parse should succeed");
-        assert_eq!(dma.entries()[0].tileset(), 0x3f);
+        check!(dma.entries()[0].tileset() == 0x3f);
     }
 
     #[test]
@@ -282,37 +280,36 @@ mod tests {
         .expect("DMA parse should succeed");
 
         let all_messages = &dma.entries()[0];
-        assert!(all_messages.is_msg_touch());
-        assert!(all_messages.is_msg_draw());
-        assert!(all_messages.is_msg_update());
-        assert!(all_messages.is_player_thru());
-        assert!(all_messages.is_stair());
-        assert!(all_messages.is_vine());
+        check!(all_messages.is_msg_touch());
+        check!(all_messages.is_msg_draw());
+        check!(all_messages.is_msg_update());
+        check!(all_messages.is_player_thru());
+        check!(all_messages.is_stair());
+        check!(all_messages.is_vine());
 
         let no_stair_no_vine = &dma.entries()[1];
-        assert!(!no_stair_no_vine.is_msg_touch());
-        assert!(!no_stair_no_vine.is_msg_draw());
-        assert!(!no_stair_no_vine.is_msg_update());
-        assert!(!no_stair_no_vine.is_player_thru());
-        assert!(!no_stair_no_vine.is_stair());
-        assert!(!no_stair_no_vine.is_vine());
+        check!(!no_stair_no_vine.is_msg_touch());
+        check!(!no_stair_no_vine.is_msg_draw());
+        check!(!no_stair_no_vine.is_msg_update());
+        check!(!no_stair_no_vine.is_player_thru());
+        check!(!no_stair_no_vine.is_stair());
+        check!(!no_stair_no_vine.is_vine());
     }
 
     #[test]
     fn includes_failing_offset_in_errors() {
-        let err = DmaFile::from_bytes([0x34, 0x12, 0x7f, 0x01]).expect_err("parse should fail");
-        assert_eq!(
-            err,
-            DmaReadError {
-                field: "flags",
-                offset: 4,
-                source: ByteReaderError::UnexpectedEof {
-                    operation: "read unsigned 16-bit little-endian integer",
+        check!(
+            let Err(err) = DmaFile::from_bytes([0x34, 0x12, 0x7f, 0x01])
+                && err == DmaReadError {
+                    field: "flags",
                     offset: 4,
-                    requested: 2,
-                    len: 4,
-                },
-            }
+                    source: ByteReaderError::UnexpectedEof {
+                        operation: "read unsigned 16-bit little-endian integer",
+                        offset: 4,
+                        requested: 2,
+                        len: 4,
+                    },
+                }
         );
     }
 
@@ -325,22 +322,12 @@ mod tests {
         ]))
         .expect("DMA parse should succeed");
 
-        assert_eq!(dma.entries()[0].tile(), 1);
-        assert_eq!(dma.entries()[1].tile(), 2);
-        assert_eq!(dma.entries()[2].tile(), 3);
+        check!(dma.entries()[0].tile() == 1);
+        check!(dma.entries()[1].tile() == 2);
+        check!(dma.entries()[2].tile() == 3);
 
-        assert_eq!(
-            dma.get_by_map_code(0x1000)
-                .expect("last duplicate map code should be returned")
-                .name(),
-            "SECOND"
-        );
-        assert_eq!(
-            dma.get_by_name("DUP")
-                .expect("last duplicate name should be returned")
-                .map_code(),
-            0x2000
-        );
+        check!(let Some(last_map) = dma.get_by_map_code(0x1000) && last_map.name() == "SECOND");
+        check!(let Some(last_name) = dma.get_by_name("DUP") && last_name.map_code() == 0x2000);
     }
 
     fn dma_bytes(entries: &[(u16, u8, u8, u16, &str)]) -> Vec<u8> {

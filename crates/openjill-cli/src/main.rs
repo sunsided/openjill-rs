@@ -97,19 +97,20 @@ fn dump_command(args: DumpArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{Cli, Command, DataCommand};
+    use assert2::check;
     use clap::Parser;
 
     #[test]
     fn accepts_run_command() {
         let cli = Cli::try_parse_from(["openjill-rs", "run"]).expect("run command should parse");
-        assert!(matches!(cli.command, Command::Run(_)));
+        check!(matches!(cli.command, Command::Run(_)));
     }
 
     #[test]
     fn accepts_data_verify_command() {
         let cli = Cli::try_parse_from(["openjill-rs", "data", "verify"])
             .expect("data verify command should parse");
-        assert!(matches!(
+        check!(matches!(
             cli.command,
             Command::Data {
                 command: DataCommand::Verify(_)
@@ -120,6 +121,6 @@ mod tests {
     #[test]
     fn accepts_dump_command() {
         let cli = Cli::try_parse_from(["openjill-rs", "dump"]).expect("dump command should parse");
-        assert!(matches!(cli.command, Command::Dump(_)));
+        check!(matches!(cli.command, Command::Dump(_)));
     }
 }

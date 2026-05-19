@@ -297,6 +297,7 @@ impl ByteReader {
 #[cfg(test)]
 mod tests {
     use super::{ByteReader, ByteReaderError, DataDirectory, DataDirectoryError};
+    use assert2::check;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -312,73 +313,55 @@ mod tests {
             0x88, 0xa9, 0xcb, 0xed, // i32 = -305419896
         ]);
 
-        assert_eq!(reader.read_u8().expect("u8 read should succeed"), 254);
-        assert_eq!(reader.read_i8().expect("i8 read should succeed"), -128);
-        assert_eq!(
-            reader.read_u16_le().expect("u16 read should succeed"),
-            0x1234
-        );
-        assert_eq!(
-            reader.read_i16_le().expect("i16 read should succeed"),
-            -4_660
-        );
-        assert_eq!(
-            reader.read_u32_le().expect("u32 read should succeed"),
-            0x1234_5678
-        );
-        assert_eq!(
-            reader.read_i32_le().expect("i32 read should succeed"),
-            -305_419_896
-        );
-        assert_eq!(reader.offset(), reader.len());
+        check!(let Ok(v) = reader.read_u8() && v == 254);
+        check!(let Ok(v) = reader.read_i8() && v == -128);
+        check!(let Ok(v) = reader.read_u16_le() && v == 0x1234);
+        check!(let Ok(v) = reader.read_i16_le() && v == -4_660);
+        check!(let Ok(v) = reader.read_u32_le() && v == 0x1234_5678);
+        check!(let Ok(v) = reader.read_i32_le() && v == -305_419_896);
+        check!(reader.offset() == reader.len());
     }
 
     #[test]
     fn seek_skip_offset_length_and_eof_are_tracked() {
         let mut reader = ByteReader::from_bytes([1, 2, 3, 4]);
 
-        assert_eq!(reader.len(), 4);
-        assert_eq!(reader.offset(), 0);
+        check!(reader.len() == 4);
+        check!(reader.offset() == 0);
 
-        reader.skip(2).expect("skip should succeed");
-        assert_eq!(reader.offset(), 2);
+        check!(let Ok(()) = reader.skip(2));
+        check!(reader.offset() == 2);
 
-        reader.seek(1).expect("seek should succeed");
-        assert_eq!(reader.offset(), 1);
-        assert_eq!(
-            reader.read_u16_le().expect("u16 read should succeed"),
-            0x0302
-        );
-        assert_eq!(reader.offset(), 3);
+        check!(let Ok(()) = reader.seek(1));
+        check!(reader.offset() == 1);
+        check!(let Ok(v) = reader.read_u16_le() && v == 0x0302);
+        check!(reader.offset() == 3);
 
-        reader.seek(4).expect("seek to EOF should be allowed");
-        let eof = reader.read_u8().expect_err("read at EOF should fail");
-        assert_eq!(
-            eof,
-            ByteReaderError::UnexpectedEof {
-                operation: "read unsigned 8-bit integer",
-                offset: 4,
-                requested: 1,
-                len: 4,
-            }
+        check!(let Ok(()) = reader.seek(4));
+        check!(
+            let Err(eof) = reader.read_u8()
+                && eof == ByteReaderError::UnexpectedEof {
+                    operation: "read unsigned 8-bit integer",
+                    offset: 4,
+                    requested: 1,
+                    len: 4,
+                }
         );
 
-        let invalid_skip = reader.skip(1).expect_err("skip beyond EOF should fail");
-        assert_eq!(
-            invalid_skip,
-            ByteReaderError::InvalidSeek {
-                requested: 5,
-                len: 4,
-            }
+        check!(
+            let Err(invalid_skip) = reader.skip(1)
+                && invalid_skip == ByteReaderError::InvalidSeek {
+                    requested: 5,
+                    len: 4,
+                }
         );
 
-        let invalid_seek = reader.seek(5).expect_err("seek beyond EOF should fail");
-        assert_eq!(
-            invalid_seek,
-            ByteReaderError::InvalidSeek {
-                requested: 5,
-                len: 4,
-            }
+        check!(
+            let Err(invalid_seek) = reader.seek(5)
+                && invalid_seek == ByteReaderError::InvalidSeek {
+                    requested: 5,
+                    len: 4,
+                }
         );
     }
 
@@ -393,23 +376,20 @@ mod tests {
         fs::write(&file_path, [0x34, 0x12]).expect("write test file");
 
         let directory = DataDirectory::new(data_dir_path.to_path_buf());
-        let resolved = directory
-            .resolve_path_case_insensitive("subdir/jill1.dma")
-            .expect("case-insensitive path should resolve");
-        assert_eq!(resolved, file_path);
+        check!(
+            let Ok(resolved) = directory.resolve_path_case_insensitive("subdir/jill1.dma")
+                && resolved == file_path
+        );
 
         let mut reader = directory
             .open_reader("subdir/jill1.dma")
             .expect("reader should open resolved path");
-        assert_eq!(reader.read_u16_le().expect("u16 read should succeed"), 0x1234);
+        check!(let Ok(v) = reader.read_u16_le() && v == 0x1234);
 
-        let missing = directory
-            .resolve_path_case_insensitive("subdir/does-not-exist.dma")
-            .expect_err("missing file should fail");
-        assert!(matches!(
-            missing,
-            DataDirectoryError::FileNotFoundCaseInsensitive { .. }
-        ));
+        check!(
+            let Err(DataDirectoryError::FileNotFoundCaseInsensitive { .. }) =
+                directory.resolve_path_case_insensitive("subdir/does-not-exist.dma")
+        );
     }
 
     struct TempDirGuard(PathBuf);
