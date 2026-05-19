@@ -1,11 +1,33 @@
+//! Integration test that parses the original `JILL.DMA` file when the game's
+//! data directory is available locally. The test self-skips when the data is
+//! not present so CI runs without copyrighted bytes still pass.
+
 use assert2::check;
-use openjill_data::dma::DmaFile;
 use openjill_data::DataDirectory;
+use openjill_data::dma::DmaFile;
 use std::path::{Path, PathBuf};
 
+/// Mask used to validate that parsed tileset values fit in their lower six
+/// bits, mirroring the `TILESET_MASK` constant inside the parser.
 const TILESET_MASK: u8 = 0x3f;
+/// Environment variable that lets a developer override the data directory at
+/// runtime (`OPENJILL_DATA_DIR=/path/to/JILL1`).
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 
+/// Unit under test: end-to-end parsing of the original `JILL.DMA` file via
+/// [`DataDirectory::open_reader`] + [`DmaFile::parse`].
+///
+/// Preconditions: either `OPENJILL_DATA_DIR` points at a directory containing
+/// `JILL.DMA`, or the workspace-relative `data/original/JILL1` directory is
+/// present. When neither is available the test prints a skip message and
+/// returns `Ok(())` so machines without the original data still pass CI.
+///
+/// Invariants asserted: parsing succeeds, produces at least one entry,
+/// `entry_count` agrees with `entries().len()`, every entry's index matches
+/// its position, every entry's offset points inside the source file, every
+/// tileset is masked to six bits, both lookup maps resolve back to the
+/// original entries, and entry offsets increase monotonically across the
+/// file (i.e. the parser advances strictly forward).
 #[test]
 fn parses_original_jill_dma_when_available() {
     let env_override = std::env::var_os(DATA_DIR_ENV);
@@ -40,7 +62,10 @@ fn parses_original_jill_dma_when_available() {
 
     for (index, entry) in dma.entries().iter().enumerate() {
         check!(entry.index() == index, "entry index should be preserved");
-        check!(entry.offset() < file_len, "entry offset must point into file");
+        check!(
+            entry.offset() < file_len,
+            "entry offset must point into file"
+        );
         check!(
             entry.tileset() & !TILESET_MASK == 0,
             "tileset must be masked to 6 bits"
@@ -64,6 +89,10 @@ fn parses_original_jill_dma_when_available() {
     }
 }
 
+/// Resolves the data directory used by the integration test, preferring an
+/// explicit `OPENJILL_DATA_DIR` override and falling back to the workspace
+/// default `data/original/JILL1` path. Returns `None` when neither is
+/// available so the caller can self-skip.
 fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     if let Some(path) = env_override {
         return Some(PathBuf::from(path));
