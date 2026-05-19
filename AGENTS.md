@@ -2,6 +2,54 @@
 
 Guidance for AI coding agents working in this repository.
 
+## Documentation comments
+
+Every module, type, field, function, and method must carry a doc comment,
+regardless of whether it is `pub` or private. This applies to inherent impl
+items, trait impls authored in this repository, enum variants, struct fields
+(public and private alike), constants, type aliases, and free functions. The
+rule does not relax for items that "look obvious" — the goal is for every
+identifier to document its purpose, not just exposed surface.
+
+Tests must carry a doc comment when they are nontrivial to reason about. For
+those tests the doc comment must spell out:
+
+- the unit under test,
+- the preconditions the test sets up, and
+- the invariants the test asserts.
+
+Self-explanatory tests whose intent is fully captured by their name and a
+short body do not need a doc comment, but err on the side of writing one
+whenever a reader would otherwise have to derive intent from the test body.
+
+## Integration tests for file-based operations
+
+Any code that operates on real game-data files (parsers, extractors, asset
+pipelines, anything that consumes bytes from `data/original/`) must ship with
+an integration test that exercises the operation against the actual game
+files, in addition to whatever synthetic-fixture unit tests already exist.
+
+Use the existing integration tests in `openjill-data` as the pattern:
+
+- `crates/openjill-data/tests/dma_original_data.rs`
+- `crates/openjill-data/tests/vcl_original_data.rs`
+
+Required behaviour for a real-data integration test:
+
+- Resolve the data directory from `OPENJILL_DATA_DIR` first, then fall back
+  to the workspace-relative `data/original/JILL1` path.
+- Self-skip cleanly (print a skip message and return) when neither location
+  is available, so machines without the original data still pass CI.
+- Open files via `DataDirectory::open_reader` (or an equivalent
+  case-insensitive resolver) so capitalisation differences across hosts do
+  not break the test.
+- Assert structural invariants the parser is supposed to uphold
+  (non-empty results, in-range offsets, consistent counts, monotonic
+  ordering, etc.) — not just that parsing returned `Ok`.
+
+The data itself stays out of the repository; the test merely verifies the
+parser against locally fetched bytes when those bytes are available.
+
 ## Original game data
 
 Some work on the port requires the original Jill of the Jungle game data. The

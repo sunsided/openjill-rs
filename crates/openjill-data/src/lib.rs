@@ -1,6 +1,11 @@
+//! Data-layer crate for OpenJill: byte readers, parsers, and on-disk
+//! data-directory helpers used by the rest of the port.
+
 #![forbid(unsafe_code)]
 
+/// Parser for `JILL.DMA` tile-metadata files.
 pub mod dma;
+/// Parser for the text-entry portion of `JILL1.VCL`.
 pub mod vcl;
 
 use std::error::Error;
@@ -9,25 +14,38 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+/// Failure modes raised by [`ByteReader`] while consuming bytes.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ByteReaderError {
+    /// The reader hit end-of-file before the requested bytes were available.
     UnexpectedEof {
+        /// Human-readable description of the read attempted at the failure site.
         operation: &'static str,
+        /// Offset at which the failing read started.
         offset: usize,
+        /// Number of bytes the read attempted to consume.
         requested: usize,
+        /// Total length of the underlying buffer.
         len: usize,
     },
+    /// A `seek` request targeted an offset past the end of the buffer.
     InvalidSeek {
+        /// Offset that was requested.
         requested: usize,
+        /// Total length of the underlying buffer.
         len: usize,
     },
+    /// A `skip` request would have caused the offset arithmetic to overflow.
     OffsetOverflow {
+        /// Current offset before the failing skip.
         offset: usize,
+        /// Number of bytes the caller asked to skip.
         delta: usize,
     },
 }
 
 impl Display for ByteReaderError {
+    /// Formats the error in a way that includes operation, offset, and buffer length.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnexpectedEof {
@@ -52,19 +70,29 @@ impl Display for ByteReaderError {
 
 impl Error for ByteReaderError {}
 
+/// Failure modes raised when resolving paths inside a [`DataDirectory`].
 #[derive(Debug)]
 pub enum DataDirectoryError {
+    /// An underlying I/O operation failed (e.g. reading a directory entry).
     Io(std::io::Error),
+    /// The path supplied by the caller is not a valid relative path inside
+    /// the data directory (absolute paths, parent components, prefixes, or
+    /// roots are rejected).
     InvalidRelativePath {
+        /// The original path requested by the caller.
         requested: PathBuf,
     },
+    /// Case-insensitive resolution could not find a matching entry on disk.
     FileNotFoundCaseInsensitive {
+        /// The original path requested by the caller.
         requested: PathBuf,
+        /// The directory that was searched at the failure point.
         searched_in: PathBuf,
     },
 }
 
 impl Display for DataDirectoryError {
+    /// Formats a human-readable message describing the failure.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => write!(f, "I/O error: {error}"),
@@ -87,6 +115,7 @@ impl Display for DataDirectoryError {
 }
 
 impl Error for DataDirectoryError {
+    /// Surfaces the underlying I/O error when the variant carries one.
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         if let Self::Io(error) = self {
             Some(error)
@@ -97,27 +126,45 @@ impl Error for DataDirectoryError {
 }
 
 impl From<std::io::Error> for DataDirectoryError {
+    /// Wraps an `io::Error` in the `Io` variant for use with the `?` operator.
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
     }
 }
 
+/// Filesystem location holding the original Jill of the Jungle data files.
+///
+/// Provides case-insensitive path resolution (matching the lookup behaviour
+/// the original engine relied on under DOS) and a convenience helper to open
+/// resolved files as a [`ByteReader`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DataDirectory(PathBuf);
+pub struct DataDirectory(
+    /// Filesystem path to the data directory root.
+    PathBuf,
+);
 
 impl DataDirectory {
+    /// Creates a new data directory wrapping `path`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self(path.into())
     }
 
+    /// Returns the data directory's root as a `&Path`.
     pub fn as_path(&self) -> &Path {
         &self.0
     }
 
+    /// Consumes the wrapper and returns the owned root `PathBuf`.
     pub fn into_inner(self) -> PathBuf {
         self.0
     }
 
+    /// Resolves a relative path inside the data directory using a
+    /// case-insensitive walk over each component.
+    ///
+    /// Rejects absolute paths, parent (`..`) components, root components, and
+    /// prefix components; the resulting path is guaranteed to live inside the
+    /// directory tree rooted at `self.0`.
     pub fn resolve_path_case_insensitive(
         &self,
         relative_path: impl AsRef<Path>,
@@ -163,6 +210,8 @@ impl DataDirectory {
         Ok(current)
     }
 
+    /// Opens a [`ByteReader`] over the resolved file inside the data
+    /// directory. The path is resolved case-insensitively before reading.
     pub fn open_reader(
         &self,
         relative_path: impl AsRef<Path>,
@@ -173,6 +222,8 @@ impl DataDirectory {
     }
 }
 
+/// Walks `directory` and returns the first entry whose file name matches
+/// `requested_name` case-insensitively, or `None` if no match is found.
 fn find_case_insensitive_entry(
     directory: &Path,
     requested_name: &OsStr,
@@ -193,13 +244,18 @@ fn find_case_insensitive_entry(
     Ok(None)
 }
 
+/// Cursor-based reader over an owned byte buffer, with helpers for the
+/// little-endian integer reads used throughout the OpenJill data format.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ByteReader {
+    /// The full byte buffer owned by the reader.
     bytes: Vec<u8>,
+    /// Current cursor offset into `bytes`.
     offset: usize,
 }
 
 impl ByteReader {
+    /// Creates a reader over the supplied bytes, starting at offset zero.
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self {
             bytes: bytes.into(),
@@ -207,18 +263,25 @@ impl ByteReader {
         }
     }
 
+    /// Returns the total length of the underlying byte buffer.
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
 
+    /// Returns `true` when the underlying byte buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
 
+    /// Returns the current cursor offset.
     pub fn offset(&self) -> usize {
         self.offset
     }
 
+    /// Moves the cursor to `offset`.
+    ///
+    /// Returns [`ByteReaderError::InvalidSeek`] when `offset` lies past the
+    /// end of the buffer.
     pub fn seek(&mut self, offset: usize) -> Result<(), ByteReaderError> {
         if offset > self.bytes.len() {
             return Err(ByteReaderError::InvalidSeek {
@@ -231,6 +294,11 @@ impl ByteReader {
         Ok(())
     }
 
+    /// Advances the cursor by `count` bytes.
+    ///
+    /// Returns [`ByteReaderError::OffsetOverflow`] when the addition would
+    /// overflow `usize`, and [`ByteReaderError::InvalidSeek`] when the
+    /// resulting offset would lie past the end of the buffer.
     pub fn skip(&mut self, count: usize) -> Result<(), ByteReaderError> {
         let target = self
             .offset
@@ -243,34 +311,46 @@ impl ByteReader {
         self.seek(target)
     }
 
+    /// Reads a single unsigned 8-bit integer and advances the cursor.
     pub fn read_u8(&mut self) -> Result<u8, ByteReaderError> {
         Ok(self.read_exact::<1>("read unsigned 8-bit integer")?[0])
     }
 
+    /// Reads a single signed 8-bit integer and advances the cursor.
     pub fn read_i8(&mut self) -> Result<i8, ByteReaderError> {
         Ok(self.read_u8()? as i8)
     }
 
+    /// Reads an unsigned 16-bit little-endian integer and advances the cursor.
     pub fn read_u16_le(&mut self) -> Result<u16, ByteReaderError> {
         let bytes = self.read_exact::<2>("read unsigned 16-bit little-endian integer")?;
         Ok(u16::from_le_bytes(bytes))
     }
 
+    /// Reads a signed 16-bit little-endian integer and advances the cursor.
     pub fn read_i16_le(&mut self) -> Result<i16, ByteReaderError> {
         let bytes = self.read_exact::<2>("read signed 16-bit little-endian integer")?;
         Ok(i16::from_le_bytes(bytes))
     }
 
+    /// Reads an unsigned 32-bit little-endian integer and advances the cursor.
     pub fn read_u32_le(&mut self) -> Result<u32, ByteReaderError> {
         let bytes = self.read_exact::<4>("read unsigned 32-bit little-endian integer")?;
         Ok(u32::from_le_bytes(bytes))
     }
 
+    /// Reads a signed 32-bit little-endian integer and advances the cursor.
     pub fn read_i32_le(&mut self) -> Result<i32, ByteReaderError> {
         let bytes = self.read_exact::<4>("read signed 32-bit little-endian integer")?;
         Ok(i32::from_le_bytes(bytes))
     }
 
+    /// Copies the next `N` bytes into a fixed-size array and advances the
+    /// cursor by `N`.
+    ///
+    /// Returns [`ByteReaderError::OffsetOverflow`] when the offset arithmetic
+    /// would overflow, and [`ByteReaderError::UnexpectedEof`] when fewer than
+    /// `N` bytes remain in the buffer.
     fn read_exact<const N: usize>(
         &mut self,
         operation: &'static str,
@@ -307,6 +387,14 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Unit under test: every `ByteReader::read_*` integer helper.
+    ///
+    /// Preconditions: a hand-crafted little-endian byte sequence that packs
+    /// values for `u8`, `i8`, `u16`, `i16`, `u32`, and `i32` back-to-back.
+    ///
+    /// Invariants asserted: each helper decodes the expected value, the
+    /// signed/unsigned interpretation matches, and the cursor advances by the
+    /// exact width of each type so the final offset equals the buffer length.
     #[test]
     fn reads_signed_and_unsigned_little_endian_values() {
         let mut reader = ByteReader::from_bytes([
@@ -327,6 +415,15 @@ mod tests {
         check!(reader.offset() == reader.len());
     }
 
+    /// Unit under test: cursor manipulation and bounds-checking on `ByteReader`.
+    ///
+    /// Preconditions: a four-byte buffer is wrapped in a fresh reader.
+    ///
+    /// Invariants asserted: `len`/`offset` reflect the initial state; `skip`
+    /// and `seek` move the cursor exactly when in-bounds; reads after EOF
+    /// return `UnexpectedEof`; out-of-bounds `skip` and `seek` return
+    /// `InvalidSeek` with the requested offset and buffer length surfaced in
+    /// the error.
     #[test]
     fn seek_skip_offset_length_and_eof_are_tracked() {
         let mut reader = ByteReader::from_bytes([1, 2, 3, 4]);
@@ -370,6 +467,16 @@ mod tests {
         );
     }
 
+    /// Unit under test: `DataDirectory::resolve_path_case_insensitive` and
+    /// `DataDirectory::open_reader`.
+    ///
+    /// Preconditions: a temporary directory is populated with `SubDir/JILL1.DMA`
+    /// (mixed case) and a [`DataDirectory`] is constructed over it.
+    ///
+    /// Invariants asserted: a lowercase `subdir/jill1.dma` lookup resolves to
+    /// the real mixed-case path on disk; opening it returns a working
+    /// `ByteReader`; a missing file produces a
+    /// `FileNotFoundCaseInsensitive` error rather than an I/O error or panic.
     #[test]
     fn resolves_case_insensitive_file_paths() {
         let data_dir = TempDirGuard::new("openjill-data-case-insensitive");
@@ -397,9 +504,16 @@ mod tests {
         );
     }
 
-    struct TempDirGuard(PathBuf);
+    /// Owned temporary directory that removes itself on drop, used by the
+    /// path-resolution test to keep the real filesystem clean across runs.
+    struct TempDirGuard(
+        /// Filesystem path to the temporary directory.
+        PathBuf,
+    );
 
     impl TempDirGuard {
+        /// Creates a temporary directory whose name combines `prefix` with a
+        /// nanosecond timestamp to avoid collisions across parallel runs.
         fn new(prefix: &str) -> Self {
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -410,12 +524,14 @@ mod tests {
             Self(path)
         }
 
+        /// Returns the on-disk path of the temporary directory.
         fn path(&self) -> &PathBuf {
             &self.0
         }
     }
 
     impl Drop for TempDirGuard {
+        /// Best-effort recursive deletion of the temporary directory.
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }

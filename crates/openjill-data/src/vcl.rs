@@ -224,6 +224,18 @@ mod tests {
     use crate::{ByteReader, ByteReaderError};
     use assert2::check;
 
+    /// Unit under test: `VclFile::parse` materialization of the text table.
+    ///
+    /// Preconditions: a synthetic buffer sized to the end of the offset/length
+    /// tables, with four entries seeded — two empty (lengths zero at indices
+    /// 0 and 39) and two non-empty (`HELLO` at offset 700, a four-byte mixed
+    /// payload including a zero byte and a high-byte at offset 705).
+    ///
+    /// Invariants asserted: empty-length entries are skipped, only the two
+    /// non-empty entries materialize, their preserved offsets equal the
+    /// configured source offsets, and the decoded text uses the
+    /// byte-to-`U+0000..U+00FF` mapping (so `0x00` becomes the NUL code point
+    /// and `0xe9` becomes `é`).
     #[test]
     fn parses_sparse_text_entries_and_skips_empty_ones() {
         let mut bytes = vec![0; table_end()];
@@ -245,6 +257,17 @@ mod tests {
         check!(vcl.text_entries()[1].text() == "A\0éZ");
     }
 
+    /// Unit under test: `VclReadError` reporting when the text-offset table
+    /// is truncated.
+    ///
+    /// Preconditions: a buffer that covers the 400-byte sound-entry skip plus
+    /// three additional bytes — enough to start, but not finish, the first
+    /// `u32le` in the offset table.
+    ///
+    /// Invariants asserted: parsing fails with `field == "text_offset"`,
+    /// `entry_index == Some(0)`, the reported offset equals the start of the
+    /// failing read (i.e. `SOUND_ENTRY_SKIP`), and the underlying error is
+    /// the expected `UnexpectedEof` for a 4-byte little-endian read.
     #[test]
     fn includes_failing_offset_when_text_offset_table_is_truncated() {
         let bytes = vec![0; SOUND_ENTRY_SKIP + 3];
@@ -265,6 +288,18 @@ mod tests {
         );
     }
 
+    /// Unit under test: `VclReadError` reporting when a text payload is
+    /// truncated.
+    ///
+    /// Preconditions: a buffer sized to the end of the tables, with entry 2
+    /// declaring a length of 2 starting at offset 700, but only one byte of
+    /// payload (`X`) actually written there — so the second payload byte
+    /// runs past EOF.
+    ///
+    /// Invariants asserted: parsing fails with `field == "text_value"`,
+    /// `entry_index == Some(2)`, the reported offset equals the byte just
+    /// past the truncated payload (`701`), and the underlying error is the
+    /// expected `UnexpectedEof` for a 1-byte read.
     #[test]
     fn includes_failing_offset_when_text_bytes_are_truncated() {
         let mut bytes = vec![0; table_end()];
@@ -287,6 +322,18 @@ mod tests {
         );
     }
 
+    /// Unit under test: deterministic post-parse cursor position guaranteed
+    /// by `VclFile::parse`.
+    ///
+    /// Preconditions: a buffer sized to the end of the tables with two
+    /// non-empty entries (lengths 5 and 3) whose payloads are written at
+    /// offsets 700 and 705 — both far enough into the file that the parser
+    /// has to seek away from the table region to read them.
+    ///
+    /// Invariants asserted: after a successful parse, the reader's cursor is
+    /// restored to the byte immediately after the length table
+    /// (`table_end()`) regardless of the seeks performed for the text
+    /// payloads, so chained consumers see a deterministic position.
     #[test]
     fn parse_leaves_reader_at_deterministic_position_past_tables() {
         let mut bytes = vec![0; table_end()];
@@ -302,10 +349,15 @@ mod tests {
         check!(reader.offset() == table_end());
     }
 
+    /// Returns the byte offset immediately after the end of the offset and
+    /// length tables for a synthetic VCL fixture (sound skip plus 40 `u32`
+    /// offsets plus 40 `u16` lengths).
     fn table_end() -> usize {
         SOUND_ENTRY_SKIP + (TEXT_ENTRY_COUNT * 4) + (TEXT_ENTRY_COUNT * 2)
     }
 
+    /// Writes a `(offset, length)` pair into the offset and length tables of
+    /// a synthetic VCL fixture at slot `index`.
     fn write_text_entry(bytes: &mut [u8], index: usize, offset: u32, length: u16) {
         let offset_pos = SOUND_ENTRY_SKIP + (index * 4);
         bytes[offset_pos..offset_pos + 4].copy_from_slice(&offset.to_le_bytes());
@@ -314,6 +366,9 @@ mod tests {
         bytes[length_pos..length_pos + 2].copy_from_slice(&length.to_le_bytes());
     }
 
+    /// Writes a text payload into the synthetic fixture at the given offset,
+    /// growing the buffer with zero padding when the payload runs past the
+    /// current end.
     fn write_text_at(bytes: &mut Vec<u8>, offset: usize, text: &[u8]) {
         let end = offset + text.len();
         if bytes.len() < end {

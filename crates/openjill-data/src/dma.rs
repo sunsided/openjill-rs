@@ -1,89 +1,134 @@
+//! Parser for `JILL.DMA` tile-metadata files.
+//!
+//! Each entry maps a 16-bit map code to its tile id, tileset, behaviour flags,
+//! and human-readable name, mirroring the OpenJill data layout exactly.
+
 use crate::{ByteReader, ByteReaderError};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+/// Mask used to strip the flag bits from the tileset byte; the lower six bits
+/// hold the tileset id and the upper two bits are reserved for flags.
 const TILESET_MASK: u8 = 0x3f;
+/// Flag bit indicating that the player can pass through the tile.
 const FLAG_PLAYER_THRU: u16 = 0x01;
+/// Flag bit set when the tile must NOT behave as a stair.
 const FLAG_NOT_STAIR: u16 = 0x02;
+/// Flag bit set when the tile must NOT behave as a vine.
 const FLAG_NOT_VINE: u16 = 0x04;
+/// Flag bit indicating that the tile reacts to the touch event.
 const FLAG_MSG_TOUCH: u16 = 0x08;
+/// Flag bit indicating that the tile reacts to the draw event.
 const FLAG_MSG_DRAW: u16 = 0x10;
+/// Flag bit indicating that the tile reacts to the update event.
 const FLAG_MSG_UPDATE: u16 = 0x20;
 
+/// One parsed entry from `JILL.DMA`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DmaEntry {
+    /// 16-bit map code identifying the tile in level data.
     map_code: u16,
+    /// Tile id within the resolved tileset.
     tile: u8,
+    /// Tileset id (lower six bits of the on-disk tileset byte).
     tileset: u8,
+    /// Behaviour flag bits parsed from the entry.
     flags: u16,
+    /// Human-readable name preserved verbatim from the source bytes.
     name: String,
+    /// Position of this entry within the parsed sequence.
     index: usize,
+    /// Source byte offset where this entry starts in the original file.
     offset: usize,
 }
 
 impl DmaEntry {
+    /// Returns the 16-bit map code.
     pub fn map_code(&self) -> u16 {
         self.map_code
     }
 
+    /// Returns the tile id within the resolved tileset.
     pub fn tile(&self) -> u8 {
         self.tile
     }
 
+    /// Returns the tileset id (lower six bits of the on-disk tileset byte).
     pub fn tileset(&self) -> u8 {
         self.tileset
     }
 
+    /// Returns the raw flag bits parsed from the entry.
     pub fn flags(&self) -> u16 {
         self.flags
     }
 
+    /// Returns the entry's name as decoded from the source bytes.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Returns the entry's position within the parsed sequence.
     pub fn index(&self) -> usize {
         self.index
     }
 
+    /// Returns the source byte offset where this entry starts.
     pub fn offset(&self) -> usize {
         self.offset
     }
 
+    /// Returns `true` when the tile reacts to the touch event.
     pub fn is_msg_touch(&self) -> bool {
         (self.flags & FLAG_MSG_TOUCH) != 0
     }
 
+    /// Returns `true` when the tile reacts to the draw event.
     pub fn is_msg_draw(&self) -> bool {
         (self.flags & FLAG_MSG_DRAW) != 0
     }
 
+    /// Returns `true` when the tile reacts to the update event.
     pub fn is_msg_update(&self) -> bool {
         (self.flags & FLAG_MSG_UPDATE) != 0
     }
 
+    /// Returns `true` when the player can pass through this tile.
     pub fn is_player_thru(&self) -> bool {
         (self.flags & FLAG_PLAYER_THRU) != 0
     }
 
+    /// Returns `true` when this tile behaves as a stair (default unless the
+    /// `FLAG_NOT_STAIR` bit is set).
     pub fn is_stair(&self) -> bool {
         (self.flags & FLAG_NOT_STAIR) == 0
     }
 
+    /// Returns `true` when this tile behaves as a vine (default unless the
+    /// `FLAG_NOT_VINE` bit is set).
     pub fn is_vine(&self) -> bool {
         (self.flags & FLAG_NOT_VINE) == 0
     }
 }
 
+/// Parsed `JILL.DMA` tile-metadata file plus secondary lookup indices.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DmaFile {
+    /// All parsed entries in source order.
     entries: Vec<DmaEntry>,
+    /// Index of the most recently parsed entry for each map code.
     by_map_code: HashMap<u16, usize>,
+    /// Index of the most recently parsed entry for each name.
     by_name: HashMap<String, usize>,
 }
 
 impl DmaFile {
+    /// Parses a `JILL.DMA` file from the supplied reader.
+    ///
+    /// Consumes bytes sequentially until EOF. Lookup maps follow Java's
+    /// `HashMap#put` semantics: when the same map code or name appears more
+    /// than once, lookups resolve to the most recently parsed entry.
     pub fn parse(reader: &mut ByteReader) -> Result<Self, DmaReadError> {
         let mut entries = Vec::new();
         let mut by_map_code = HashMap::new();
@@ -122,38 +167,50 @@ impl DmaFile {
         })
     }
 
+    /// Parses a `DmaFile` directly from in-memory bytes.
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self, DmaReadError> {
         let mut reader = ByteReader::from_bytes(bytes);
         Self::parse(&mut reader)
     }
 
+    /// Returns all parsed entries in source order.
     pub fn entries(&self) -> &[DmaEntry] {
         &self.entries
     }
 
+    /// Returns the number of parsed entries.
     pub fn entry_count(&self) -> usize {
         self.entries.len()
     }
 
+    /// Looks up the entry associated with `map_code`, or `None` if no entry
+    /// uses that code.
     pub fn get_by_map_code(&self, map_code: u16) -> Option<&DmaEntry> {
         self.by_map_code
             .get(&map_code)
             .map(|index| &self.entries[*index])
     }
 
+    /// Looks up the entry associated with `name`, or `None` if no entry uses
+    /// that name.
     pub fn get_by_name(&self, name: &str) -> Option<&DmaEntry> {
         self.by_name.get(name).map(|index| &self.entries[*index])
     }
 }
 
+/// Error returned when parsing a `JILL.DMA` file fails.
 #[derive(Debug, Eq, PartialEq)]
 pub struct DmaReadError {
+    /// Name of the field being parsed when the failure occurred.
     pub field: &'static str,
+    /// Source offset associated with the parse failure.
     pub offset: usize,
+    /// Underlying byte-reader failure.
     source: ByteReaderError,
 }
 
 impl Display for DmaReadError {
+    /// Formats the error including the field name, offset, and underlying cause.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -164,11 +221,13 @@ impl Display for DmaReadError {
 }
 
 impl Error for DmaReadError {
+    /// Returns the underlying byte-reader error as the cause of this failure.
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&self.source)
     }
 }
 
+/// Reads a single `u8` field and wraps reader errors with DMA parse context.
 fn read_u8(
     reader: &mut ByteReader,
     field: &'static str,
@@ -182,6 +241,7 @@ fn read_u8(
     })
 }
 
+/// Reads a single `u16le` field and wraps reader errors with DMA parse context.
 fn read_u16(
     reader: &mut ByteReader,
     field: &'static str,
@@ -195,6 +255,9 @@ fn read_u16(
     })
 }
 
+/// Reads `name_len` bytes as a length-prefixed name string, preserving each
+/// source byte as a single `U+0000..U+00FF` code point (matches Java's
+/// `(char) read8bitLE()` behaviour).
 fn read_name(
     reader: &mut ByteReader,
     name_len: usize,
@@ -212,6 +275,10 @@ fn read_name(
     Ok(name)
 }
 
+/// Chooses the most useful parse-failure offset to report for a reader error.
+///
+/// Falls back to the per-field offset for invalid seeks when it points past
+/// the entry start; otherwise reports the start of the failing entry.
 fn error_offset(source: &ByteReaderError, fallback: usize, entry_offset: usize) -> usize {
     match source {
         ByteReaderError::UnexpectedEof { offset, .. }
@@ -232,6 +299,14 @@ mod tests {
     use crate::ByteReaderError;
     use assert2::check;
 
+    /// Unit under test: `DmaFile::parse`.
+    ///
+    /// Preconditions: a synthetic three-entry buffer is built with distinct
+    /// map codes, names, and tileset/flag values.
+    ///
+    /// Invariants asserted: parsed entries preserve their order, indices, and
+    /// computed source byte offsets; map-code and name lookups resolve back to
+    /// the original entries; missing keys produce `None`.
     #[test]
     fn parses_entries_offsets_indexes_names_and_lookups() {
         let bytes = dma_bytes(&[
@@ -265,6 +340,13 @@ mod tests {
         check!(dma.get_by_name("missing").is_none());
     }
 
+    /// Unit under test: tileset masking inside `DmaFile::parse`.
+    ///
+    /// Preconditions: a single entry with the tileset-with-flags byte set to
+    /// `0xff`, exercising every bit of the upper-flag region.
+    ///
+    /// Invariants asserted: only the lower six bits survive into
+    /// `DmaEntry::tileset`, regardless of the upper bits set on disk.
     #[test]
     fn masks_tileset_value_to_lower_six_bits() {
         let dma = DmaFile::from_bytes(dma_bytes(&[(0x1000, 0x10, 0xff, 0, "MASK")]))
@@ -272,6 +354,17 @@ mod tests {
         check!(dma.entries()[0].tileset() == 0x3f);
     }
 
+    /// Unit under test: the flag-helper accessors on `DmaEntry`.
+    ///
+    /// Preconditions: two synthetic entries with carefully chosen flag bits —
+    /// one with all message bits set plus `FLAG_PLAYER_THRU` (and stair/vine
+    /// implicit), one with both `FLAG_NOT_STAIR` and `FLAG_NOT_VINE` set and
+    /// no message bits.
+    ///
+    /// Invariants asserted: every helper resolves the corresponding flag
+    /// (`is_msg_*`, `is_player_thru`, `is_stair`, `is_vine`) consistently with
+    /// the OpenJill semantics, including the inverted meaning of the
+    /// stair/vine bits.
     #[test]
     fn preserves_flag_helper_semantics() {
         let dma = DmaFile::from_bytes(dma_bytes(&[(1, 1, 1, 0x39, "A"), (2, 2, 2, 0x06, "B")]))
@@ -294,6 +387,14 @@ mod tests {
         check!(!no_stair_no_vine.is_vine());
     }
 
+    /// Unit under test: `DmaReadError` reporting in `DmaFile::parse`.
+    ///
+    /// Preconditions: a four-byte input that completes the `map_code`, `tile`,
+    /// and `tileset_with_flags` fields but truncates before the `flags` field.
+    ///
+    /// Invariants asserted: parsing fails with a `DmaReadError` whose field is
+    /// `"flags"` and whose offset matches the EOF position reported by the
+    /// underlying `ByteReaderError`.
     #[test]
     fn includes_failing_offset_in_errors() {
         check!(
@@ -311,6 +412,15 @@ mod tests {
         );
     }
 
+    /// Unit under test: last-wins semantics of the lookup maps populated by
+    /// `DmaFile::parse`.
+    ///
+    /// Preconditions: three entries that deliberately collide on map codes
+    /// (`0x1000` repeated) and names (`"DUP"` repeated).
+    ///
+    /// Invariants asserted: `entries()` keeps every entry in input order,
+    /// while `get_by_map_code` and `get_by_name` resolve to the most recently
+    /// parsed entry for the duplicated key.
     #[test]
     fn lookup_maps_follow_last_wins_semantics_for_duplicates() {
         let dma = DmaFile::from_bytes(dma_bytes(&[
@@ -328,6 +438,10 @@ mod tests {
         check!(let Some(last_name) = dma.get_by_name("DUP") && last_name.map_code() == 0x2000);
     }
 
+    /// Builds a synthetic on-disk `JILL.DMA` byte buffer from a list of
+    /// `(map_code, tile, tileset_with_flags, flags, name)` tuples, mirroring
+    /// the on-disk layout exactly so unit tests can drive `DmaFile::parse`
+    /// without real game data.
     fn dma_bytes(entries: &[(u16, u8, u8, u16, &str)]) -> Vec<u8> {
         let mut bytes = Vec::new();
 

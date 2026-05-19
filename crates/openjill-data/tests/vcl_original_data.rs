@@ -1,10 +1,29 @@
+//! Integration test that parses the original `JILL1.VCL` text-entry table
+//! when the game's data directory is available locally. The test self-skips
+//! when the data is not present so CI runs without copyrighted bytes still
+//! pass.
+
 use assert2::check;
 use openjill_data::DataDirectory;
 use openjill_data::vcl::VclFile;
 use std::path::{Path, PathBuf};
 
+/// Environment variable that lets a developer override the data directory at
+/// runtime (`OPENJILL_DATA_DIR=/path/to/JILL1`).
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 
+/// Unit under test: end-to-end parsing of the original `JILL1.VCL` file via
+/// [`DataDirectory::open_reader`] + [`VclFile::parse`].
+///
+/// Preconditions: either `OPENJILL_DATA_DIR` points at a directory containing
+/// `JILL1.VCL`, or the workspace-relative `data/original/JILL1` directory is
+/// present. When neither is available the test prints a skip message and
+/// returns `Ok(())` so machines without the original data still pass CI.
+///
+/// Invariants asserted: parsing succeeds, the parsed file exposes at least
+/// one non-empty text entry, `text_entry_count` agrees with
+/// `text_entries().len()`, every entry's preserved offset points inside the
+/// source file, and every entry's text is non-empty.
 #[test]
 fn parses_original_jill_vcl_text_entries_when_available() {
     let env_override = std::env::var_os(DATA_DIR_ENV);
@@ -53,6 +72,10 @@ fn parses_original_jill_vcl_text_entries_when_available() {
     }
 }
 
+/// Resolves the data directory used by the integration test, preferring an
+/// explicit `OPENJILL_DATA_DIR` override and falling back to the workspace
+/// default `data/original/JILL1` path. Returns `None` when neither is
+/// available so the caller can self-skip.
 fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     if let Some(path) = env_override {
         return Some(PathBuf::from(path));
