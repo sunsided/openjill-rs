@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod dma;
+
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt::{Display, Formatter};
