@@ -2,10 +2,10 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use openjill_audio::AudioBackend;
 use openjill_core::CoreState;
 use openjill_data::cfg::CfgFile;
@@ -99,9 +99,19 @@ struct DumpCommandArgs {
     /// Optional output file or directory for the dump.
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Output format.
+    #[arg(long, default_value = "json")]
+    format: DumpFormat,
     /// Overwrite an existing output path.
     #[arg(long)]
     force: bool,
+}
+
+/// Output formats supported by dump commands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum DumpFormat {
+    /// Structured JSON output.
+    Json,
 }
 
 #[derive(Args, Debug)]
@@ -373,6 +383,8 @@ struct DumpRequest {
     data_dir: PathBuf,
     /// User-selected output path, or the default path for the kind.
     output: PathBuf,
+    /// Output format selected by the caller.
+    format: DumpFormat,
     /// Whether existing output may be overwritten.
     force: bool,
 }
@@ -396,6 +408,7 @@ impl DumpRequest {
             kind,
             data_dir,
             output,
+            format: command.format,
             force: command.force,
         }
     }
@@ -416,6 +429,9 @@ struct DumpSourceFile {
 
 /// Writes the requested dump framework output.
 fn write_dump(request: DumpRequest) -> Result<()> {
+    match request.format {
+        DumpFormat::Json => {}
+    }
     let sources = collect_dump_sources(request.kind, &request.data_dir)?;
     let output_file = resolve_dump_output_file(&request)?;
     write_json_file(
@@ -514,17 +530,64 @@ fn parse_dump_source(kind: DumpFrameworkKind, requested_file: &str, bytes: &[u8]
 fn resolve_dump_output_file(request: &DumpRequest) -> Result<PathBuf> {
     reject_original_data_output(&request.output)?;
     if request.kind.writes_directory() {
+        validate_directory_dump_output(&request.output)?;
         Ok(request.output.join("metadata.json"))
     } else {
+        validate_file_dump_output(&request.output)?;
         Ok(request.output.clone())
     }
+}
+
+/// Validates a dump output path that should name a directory.
+fn validate_directory_dump_output(output: &Path) -> Result<()> {
+    if output.is_file() {
+        bail!(
+            "dump output {} must be a directory for this dump kind",
+            output.display()
+        );
+    }
+    if output.extension().is_some() {
+        bail!(
+            "dump output {} must be a directory path, not a file-like path",
+            output.display()
+        );
+    }
+    Ok(())
+}
+
+/// Validates a dump output path that should name a file.
+fn validate_file_dump_output(output: &Path) -> Result<()> {
+    if output.is_dir() {
+        bail!(
+            "dump output {} must be a file for this dump kind",
+            output.display()
+        );
+    }
+    Ok(())
 }
 
 /// Rejects output paths that target the original data tree.
 fn reject_original_data_output(output: &Path) -> Result<()> {
     let current_dir = std::env::current_dir()?;
-    let output_abs = absolute_path_for_check(&current_dir, output);
-    let original_abs = current_dir.join(ORIGINAL_DATA_ROOT);
+    let workspace_root = find_workspace_root().unwrap_or_else(|| current_dir.clone());
+    reject_original_data_output_with_roots(output, &current_dir, &workspace_root)
+}
+
+/// Rejects output paths under `data/original` using explicit roots.
+fn reject_original_data_output_with_roots(
+    output: &Path,
+    current_dir: &Path,
+    workspace_root: &Path,
+) -> Result<()> {
+    if !output.is_absolute() && output.starts_with(ORIGINAL_DATA_ROOT) {
+        bail!(
+            "refusing to write dump output under {}",
+            PathBuf::from(ORIGINAL_DATA_ROOT).display()
+        );
+    }
+
+    let output_abs = normalized_absolute_path(current_dir, output);
+    let original_abs = normalized_absolute_path(workspace_root, Path::new(ORIGINAL_DATA_ROOT));
     if output_abs.starts_with(&original_abs) {
         bail!(
             "refusing to write dump output under {}",
@@ -534,13 +597,47 @@ fn reject_original_data_output(output: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Returns an absolute path suitable for lexical safety checks.
-fn absolute_path_for_check(current_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
+/// Locates the workspace root by searching for a workspace `Cargo.toml`.
+fn find_workspace_root() -> Option<PathBuf> {
+    let current_dir = std::env::current_dir().ok()?;
+    for ancestor in current_dir.ancestors() {
+        let manifest = ancestor.join("Cargo.toml");
+        if manifest.is_file()
+            && fs::read_to_string(&manifest)
+                .ok()
+                .is_some_and(|contents| contents.contains("[workspace]"))
+        {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
+}
+
+/// Returns a normalized absolute path for safety checks.
+fn normalized_absolute_path(current_dir: &Path, path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         current_dir.join(path)
+    };
+    normalize_path(&absolute)
+}
+
+/// Normalizes `.` and `..` components without requiring the path to exist.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(segment) => normalized.push(segment),
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+        }
     }
+    normalized
 }
 
 /// Writes JSON through a temporary file and atomically renames it into place.
@@ -565,8 +662,17 @@ fn write_json_file(path: &Path, json: &str, force: bool) -> Result<()> {
     ));
     fs::write(&tmp_path, json)
         .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", tmp_path.display()))?;
-    fs::rename(&tmp_path, path)
-        .map_err(|error| anyhow::anyhow!("failed to finalize {}: {error}", path.display()))?;
+    if force && path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| anyhow::anyhow!("failed to replace {}: {error}", path.display()))?;
+    }
+    if let Err(error) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(anyhow::anyhow!(
+            "failed to finalize {}: {error}",
+            path.display()
+        ));
+    }
     Ok(())
 }
 
@@ -796,12 +902,12 @@ fn print_file_report(label: &str, file: &FileVerification) {
 mod tests {
     use super::{
         Cli, Command, DataCommand, FileVerification, VerificationStatus, dispatch,
-        resolve_data_dir_with_env, verify_data_directory,
+        reject_original_data_output_with_roots, resolve_data_dir_with_env, verify_data_directory,
     };
     use assert2::check;
     use clap::Parser;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Expected SHA-256 digest for the bytes returned by [`valid_dma_bytes`].
@@ -840,6 +946,13 @@ mod tests {
                 Cli::try_parse_from(["openjill-rs", "dump", kind]).expect("dump kind should parse");
             check!(matches!(cli.command, Command::Dump(_)));
         }
+    }
+
+    #[test]
+    fn accepts_dump_format_flag() {
+        let cli = Cli::try_parse_from(["openjill-rs", "dump", "dma", "--format", "json"])
+            .expect("dump format flag should parse");
+        check!(matches!(cli.command, Command::Dump(_)));
     }
 
     /// Unit under test: `verify_data_directory` success path and deterministic checksums.
@@ -1102,16 +1215,19 @@ mod tests {
         check!(error.to_string().contains("--force"));
     }
 
-    /// Unit under test: dump output destination safety checks.
+    /// Unit under test: dump output overwrite with `--force`.
     ///
-    /// Preconditions: the caller selects a repository-relative path under
-    /// `data/original/`.
+    /// Preconditions: the selected output file already exists and the caller
+    /// supplies `--force`.
     ///
-    /// Invariants asserted: the command rejects the output path before writing.
+    /// Invariants asserted: the command replaces the output and does not leave
+    /// the temporary sibling file behind.
     #[test]
-    fn dump_rejects_original_data_output_path() {
-        let temp_dir = TempDirGuard::new("openjill-cli-dump-original-output");
+    fn dump_force_overwrites_existing_file() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-force-overwrite");
         write_valid_episode_one_fixture(temp_dir.path());
+        let output = temp_dir.path().join("dma.json");
+        fs::write(&output, "{}").expect("write existing output");
 
         let cli = Cli::try_parse_from([
             "openjill-rs",
@@ -1120,13 +1236,149 @@ mod tests {
             "--data-dir",
             temp_dir.path().to_string_lossy().as_ref(),
             "--output",
-            "data/original/dma.json",
+            output.to_string_lossy().as_ref(),
+            "--force",
+        ])
+        .expect("dump command should parse");
+
+        dispatch(cli.command).expect("dump command should succeed");
+
+        let json = fs::read_to_string(&output).expect("read dump output");
+        check!(json.contains("\"kind\": \"dma\""));
+        check!(!output.with_extension("json.tmp").exists());
+    }
+
+    /// Unit under test: directory dump output validation.
+    ///
+    /// Preconditions: a SHA dump receives an output path with a file-like
+    /// extension.
+    ///
+    /// Invariants asserted: the command rejects the path instead of creating a
+    /// directory named like a JSON file.
+    #[test]
+    fn directory_dump_rejects_file_like_output_path() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-dir-file-like");
+        write_valid_episode_one_fixture(temp_dir.path());
+        let output = temp_dir.path().join("sha.json");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "sha",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+            "--output",
+            output.to_string_lossy().as_ref(),
         ])
         .expect("dump command should parse");
 
         let Err(error) = dispatch(cli.command) else {
-            panic!("dump should reject original data output");
+            panic!("directory dump should reject file-like output");
         };
+
+        check!(error.to_string().contains("directory path"));
+    }
+
+    /// Unit under test: directory dump output validation.
+    ///
+    /// Preconditions: a JN dump receives an output path that already exists as
+    /// a file.
+    ///
+    /// Invariants asserted: the command rejects the file path before writing.
+    #[test]
+    fn directory_dump_rejects_existing_file_output_path() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-dir-existing-file");
+        write_valid_episode_one_fixture(temp_dir.path());
+        let output = temp_dir.path().join("jn-output");
+        fs::write(&output, "not a directory").expect("write existing file");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "jn",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        let Err(error) = dispatch(cli.command) else {
+            panic!("directory dump should reject existing file output");
+        };
+
+        check!(error.to_string().contains("must be a directory"));
+    }
+
+    /// Unit under test: dump output destination safety checks.
+    ///
+    /// Preconditions: path validation receives a repository-relative path under
+    /// `data/original/`.
+    ///
+    /// Invariants asserted: the output path is rejected without attempting a
+    /// dump write.
+    #[test]
+    fn dump_rejects_original_data_output_path() {
+        let workspace = std::env::current_dir().expect("read current directory");
+
+        let error = reject_original_data_output_with_roots(
+            Path::new("data/original/dma.json"),
+            &workspace,
+            &workspace,
+        )
+        .expect_err("original data output path should be rejected");
+
+        check!(error.to_string().contains("data/original"));
+    }
+
+    /// Unit under test: dump output destination safety checks.
+    ///
+    /// Preconditions: output paths target `data/original/` through absolute and
+    /// parent-component forms.
+    ///
+    /// Invariants asserted: normalized path checks reject both paths.
+    #[test]
+    fn dump_rejects_normalized_original_data_output_paths() {
+        let workspace = std::env::current_dir().expect("read current directory");
+        let subdir = workspace.join("crates").join("openjill-cli");
+        let absolute_original = workspace.join("data").join("original").join("dma.json");
+        let parent_component_original = workspace
+            .join("data")
+            .join("extracted")
+            .join("..")
+            .join("original")
+            .join("dma.json");
+
+        let absolute_error =
+            reject_original_data_output_with_roots(&absolute_original, &subdir, &workspace)
+                .expect_err("absolute original path should be rejected");
+        let parent_error =
+            reject_original_data_output_with_roots(&parent_component_original, &subdir, &workspace)
+                .expect_err("parent-component original path should be rejected");
+
+        check!(absolute_error.to_string().contains("data/original"));
+        check!(parent_error.to_string().contains("data/original"));
+    }
+
+    /// Unit under test: dump output destination safety checks from subdirectories.
+    ///
+    /// Preconditions: the process-equivalent current directory is a workspace
+    /// subdirectory and the caller provides a relative path to `data/original/`.
+    ///
+    /// Invariants asserted: workspace-root based checks reject the path.
+    #[test]
+    fn dump_rejects_original_data_output_from_subdirectory_context() {
+        let workspace = std::env::current_dir().expect("read current directory");
+        let subdir = workspace.join("crates").join("openjill-cli");
+        let relative_to_subdir = PathBuf::from("..")
+            .join("..")
+            .join("data")
+            .join("original")
+            .join("dma.json");
+
+        let error =
+            reject_original_data_output_with_roots(&relative_to_subdir, &subdir, &workspace)
+                .expect_err("relative original path should be rejected");
 
         check!(error.to_string().contains("data/original"));
     }
