@@ -23,8 +23,27 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Task runner
+        if: ${{ secrets.ZIP_LINK != '' && secrets.ZIP_PASS != '' }}
+        uses: arduino/setup-task@v2
+
+      - name: Install 7z for data extraction
+        if: ${{ secrets.ZIP_LINK != '' && secrets.ZIP_PASS != '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Fetch original Jill data
+        if: ${{ secrets.ZIP_LINK != '' && secrets.ZIP_PASS != '' }}
+        env:
+          ZIP_LINK: ${{ secrets.ZIP_LINK }}
+          ZIP_PASS: ${{ secrets.ZIP_PASS }}
+        run: task -t Taskfile.dist.yaml binary:fetch
+
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
 
       - name: cargo test (workspace)
+        env:
+          OPENJILL_ORIGINAL_DATA_DIR: ${{ github.workspace }}/data/original/JILL1
         run: cargo test --workspace --all-targets --locked
