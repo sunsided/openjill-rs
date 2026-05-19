@@ -170,14 +170,14 @@ fn find_case_insensitive_entry(
     directory: &Path,
     requested_name: &OsStr,
 ) -> Result<Option<PathBuf>, DataDirectoryError> {
-    let requested_name = requested_name.to_string_lossy();
+    let requested_name_str = requested_name.to_string_lossy();
 
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let candidate_name = entry.file_name();
         if candidate_name
             .to_string_lossy()
-            .eq_ignore_ascii_case(&requested_name)
+            .eq_ignore_ascii_case(&requested_name_str)
         {
             return Ok(Some(entry.path()));
         }
@@ -382,14 +382,15 @@ mod tests {
 
     #[test]
     fn resolves_case_insensitive_file_paths() {
-        let data_dir = create_temp_dir("openjill-data-case-insensitive");
-        let nested_dir = data_dir.join("SubDir");
+        let data_dir = TempDirGuard::new("openjill-data-case-insensitive");
+        let data_dir_path = data_dir.path();
+        let nested_dir = data_dir_path.join("SubDir");
         fs::create_dir_all(&nested_dir).expect("create nested dir");
 
         let file_path = nested_dir.join("JILL1.DMA");
         fs::write(&file_path, [0x34, 0x12]).expect("write test file");
 
-        let directory = DataDirectory::new(data_dir.clone());
+        let directory = DataDirectory::new(data_dir_path.to_path_buf());
         let resolved = directory
             .resolve_path_case_insensitive("subdir/jill1.dma")
             .expect("case-insensitive path should resolve");
@@ -407,17 +408,29 @@ mod tests {
             missing,
             DataDirectoryError::FileNotFoundCaseInsensitive { .. }
         ));
-
-        fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
     }
 
-    fn create_temp_dir(prefix: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
-        fs::create_dir_all(&path).expect("create temp directory");
-        path
+    struct TempDirGuard(PathBuf);
+
+    impl TempDirGuard {
+        fn new(prefix: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+            fs::create_dir_all(&path).expect("create temp directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &PathBuf {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 }
