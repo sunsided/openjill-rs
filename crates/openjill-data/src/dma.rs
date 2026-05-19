@@ -109,6 +109,7 @@ impl DmaFile {
                 offset: entry_offset,
             };
 
+            // Keep Java semantics from HashMap#put: the most recent entry wins in lookups.
             by_map_code.insert(entry.map_code, entries.len());
             by_name.insert(entry.name.clone(), entries.len());
             entries.push(entry);
@@ -201,6 +202,8 @@ fn read_name(
 
     for _ in 0..name_len {
         let byte = read_u8(reader, "name", entry_offset)?;
+        // Keep parser compatibility with Java's `(char) read8bitLE()`: each source byte
+        // is preserved as a single code point in the U+0000..U+00FF range.
         name.push(char::from(byte));
     }
 
@@ -310,6 +313,33 @@ mod tests {
                     len: 4,
                 },
             }
+        );
+    }
+
+    #[test]
+    fn lookup_maps_follow_last_wins_semantics_for_duplicates() {
+        let dma = DmaFile::from_bytes(dma_bytes(&[
+            (0x1000, 1, 1, 0, "DUP"),
+            (0x1000, 2, 2, 0, "SECOND"),
+            (0x2000, 3, 3, 0, "DUP"),
+        ]))
+        .expect("DMA parse should succeed");
+
+        assert_eq!(dma.entries()[0].tile(), 1);
+        assert_eq!(dma.entries()[1].tile(), 2);
+        assert_eq!(dma.entries()[2].tile(), 3);
+
+        assert_eq!(
+            dma.get_by_map_code(0x1000)
+                .expect("last duplicate map code should be returned")
+                .name(),
+            "SECOND"
+        );
+        assert_eq!(
+            dma.get_by_name("DUP")
+                .expect("last duplicate name should be returned")
+                .map_code(),
+            0x2000
         );
     }
 
