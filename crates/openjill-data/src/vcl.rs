@@ -160,14 +160,14 @@ fn read_u32(
     })
 }
 
-fn error_offset(source: &ByteReaderError, fallback_offset: usize) -> usize {
+fn error_offset(source: &ByteReaderError, lower_bound_offset: usize) -> usize {
     match source {
         ByteReaderError::UnexpectedEof { offset, .. } | ByteReaderError::OffsetOverflow { offset, .. } => {
             *offset
         }
         ByteReaderError::InvalidSeek { requested, .. } => *requested,
     }
-    .max(fallback_offset)
+    .max(lower_bound_offset)
 }
 
 #[cfg(test)]
