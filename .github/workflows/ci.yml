@@ -25,17 +25,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Task runner
-        if: ${{ secrets.ZIP_LINK != '' && secrets.ZIP_PASS != '' }}
+        if: secrets.ZIP_LINK != '' && secrets.ZIP_PASS != ''
         uses: arduino/setup-task@v2
 
       - name: Install 7z for data extraction
-        if: ${{ secrets.ZIP_LINK != '' && secrets.ZIP_PASS != '' }}
+        if: secrets.ZIP_LINK != '' && secrets.ZIP_PASS != ''
         run: |
           sudo apt-get update
           sudo apt-get install -y p7zip-full
 
       - name: Fetch original Jill data
-        if: ${{ secrets.ZIP_LINK != '' && secrets.ZIP_PASS != '' }}
+        if: secrets.ZIP_LINK != '' && secrets.ZIP_PASS != ''
         env:
           ZIP_LINK: ${{ secrets.ZIP_LINK }}
           ZIP_PASS: ${{ secrets.ZIP_PASS }}

@@ -2,6 +2,8 @@ use openjill_data::dma::DmaFile;
 use openjill_data::DataDirectory;
 use std::path::{Path, PathBuf};
 
+const TILESET_MASK: u8 = 0x3f;
+
 #[test]
 fn parses_original_jill_dma_when_available() {
     let data_dir = original_data_dir();
@@ -30,7 +32,11 @@ fn parses_original_jill_dma_when_available() {
     for (index, entry) in dma.entries().iter().enumerate() {
         assert_eq!(entry.index(), index, "entry index should be preserved");
         assert!(entry.offset() < file_len, "entry offset must point into file");
-        assert_eq!(entry.tileset() & !0x3f, 0, "tileset must be masked to 6 bits");
+        assert_eq!(
+            entry.tileset() & !TILESET_MASK,
+            0,
+            "tileset must be masked to 6 bits"
+        );
 
         assert!(
             dma.get_by_map_code(entry.map_code()).is_some(),
