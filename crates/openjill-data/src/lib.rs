@@ -3,10 +3,12 @@
 
 #![forbid(unsafe_code)]
 
-/// Parser for `JILL.DMA` tile-metadata files.
-pub mod dma;
 /// Parser for `JILL1.CFG` high scores, save slots, and setup data.
 pub mod cfg;
+/// Parser for `JILL.DMA` tile-metadata files.
+pub mod dma;
+/// Parser for `JILL1.SHA` shape/tile/font/picture data.
+pub mod sha;
 /// Parser for the text-entry portion of `JILL1.VCL`.
 pub mod vcl;
 
