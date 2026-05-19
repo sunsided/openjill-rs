@@ -492,14 +492,14 @@ fn read_dump_input_source(
 }
 
 /// Parses one DMA input source and wraps parser failures with file context.
-fn parse_dma_source(source: &DumpInputSource) -> Result<DmaFile> {
-    DmaFile::from_bytes(source.bytes.clone())
+fn parse_dma_source(bytes: Vec<u8>) -> Result<DmaFile> {
+    DmaFile::from_bytes(bytes)
         .map_err(|error| anyhow::anyhow!("failed to parse input file JILL.DMA: {error}"))
 }
 
 /// Parses one VCL input source and wraps parser failures with file context.
-fn parse_vcl_source(source: &DumpInputSource) -> Result<VclFile> {
-    VclFile::from_bytes(source.bytes.clone())
+fn parse_vcl_source(bytes: Vec<u8>) -> Result<VclFile> {
+    VclFile::from_bytes(bytes)
         .map_err(|error| anyhow::anyhow!("failed to parse input file JILL1.VCL: {error}"))
 }
 
@@ -507,7 +507,12 @@ fn parse_vcl_source(source: &DumpInputSource) -> Result<VclFile> {
 fn dma_dump_json(data_dir: &Path) -> Result<String> {
     let directory = DataDirectory::new(data_dir.to_path_buf());
     let source = read_dump_input_source(&directory, "JILL.DMA")?;
-    let dma = parse_dma_source(&source)?;
+    let DumpInputSource {
+        bytes,
+        source_size,
+        source_sha256,
+    } = source;
+    let dma = parse_dma_source(bytes)?;
 
     let entries = dma
         .entries()
@@ -535,8 +540,8 @@ fn dma_dump_json(data_dir: &Path) -> Result<String> {
 
     let json = serde_json::json!({
         "source_file": "JILL.DMA",
-        "source_size": source.source_size,
-        "source_sha256": source.source_sha256,
+        "source_size": source_size,
+        "source_sha256": source_sha256,
         "entry_count": dma.entry_count(),
         "entries": entries,
     });
@@ -550,7 +555,12 @@ fn dma_dump_json(data_dir: &Path) -> Result<String> {
 fn vcl_dump_json(data_dir: &Path) -> Result<String> {
     let directory = DataDirectory::new(data_dir.to_path_buf());
     let source = read_dump_input_source(&directory, "JILL1.VCL")?;
-    let vcl = parse_vcl_source(&source)?;
+    let DumpInputSource {
+        bytes,
+        source_size,
+        source_sha256,
+    } = source;
+    let vcl = parse_vcl_source(bytes)?;
 
     let entries = vcl
         .text_entries()
@@ -567,8 +577,8 @@ fn vcl_dump_json(data_dir: &Path) -> Result<String> {
 
     let json = serde_json::json!({
         "source_file": "JILL1.VCL",
-        "source_size": source.source_size,
-        "source_sha256": source.source_sha256,
+        "source_size": source_size,
+        "source_sha256": source_sha256,
         "sound_entries_supported": false,
         "text_entry_count": vcl.text_entry_count(),
         "entries": entries,
