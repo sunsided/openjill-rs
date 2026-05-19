@@ -1,0 +1,36 @@
+version: '3'
+
+dotenv: ['.env']
+
+tasks:
+  data:clean:
+    desc: Remove downloaded ZIP and extracted data under data/
+    cmds:
+      - rm -rf data/original
+      - rm -f data/jill-of-the-jungle.zip
+
+  binary:fetch:
+    desc: Download Jill of the Jungle ZIP and unpack it into data/original
+    deps: [data:clean]
+    requires:
+      vars: [ZIP_LINK, ZIP_PASS]
+    preconditions:
+      - sh: command -v 7z
+        msg: "7z not found in PATH. Install p7zip-full (e.g. apt install p7zip-full)."
+    vars:
+      DEST_DIR: data/original
+      ZIP_FILE: data/jill-of-the-jungle.zip
+    cmds:
+      - mkdir -p {{.DEST_DIR}} data
+      - curl -fL --retry 3 -o {{.ZIP_FILE}} "$ZIP_LINK"
+      - |
+        tmp=$(mktemp -d)
+        7z x -y -p"$ZIP_PASS" -o"$tmp" {{.ZIP_FILE}}
+        inner=$(find "$tmp" -mindepth 1 -maxdepth 1)
+        if [ "$(echo "$inner" | wc -l)" -eq 1 ] && [ -d "$inner" ]; then
+          cp -a "$inner"/. {{.DEST_DIR}}/
+        else
+          cp -a "$tmp"/. {{.DEST_DIR}}/
+        fi
+        rm -rf "$tmp"
+      - rm -f {{.ZIP_FILE}}
