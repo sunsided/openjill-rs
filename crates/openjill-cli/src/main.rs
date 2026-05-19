@@ -421,19 +421,6 @@ impl DumpRequest {
     }
 }
 
-/// Metadata captured for one parsed dump source file.
-#[derive(Debug)]
-struct DumpSourceFile {
-    /// File requested from the data directory.
-    requested_file: String,
-    /// Case-insensitive path resolved relative to the data directory.
-    resolved_file: PathBuf,
-    /// Source file size in bytes.
-    source_size: usize,
-    /// Lowercase hexadecimal SHA-256 digest of the source bytes.
-    source_sha256: String,
-}
-
 /// Writes the requested dump framework output.
 fn write_dump(request: DumpRequest) -> Result<()> {
     match request.format {
@@ -451,7 +438,7 @@ fn write_dump(request: DumpRequest) -> Result<()> {
         write_json_file(&output_file, &sha_dump.metadata_json, request.force)?;
         write_binary_file(&atlas_file, &sha_dump.atlas_indexed_png, request.force)?;
     } else {
-        let json = render_dump_json(&request, &output_file)?;
+        let json = render_dump_json(&request)?;
         write_json_file(&output_file, &json, request.force)?;
     }
     println!(
@@ -463,7 +450,7 @@ fn write_dump(request: DumpRequest) -> Result<()> {
 }
 
 /// Renders JSON for the selected dump request.
-fn render_dump_json(request: &DumpRequest, output_file: &Path) -> Result<String> {
+fn render_dump_json(request: &DumpRequest) -> Result<String> {
     match request.kind {
         DumpFrameworkKind::Dma => dma_dump_json(&request.data_dir),
         DumpFrameworkKind::Vcl => vcl_dump_json(&request.data_dir),
@@ -1013,85 +1000,6 @@ fn format_u16_hex(value: u16) -> String {
     format!("0x{value:04x}")
 }
 
-/// Collects and parses the source files required by a dump kind.
-fn collect_dump_sources(kind: DumpFrameworkKind, data_dir: &Path) -> Result<Vec<DumpSourceFile>> {
-    let directory = DataDirectory::new(data_dir.to_path_buf());
-    let mut requested_files = kind
-        .fixed_source_files()
-        .iter()
-        .map(|file| (*file).to_string())
-        .collect::<Vec<_>>();
-
-    if kind == DumpFrameworkKind::Jn {
-        requested_files.extend(
-            discover_episode_one_jn1_files(data_dir)?
-                .into_iter()
-                .filter(|file| {
-                    !file.eq_ignore_ascii_case("INTRO.JN1") && !file.eq_ignore_ascii_case("MAP.JN1")
-                }),
-        );
-    }
-
-    requested_files
-        .into_iter()
-        .map(|file| collect_dump_source(kind, &directory, &file))
-        .collect()
-}
-
-/// Collects and parses one source file for dump framework output.
-fn collect_dump_source(
-    kind: DumpFrameworkKind,
-    directory: &DataDirectory,
-    requested_file: &str,
-) -> Result<DumpSourceFile> {
-    let resolved_path = directory
-        .resolve_path_case_insensitive(requested_file)
-        .map_err(|error| anyhow::anyhow!("missing input file {requested_file}: {error}"))?;
-    let bytes = fs::read(&resolved_path)
-        .map_err(|error| anyhow::anyhow!("failed to read input file {requested_file}: {error}"))?;
-
-    parse_dump_source(kind, requested_file, &bytes)?;
-
-    Ok(DumpSourceFile {
-        requested_file: requested_file.to_string(),
-        resolved_file: path_relative_to_data_dir(directory.as_path(), &resolved_path),
-        source_size: bytes.len(),
-        source_sha256: sha256_lower_hex(&bytes),
-    })
-}
-
-/// Parses one source file according to the dump kind for early error reporting.
-fn parse_dump_source(kind: DumpFrameworkKind, requested_file: &str, bytes: &[u8]) -> Result<()> {
-    match kind {
-        DumpFrameworkKind::Dma => {
-            DmaFile::from_bytes(bytes.to_vec())
-                .map(|_| ())
-                .map_err(|error| {
-                    anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
-                })
-        }
-        DumpFrameworkKind::Vcl => {
-            VclFile::from_bytes(bytes.to_vec())
-                .map(|_| ())
-                .map_err(|error| {
-                    anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
-                })
-        }
-        DumpFrameworkKind::Sha => {
-            ShaFile::from_bytes(bytes.to_vec())
-                .map(|_| ())
-                .map_err(|error| {
-                    anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
-                })
-        }
-        DumpFrameworkKind::Jn => JnFile::from_bytes(bytes.to_vec())
-            .map(|_| ())
-            .map_err(|error| {
-                anyhow::anyhow!("failed to parse input file {requested_file}: {error}")
-            }),
-    }
-}
-
 /// Resolves and validates the concrete metadata file path for a dump request.
 fn resolve_dump_output_file(request: &DumpRequest) -> Result<PathBuf> {
     reject_original_data_output(&request.output)?;
@@ -1280,37 +1188,6 @@ fn ensure_output_may_be_written(path: &Path, force: bool) -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// Builds the framework-level JSON metadata for a dump command.
-fn dump_framework_json(
-    request: &DumpRequest,
-    output_file: &Path,
-    sources: &[DumpSourceFile],
-) -> Result<String> {
-    let source_files = sources
-        .iter()
-        .map(|source| {
-            serde_json::json!({
-                "requested_file": &source.requested_file,
-                "resolved_file": source.resolved_file.display().to_string(),
-                "source_size": source.source_size,
-                "source_sha256": &source.source_sha256,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let json = serde_json::json!({
-        "kind": request.kind.as_str(),
-        "data_dir": request.data_dir.display().to_string(),
-        "output_file": output_file.display().to_string(),
-        "payload_implemented": false,
-        "source_files": source_files,
-    });
-    let mut rendered = serde_json::to_string_pretty(&json)
-        .map_err(|error| anyhow::anyhow!("failed to serialize dump metadata: {error}"))?;
-    rendered.push('\n');
-    Ok(rendered)
 }
 
 /// Verifies required episode-1 files and discovered `*.JN1` files in `data_dir`.
