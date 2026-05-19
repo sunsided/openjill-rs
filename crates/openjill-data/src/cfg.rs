@@ -78,11 +78,11 @@ pub struct CfgJoystickCalibration {
     /// Right X-axis calibration bound.
     right_x: i16,
     /// Lower Y-axis calibration bound.
-    left_y: i16,
+    lower_y: i16,
     /// Center Y-axis calibration value.
     center_y: i16,
     /// Upper Y-axis calibration bound.
-    right_y: i16,
+    upper_y: i16,
 }
 
 impl CfgJoystickCalibration {
@@ -102,8 +102,8 @@ impl CfgJoystickCalibration {
     }
 
     /// Returns the lower Y-axis calibration bound.
-    pub fn left_y(&self) -> i16 {
-        self.left_y
+    pub fn lower_y(&self) -> i16 {
+        self.lower_y
     }
 
     /// Returns the center Y-axis calibration value.
@@ -112,8 +112,8 @@ impl CfgJoystickCalibration {
     }
 
     /// Returns the upper Y-axis calibration bound.
-    pub fn right_y(&self) -> i16 {
-        self.right_y
+    pub fn upper_y(&self) -> i16 {
+        self.upper_y
     }
 }
 
@@ -219,9 +219,9 @@ impl CfgFile {
             left_x: read_i16(reader, "joystick_left_x", None)?,
             center_x: read_i16(reader, "joystick_center_x", None)?,
             right_x: read_i16(reader, "joystick_right_x", None)?,
-            left_y: read_i16(reader, "joystick_left_y", None)?,
+            lower_y: read_i16(reader, "joystick_left_y", None)?,
             center_y: read_i16(reader, "joystick_center_y", None)?,
-            right_y: read_i16(reader, "joystick_right_y", None)?,
+            upper_y: read_i16(reader, "joystick_right_y", None)?,
         };
 
         let display_mode = read_i16(reader, "display_mode", None)?;
@@ -498,9 +498,9 @@ mod tests {
         check!(setup.joystick_calibration().left_x() == -100);
         check!(setup.joystick_calibration().center_x() == 0);
         check!(setup.joystick_calibration().right_x() == 200);
-        check!(setup.joystick_calibration().left_y() == -300);
+        check!(setup.joystick_calibration().lower_y() == -300);
         check!(setup.joystick_calibration().center_y() == 400);
-        check!(setup.joystick_calibration().right_y() == 500);
+        check!(setup.joystick_calibration().upper_y() == 500);
         check!(setup.display_mode() == 4);
         check!(setup.music_enabled());
         check!(!setup.sound_enabled());
