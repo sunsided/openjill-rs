@@ -10,6 +10,10 @@ const TEXT_ENTRY_COUNT: usize = 40;
 /// A decoded non-empty text entry from a `JILL1.VCL` text table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VclTextEntry {
+    /// Zero-based slot index from the VCL text table.
+    index: usize,
+    /// Declared text length from the VCL text-length table.
+    declared_length: u16,
     /// Text bytes mapped one-to-one to `char` values (`U+0000..U+00FF`).
     text: String,
     /// Source byte offset where this text entry starts in the original file.
@@ -17,6 +21,16 @@ pub struct VclTextEntry {
 }
 
 impl VclTextEntry {
+    /// Returns the zero-based slot index from the text table.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Returns the declared text length from the source table.
+    pub fn declared_length(&self) -> u16 {
+        self.declared_length
+    }
+
     /// Returns the decoded text payload.
     pub fn text(&self) -> &str {
         &self.text
@@ -92,6 +106,8 @@ impl VclFile {
             }
 
             text_entries.push(VclTextEntry {
+                index: entry_index,
+                declared_length: text_lengths[entry_index],
                 text,
                 offset: text_offset,
             });
@@ -251,9 +267,13 @@ mod tests {
         let vcl = VclFile::from_bytes(bytes).expect("VCL parse should succeed");
 
         check!(vcl.text_entry_count() == 2);
+        check!(vcl.text_entries()[0].index() == 5);
         check!(vcl.text_entries()[0].offset() == 700);
+        check!(vcl.text_entries()[0].declared_length() == 5);
         check!(vcl.text_entries()[0].text() == "HELLO");
+        check!(vcl.text_entries()[1].index() == 12);
         check!(vcl.text_entries()[1].offset() == 705);
+        check!(vcl.text_entries()[1].declared_length() == 4);
         check!(vcl.text_entries()[1].text() == "A\0éZ");
     }
 
