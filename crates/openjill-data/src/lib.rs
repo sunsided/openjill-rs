@@ -7,6 +7,8 @@
 pub mod cfg;
 /// Parser for `JILL.DMA` tile-metadata files.
 pub mod dma;
+/// Parser for `*.JN1` level, map, save, and string-stack data.
+pub mod jn;
 /// Parser for `JILL1.SHA` shape/tile/font/picture data.
 pub mod sha;
 /// Parser for the text-entry portion of `JILL1.VCL`.

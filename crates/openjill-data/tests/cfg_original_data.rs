@@ -49,7 +49,8 @@ fn parses_original_jill_cfg_when_available() {
         )
     });
 
-    let cfg = CfgFile::parse(&mut reader, "JN1").expect("JILL1.CFG from original data should parse");
+    let cfg =
+        CfgFile::parse(&mut reader, "JN1").expect("JILL1.CFG from original data should parse");
     check!(cfg.high_scores().len() == 10);
     check!(cfg.save_slots().len() == 6);
     check!(

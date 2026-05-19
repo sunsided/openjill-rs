@@ -186,12 +186,14 @@ impl CfgFile {
         }
 
         let skip_offset = reader.offset();
-        reader.skip(HIGH_SCORE_HOLE_LEN).map_err(|source| CfgReadError {
-            field: "high_score_hole",
-            entry_index: None,
-            offset: error_offset(&source, skip_offset),
-            source,
-        })?;
+        reader
+            .skip(HIGH_SCORE_HOLE_LEN)
+            .map_err(|source| CfgReadError {
+                field: "high_score_hole",
+                entry_index: None,
+                offset: error_offset(&source, skip_offset),
+                source,
+            })?;
 
         let mut high_scores = Vec::with_capacity(HIGH_SCORE_COUNT);
         for (entry_index, name) in high_score_names.iter().enumerate() {
@@ -304,7 +306,10 @@ impl Error for CfgReadError {
 }
 
 /// Reads one high-score name slot (10 bytes) with printable-ASCII filtering.
-fn read_high_score_name(reader: &mut ByteReader, entry_index: usize) -> Result<String, CfgReadError> {
+fn read_high_score_name(
+    reader: &mut ByteReader,
+    entry_index: usize,
+) -> Result<String, CfgReadError> {
     let mut name = String::with_capacity(HIGH_SCORE_NAME_LEN);
     for _ in 0..HIGH_SCORE_NAME_LEN {
         let byte = read_u8(reader, "high_score_name", Some(entry_index))?;
@@ -378,7 +383,11 @@ fn read_i16(
 }
 
 /// Reads one `i32le` field and wraps reader errors with CFG parse context.
-fn read_i32(reader: &mut ByteReader, field: &'static str, entry_index: usize) -> Result<i32, CfgReadError> {
+fn read_i32(
+    reader: &mut ByteReader,
+    field: &'static str,
+    entry_index: usize,
+) -> Result<i32, CfgReadError> {
     let fallback_offset = reader.offset();
     reader.read_i32_le().map_err(|source| CfgReadError {
         field,
@@ -417,7 +426,11 @@ mod tests {
     fn parses_high_score_names_and_scores_from_synthetic_fixture() {
         let mut bytes = cfg_fixture_template();
 
-        write_high_score_name_slot(&mut bytes, 0, &[b'A', b'B', 0, b'C', 31, b'D', 128, b'E', b'!', b'Z']);
+        write_high_score_name_slot(
+            &mut bytes,
+            0,
+            &[b'A', b'B', 0, b'C', 31, b'D', 128, b'E', b'!', b'Z'],
+        );
         write_high_score_name_slot(&mut bytes, 1, b"PLAYERTWO!");
         write_high_score_name_slot(&mut bytes, 2, b"THIRD-----");
         write_high_score_name_slot(&mut bytes, 3, b"FOURTH----");
@@ -428,7 +441,18 @@ mod tests {
         write_high_score_name_slot(&mut bytes, 8, b"NINTH-----");
         write_high_score_name_slot(&mut bytes, 9, b"TENTH-----");
 
-        let scores = [12_345, -1, 0, i32::MIN, i32::MAX, 7, -99, 543_210, -3_210, 42];
+        let scores = [
+            12_345,
+            -1,
+            0,
+            i32::MIN,
+            i32::MAX,
+            7,
+            -99,
+            543_210,
+            -3_210,
+            42,
+        ];
         write_high_scores(&mut bytes, &scores);
 
         let cfg = CfgFile::from_bytes(bytes, "JN1").expect("CFG parse should succeed");
@@ -453,9 +477,21 @@ mod tests {
     fn parses_save_slot_names_and_jn1_metadata_from_synthetic_fixture() {
         let mut bytes = cfg_fixture_template();
 
-        write_save_name_slot(&mut bytes, 0, &[b'S', b'l', b'o', b't', b'0', 0, b'X', b'X', b'X', b'X', b'X', b'X']);
+        write_save_name_slot(
+            &mut bytes,
+            0,
+            &[
+                b'S', b'l', b'o', b't', b'0', 0, b'X', b'X', b'X', b'X', b'X', b'X',
+            ],
+        );
         write_save_name_slot(&mut bytes, 1, b"SECOND SLOT!");
-        write_save_name_slot(&mut bytes, 2, &[b'T', b'H', b'I', b'R', b'D', 31, b'Y', b'Y', b'Y', b'Y', b'Y', b'Y']);
+        write_save_name_slot(
+            &mut bytes,
+            2,
+            &[
+                b'T', b'H', b'I', b'R', b'D', 31, b'Y', b'Y', b'Y', b'Y', b'Y', b'Y',
+            ],
+        );
         write_save_name_slot(&mut bytes, 3, b"FOURTH_SLOT!");
         write_save_name_slot(&mut bytes, 4, b"FIFTH-SLOT!!");
         write_save_name_slot(&mut bytes, 5, b"SIXTH SLOT!!");
@@ -485,10 +521,7 @@ mod tests {
     fn parses_setup_and_joystick_display_music_sound_from_synthetic_fixture() {
         let mut bytes = cfg_fixture_template();
 
-        write_setup_block(
-            &mut bytes,
-            &[1, 2, -100, 0, 200, -300, 400, 500, 4, 1, 0],
-        );
+        write_setup_block(&mut bytes, &[1, 2, -100, 0, 200, -300, 400, 500, 4, 1, 0]);
 
         let cfg = CfgFile::from_bytes(bytes, "JN1").expect("CFG parse should succeed");
         let setup = cfg.setup();
@@ -557,14 +590,17 @@ mod tests {
 
     /// Writes one raw 12-byte save-name slot into the fixture.
     fn write_save_name_slot(bytes: &mut [u8], index: usize, value: &[u8]) {
-        let start = (HIGH_SCORE_COUNT * 10) + HIGH_SCORE_HOLE_LEN + (HIGH_SCORE_COUNT * 4) + (index * 12);
+        let start =
+            (HIGH_SCORE_COUNT * 10) + HIGH_SCORE_HOLE_LEN + (HIGH_SCORE_COUNT * 4) + (index * 12);
         bytes[start..start + 12].copy_from_slice(value);
     }
 
     /// Writes the setup/config block values as signed `i16le` fields.
     fn write_setup_block(bytes: &mut [u8], values: &[i16; 11]) {
-        let start =
-            (HIGH_SCORE_COUNT * 10) + HIGH_SCORE_HOLE_LEN + (HIGH_SCORE_COUNT * 4) + (SAVE_SLOT_COUNT * 12);
+        let start = (HIGH_SCORE_COUNT * 10)
+            + HIGH_SCORE_HOLE_LEN
+            + (HIGH_SCORE_COUNT * 4)
+            + (SAVE_SLOT_COUNT * 12);
         for (index, value) in values.iter().enumerate() {
             let pos = start + (index * 2);
             bytes[pos..pos + 2].copy_from_slice(&value.to_le_bytes());
