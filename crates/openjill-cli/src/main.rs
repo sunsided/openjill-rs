@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use openjill_audio::AudioBackend;
 use openjill_core::CoreState;
+use openjill_data::ByteReader;
 use openjill_data::cfg::CfgFile;
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::JnFile;
@@ -593,11 +594,19 @@ fn vcl_dump_json(data_dir: &Path) -> Result<String> {
 /// Builds metadata JSON for `dump jn`.
 fn jn_dump_json(data_dir: &Path) -> Result<String> {
     let directory = DataDirectory::new(data_dir.to_path_buf());
-    let mut requested_files = vec!["INTRO.JN1".to_string(), "MAP.JN1".to_string()];
+    let required_files = DumpFrameworkKind::Jn.fixed_source_files();
+    let mut requested_files = required_files
+        .iter()
+        .map(|file| (*file).to_string())
+        .collect::<Vec<_>>();
     requested_files.extend(
         discover_episode_one_jn1_files(data_dir)?
             .into_iter()
-            .filter(|file| !file.eq_ignore_ascii_case("INTRO.JN1") && !file.eq_ignore_ascii_case("MAP.JN1")),
+            .filter(|file| {
+                !required_files
+                    .iter()
+                    .any(|required| file.eq_ignore_ascii_case(required))
+            }),
     );
 
     let files = requested_files
@@ -622,7 +631,10 @@ fn jn_dump_file_json(directory: &DataDirectory, requested_file: &str) -> Result<
         .map_err(|error| anyhow::anyhow!("missing input file {requested_file}: {error}"))?;
     let bytes = fs::read(&resolved_path)
         .map_err(|error| anyhow::anyhow!("failed to read input file {requested_file}: {error}"))?;
-    let jn = JnFile::from_bytes(bytes.clone())
+    let source_size = bytes.len();
+    let source_sha256 = sha256_lower_hex(&bytes);
+    let mut reader = ByteReader::from_bytes(bytes);
+    let jn = JnFile::parse(&mut reader)
         .map_err(|error| anyhow::anyhow!("failed to parse input file {requested_file}: {error}"))?;
 
     let map_codes = jn.background().map_codes();
@@ -680,8 +692,8 @@ fn jn_dump_file_json(directory: &DataDirectory, requested_file: &str) -> Result<
     Ok(serde_json::json!({
         "requested_file": requested_file,
         "resolved_file": path_relative_to_data_dir(directory.as_path(), &resolved_path).display().to_string(),
-        "source_size": bytes.len(),
-        "source_sha256": sha256_lower_hex(&bytes),
+        "source_size": source_size,
+        "source_sha256": source_sha256,
         "background": {
             "width": jn.background().width(),
             "height": jn.background().height(),
@@ -2001,7 +2013,7 @@ mod tests {
             bytes.extend((0u16).to_le_bytes());
         }
         bytes.extend((0x0102_0304u32).to_le_bytes());
-        bytes.extend(std::iter::repeat_n(0xa5u8, 28));
+        bytes.extend(std::iter::repeat_n(0xa5u8, openjill_data::jn::SAVE_HOLE_LEN));
 
         bytes.extend((5u16).to_le_bytes());
         bytes.extend(b"HELLO");
