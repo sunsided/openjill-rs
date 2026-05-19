@@ -26,3 +26,5 @@
 /target/
 /data/original/
 /data/extracted/
+/target
+.env
