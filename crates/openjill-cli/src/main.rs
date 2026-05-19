@@ -445,6 +445,8 @@ fn write_dump(request: DumpRequest) -> Result<()> {
             anyhow::anyhow!("missing output directory for {}", output_file.display())
         })?;
         let atlas_file = output_dir.join(SHA_ATLAS_INDEXED_FILE);
+        ensure_output_may_be_written(&output_file, request.force)?;
+        ensure_output_may_be_written(&atlas_file, request.force)?;
         write_json_file(&output_file, &sha_dump.metadata_json, request.force)?;
         write_binary_file(&atlas_file, &sha_dump.atlas_indexed_png, request.force)?;
     } else {
@@ -1074,12 +1076,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 /// Writes JSON through a temporary file and atomically renames it into place.
 fn write_json_file(path: &Path, json: &str, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        bail!(
-            "refusing to overwrite existing dump output {} without --force",
-            path.display()
-        );
-    }
+    ensure_output_may_be_written(path, force)?;
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1112,12 +1109,7 @@ fn write_json_file(path: &Path, json: &str, force: bool) -> Result<()> {
 /// into place; when `force` is `true`, any existing destination file is
 /// replaced.
 fn write_binary_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
-    if path.exists() && !force {
-        bail!(
-            "refusing to overwrite existing dump output {} without --force",
-            path.display()
-        );
-    }
+    ensure_output_may_be_written(path, force)?;
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1142,6 +1134,18 @@ fn write_binary_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
             "failed to finalize {}: {error}",
             path.display()
         ));
+    }
+    Ok(())
+}
+
+/// Verifies that a dump output path can be written under the selected overwrite
+/// policy before any artifact bytes are committed to disk.
+fn ensure_output_may_be_written(path: &Path, force: bool) -> Result<()> {
+    if path.exists() && !force {
+        bail!(
+            "refusing to overwrite existing dump output {} without --force",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -1700,8 +1704,8 @@ mod tests {
     fn dump_writes_sha_payload_metadata_and_indexed_atlas() {
         let temp_dir = TempDirGuard::new("openjill-cli-dump-sha-dir");
         write_valid_episode_one_fixture(temp_dir.path());
-        fs::write(temp_dir.path().join("jill1.sha"), valid_sha_dump_bytes())
-            .expect("write custom jill1.sha");
+        fs::write(temp_dir.path().join("JILL1.SHA"), valid_sha_dump_bytes())
+            .expect("write custom JILL1.SHA");
         let output = temp_dir.path().join("sha-dump");
 
         let cli = Cli::try_parse_from([
@@ -1861,6 +1865,43 @@ mod tests {
         let json = fs::read_to_string(&output).expect("read dump output");
         check!(json.contains("\"source_file\": \"JILL.DMA\""));
         check!(!output.with_extension("json.tmp").exists());
+    }
+
+    /// Unit under test: multi-artifact SHA dump overwrite safeguards.
+    ///
+    /// Preconditions: the selected SHA output directory already contains an
+    /// atlas artifact, while metadata does not exist yet.
+    ///
+    /// Invariants asserted: the command refuses the request before writing new
+    /// metadata, so a failed no-force SHA dump cannot leave partial output.
+    #[test]
+    fn dump_sha_refuses_existing_atlas_before_writing_metadata() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-sha-partial-overwrite");
+        write_valid_episode_one_fixture(temp_dir.path());
+        fs::write(temp_dir.path().join("JILL1.SHA"), valid_sha_dump_bytes())
+            .expect("write custom JILL1.SHA");
+        let output = temp_dir.path().join("sha-dump");
+        fs::create_dir_all(&output).expect("create output directory");
+        fs::write(output.join(SHA_ATLAS_INDEXED_FILE), b"existing atlas")
+            .expect("write existing atlas");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "sha",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        let Err(error) = dispatch(cli.command) else {
+            panic!("dump should refuse to overwrite existing atlas");
+        };
+
+        check!(error.to_string().contains("--force"));
+        check!(!output.join("metadata.json").exists());
     }
 
     /// Unit under test: parser-error reporting for `dump dma`.
