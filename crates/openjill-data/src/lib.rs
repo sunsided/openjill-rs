@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod dma;
+pub mod vcl;
 
 use std::error::Error;
 use std::ffi::OsStr;
