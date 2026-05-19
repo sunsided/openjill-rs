@@ -257,6 +257,7 @@ mod tests {
         let mut bytes = vec![0; table_end()];
 
         write_text_entry(&mut bytes, 0, 700, 0);
+        // These sparse indices (5 and 12) are asserted below via `index()`.
         write_text_entry(&mut bytes, 5, 700, 5);
         write_text_entry(&mut bytes, 12, 705, 4);
         write_text_entry(&mut bytes, 39, 709, 0);

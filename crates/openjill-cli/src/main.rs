@@ -458,6 +458,8 @@ fn render_dump_json(request: &DumpRequest, output_file: &Path) -> Result<String>
 /// Parsed source bytes plus metadata for a dump input file.
 #[derive(Debug)]
 struct DumpInputSource {
+    /// Raw source bytes loaded from disk.
+    bytes: Vec<u8>,
     /// Source file size in bytes.
     source_size: usize,
     /// Lowercase hexadecimal SHA-256 digest for the source bytes.
@@ -472,24 +474,40 @@ fn read_dump_input_source(
     let resolved_path = directory
         .resolve_path_case_insensitive(requested_file)
         .map_err(|error| anyhow::anyhow!("missing input file {requested_file}: {error}"))?;
-    let bytes = fs::read(&resolved_path)
-        .map_err(|error| anyhow::anyhow!("failed to read input file {requested_file}: {error}"))?;
+    let bytes = fs::read(&resolved_path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to read input file {}: {error}",
+            resolved_path.display()
+        )
+    })?;
+
+    let source_size = bytes.len();
+    let source_sha256 = sha256_lower_hex(&bytes);
 
     Ok(DumpInputSource {
-        source_size: bytes.len(),
-        source_sha256: sha256_lower_hex(&bytes),
+        bytes,
+        source_size,
+        source_sha256,
     })
+}
+
+/// Parses one DMA input source and wraps parser failures with file context.
+fn parse_dma_source(source: &DumpInputSource) -> Result<DmaFile> {
+    DmaFile::from_bytes(source.bytes.clone())
+        .map_err(|error| anyhow::anyhow!("failed to parse input file JILL.DMA: {error}"))
+}
+
+/// Parses one VCL input source and wraps parser failures with file context.
+fn parse_vcl_source(source: &DumpInputSource) -> Result<VclFile> {
+    VclFile::from_bytes(source.bytes.clone())
+        .map_err(|error| anyhow::anyhow!("failed to parse input file JILL1.VCL: {error}"))
 }
 
 /// Builds deterministic JSON metadata for a `dump dma` request.
 fn dma_dump_json(data_dir: &Path) -> Result<String> {
     let directory = DataDirectory::new(data_dir.to_path_buf());
-    let mut reader = directory
-        .open_reader("JILL.DMA")
-        .map_err(|error| anyhow::anyhow!("missing input file JILL.DMA: {error}"))?;
-    let dma = DmaFile::parse(&mut reader)
-        .map_err(|error| anyhow::anyhow!("failed to parse input file JILL.DMA: {error}"))?;
     let source = read_dump_input_source(&directory, "JILL.DMA")?;
+    let dma = parse_dma_source(&source)?;
 
     let entries = dma
         .entries()
@@ -531,12 +549,8 @@ fn dma_dump_json(data_dir: &Path) -> Result<String> {
 /// Builds deterministic JSON metadata for a `dump vcl` request.
 fn vcl_dump_json(data_dir: &Path) -> Result<String> {
     let directory = DataDirectory::new(data_dir.to_path_buf());
-    let mut reader = directory
-        .open_reader("JILL1.VCL")
-        .map_err(|error| anyhow::anyhow!("missing input file JILL1.VCL: {error}"))?;
-    let vcl = VclFile::parse(&mut reader)
-        .map_err(|error| anyhow::anyhow!("failed to parse input file JILL1.VCL: {error}"))?;
     let source = read_dump_input_source(&directory, "JILL1.VCL")?;
+    let vcl = parse_vcl_source(&source)?;
 
     let entries = vcl
         .text_entries()
