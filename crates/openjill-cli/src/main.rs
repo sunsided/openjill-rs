@@ -440,13 +440,13 @@ fn write_dump(request: DumpRequest) -> Result<()> {
     }
     let output_file = resolve_dump_output_file(&request)?;
     if request.kind == DumpFrameworkKind::Sha {
-        let sha_dump = sha_dump_output(&request.data_dir)?;
         let output_dir = output_file.parent().ok_or_else(|| {
             anyhow::anyhow!("missing output directory for {}", output_file.display())
         })?;
         let atlas_file = output_dir.join(SHA_ATLAS_INDEXED_FILE);
         ensure_output_may_be_written(&output_file, request.force)?;
         ensure_output_may_be_written(&atlas_file, request.force)?;
+        let sha_dump = sha_dump_output(&request.data_dir)?;
         write_json_file(&output_file, &sha_dump.metadata_json, request.force)?;
         write_binary_file(&atlas_file, &sha_dump.atlas_indexed_png, request.force)?;
     } else {
@@ -673,10 +673,12 @@ fn sha_dump_output(data_dir: &Path) -> Result<ShaDumpOutput> {
     let atlas = pack_sha_tiles_row_major(&sha);
     let atlas_indexed_png = encode_grayscale_png(&atlas)?;
 
+    let mut placement_index = 0usize;
     let tilesets = sha
         .tilesets()
         .iter()
-        .map(|tileset| {
+        .enumerate()
+        .map(|(tileset_position, tileset)| {
             let color_map = tileset.color_map().map(|entries| {
                 entries
                     .iter()
@@ -694,15 +696,17 @@ fn sha_dump_output(data_dir: &Path) -> Result<ShaDumpOutput> {
             let tiles = tileset
                 .tiles()
                 .iter()
-                .map(|tile| {
+                .enumerate()
+                .map(|(tile_position, tile)| {
                     let placement = atlas
                         .tiles
-                        .iter()
-                        .find(|packed| {
-                            packed.entry_index == tileset.entry_index()
-                                && packed.image_index == tile.image_index()
-                        })
+                        .get(placement_index)
                         .expect("each parsed tile should have an atlas placement");
+                    placement_index += 1;
+                    debug_assert_eq!(placement.tileset_position, tileset_position);
+                    debug_assert_eq!(placement.tile_position, tile_position);
+                    debug_assert_eq!(placement.entry_index, tileset.entry_index());
+                    debug_assert_eq!(placement.image_index, tile.image_index());
                     serde_json::json!({
                         "image_index": tile.image_index(),
                         "source_offset": tile.offset(),

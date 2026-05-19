@@ -36,7 +36,7 @@ const SHA_ATLAS_INDEXED_FILE: &str = "atlas-indexed.png";
 /// emit per-entry offsets and indexes that stay within source-file structures,
 /// and produce a SHA atlas file with dimensions matching metadata.
 #[test]
-fn dumps_original_dma_and_vcl_payloads_when_available() {
+fn dumps_original_dma_vcl_and_sha_payloads_when_available() {
     let env_override = std::env::var_os(DATA_DIR_ENV);
     let data_dir = match resolve_data_dir(env_override.as_deref()) {
         Some(dir) => dir,
