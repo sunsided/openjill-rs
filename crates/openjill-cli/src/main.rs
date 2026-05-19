@@ -432,19 +432,166 @@ fn write_dump(request: DumpRequest) -> Result<()> {
     match request.format {
         DumpFormat::Json => {}
     }
-    let sources = collect_dump_sources(request.kind, &request.data_dir)?;
     let output_file = resolve_dump_output_file(&request)?;
-    write_json_file(
-        &output_file,
-        &dump_framework_json(&request, &output_file, &sources)?,
-        request.force,
-    )?;
+    let json = render_dump_json(&request, &output_file)?;
+    write_json_file(&output_file, &json, request.force)?;
     println!(
-        "wrote {} dump framework metadata to {}",
+        "wrote {} dump metadata to {}",
         request.kind.as_str(),
         output_file.display()
     );
     Ok(())
+}
+
+/// Renders JSON for the selected dump request.
+fn render_dump_json(request: &DumpRequest, output_file: &Path) -> Result<String> {
+    match request.kind {
+        DumpFrameworkKind::Dma => dma_dump_json(&request.data_dir),
+        DumpFrameworkKind::Vcl => vcl_dump_json(&request.data_dir),
+        DumpFrameworkKind::Sha | DumpFrameworkKind::Jn => {
+            let sources = collect_dump_sources(request.kind, &request.data_dir)?;
+            dump_framework_json(request, output_file, &sources)
+        }
+    }
+}
+
+/// Parsed source bytes plus metadata for a dump input file.
+#[derive(Debug)]
+struct DumpInputSource {
+    /// Raw source bytes loaded from disk.
+    bytes: Vec<u8>,
+    /// Source file size in bytes.
+    source_size: usize,
+    /// Lowercase hexadecimal SHA-256 digest for the source bytes.
+    source_sha256: String,
+}
+
+/// Loads source bytes through `DataDirectory` and computes metadata used in dumps.
+fn read_dump_input_source(
+    directory: &DataDirectory,
+    requested_file: &str,
+) -> Result<DumpInputSource> {
+    let resolved_path = directory
+        .resolve_path_case_insensitive(requested_file)
+        .map_err(|error| anyhow::anyhow!("missing input file {requested_file}: {error}"))?;
+    let bytes = fs::read(&resolved_path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to read input file {}: {error}",
+            resolved_path.display()
+        )
+    })?;
+
+    let source_size = bytes.len();
+    let source_sha256 = sha256_lower_hex(&bytes);
+
+    Ok(DumpInputSource {
+        bytes,
+        source_size,
+        source_sha256,
+    })
+}
+
+/// Parses one DMA input source and wraps parser failures with file context.
+fn parse_dma_source(bytes: Vec<u8>) -> Result<DmaFile> {
+    DmaFile::from_bytes(bytes)
+        .map_err(|error| anyhow::anyhow!("failed to parse input file JILL.DMA: {error}"))
+}
+
+/// Parses one VCL input source and wraps parser failures with file context.
+fn parse_vcl_source(bytes: Vec<u8>) -> Result<VclFile> {
+    VclFile::from_bytes(bytes)
+        .map_err(|error| anyhow::anyhow!("failed to parse input file JILL1.VCL: {error}"))
+}
+
+/// Builds deterministic JSON metadata for a `dump dma` request.
+fn dma_dump_json(data_dir: &Path) -> Result<String> {
+    let directory = DataDirectory::new(data_dir.to_path_buf());
+    let source = read_dump_input_source(&directory, "JILL.DMA")?;
+    let DumpInputSource {
+        bytes,
+        source_size,
+        source_sha256,
+    } = source;
+    let dma = parse_dma_source(bytes)?;
+
+    let entries = dma
+        .entries()
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "index": entry.index(),
+                "source_offset": entry.offset(),
+                "map_code": entry.map_code(),
+                "map_code_hex": format_u16_hex(entry.map_code()),
+                "tile": entry.tile(),
+                "tileset": entry.tileset(),
+                "flags": entry.flags(),
+                "flags_hex": format_u16_hex(entry.flags()),
+                "is_msg_touch": entry.is_msg_touch(),
+                "is_msg_draw": entry.is_msg_draw(),
+                "is_msg_update": entry.is_msg_update(),
+                "is_player_thru": entry.is_player_thru(),
+                "is_stair": entry.is_stair(),
+                "is_vine": entry.is_vine(),
+                "name": entry.name(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let json = serde_json::json!({
+        "source_file": "JILL.DMA",
+        "source_size": source_size,
+        "source_sha256": source_sha256,
+        "entry_count": dma.entry_count(),
+        "entries": entries,
+    });
+    let mut rendered = serde_json::to_string_pretty(&json)
+        .map_err(|error| anyhow::anyhow!("failed to serialize dump metadata: {error}"))?;
+    rendered.push('\n');
+    Ok(rendered)
+}
+
+/// Builds deterministic JSON metadata for a `dump vcl` request.
+fn vcl_dump_json(data_dir: &Path) -> Result<String> {
+    let directory = DataDirectory::new(data_dir.to_path_buf());
+    let source = read_dump_input_source(&directory, "JILL1.VCL")?;
+    let DumpInputSource {
+        bytes,
+        source_size,
+        source_sha256,
+    } = source;
+    let vcl = parse_vcl_source(bytes)?;
+
+    let entries = vcl
+        .text_entries()
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "index": entry.index(),
+                "source_offset": entry.offset(),
+                "declared_length": entry.declared_length(),
+                "text": entry.text(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let json = serde_json::json!({
+        "source_file": "JILL1.VCL",
+        "source_size": source_size,
+        "source_sha256": source_sha256,
+        "sound_entries_supported": false,
+        "text_entry_count": vcl.text_entry_count(),
+        "entries": entries,
+    });
+    let mut rendered = serde_json::to_string_pretty(&json)
+        .map_err(|error| anyhow::anyhow!("failed to serialize dump metadata: {error}"))?;
+    rendered.push('\n');
+    Ok(rendered)
+}
+
+/// Formats a `u16` as a lowercase four-digit hexadecimal string with `0x` prefix.
+fn format_u16_hex(value: u16) -> String {
+    format!("0x{value:04x}")
 }
 
 /// Collects and parses the source files required by a dump kind.
@@ -906,6 +1053,7 @@ mod tests {
     };
     use assert2::check;
     use clap::Parser;
+    use serde_json::Value;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1120,17 +1268,20 @@ mod tests {
         check!(error.to_string().contains("MAP.JN1"));
     }
 
-    /// Unit under test: dump framework output creation for file-based dumps.
+    /// Unit under test: `dump dma` payload rendering.
     ///
     /// Preconditions: a complete synthetic fixture exists and the caller
-    /// chooses a file output path outside `data/original/`.
+    /// chooses a file output path outside `data/original/`; the DMA input is
+    /// replaced with two entries so ordering and helper fields can be checked.
     ///
-    /// Invariants asserted: the command succeeds, writes JSON metadata, and
-    /// records the selected dump kind.
+    /// Invariants asserted: the command succeeds, writes deterministic
+    /// entry-ordered metadata, and includes expected helper fields and names.
     #[test]
-    fn dump_writes_framework_metadata_to_selected_file() {
+    fn dump_writes_dma_payload_metadata_to_selected_file() {
         let temp_dir = TempDirGuard::new("openjill-cli-dump-file");
         write_valid_episode_one_fixture(temp_dir.path());
+        fs::write(temp_dir.path().join("jill.dma"), valid_dma_dump_bytes())
+            .expect("write custom jill.dma");
         let output = temp_dir.path().join("dma.json");
 
         let cli = Cli::try_parse_from([
@@ -1146,10 +1297,68 @@ mod tests {
 
         dispatch(cli.command).expect("dump command should succeed");
 
-        let json = fs::read_to_string(output).expect("read dump output");
-        check!(json.contains("\"kind\": \"dma\""));
-        check!(json.contains("\"payload_implemented\": false"));
-        check!(json.contains("\"requested_file\": \"JILL.DMA\""));
+        let json = read_json_file(&output);
+        check!(json["source_file"] == Value::from("JILL.DMA"));
+        check!(json["entry_count"] == Value::from(2));
+        check!(json["entries"][0]["index"] == Value::from(0));
+        check!(json["entries"][0]["source_offset"] == Value::from(0));
+        check!(json["entries"][0]["map_code"] == Value::from(0x0102));
+        check!(json["entries"][0]["map_code_hex"] == Value::from("0x0102"));
+        check!(json["entries"][0]["flags_hex"] == Value::from("0x0039"));
+        check!(json["entries"][0]["is_msg_touch"] == Value::from(true));
+        check!(json["entries"][0]["is_stair"] == Value::from(true));
+        check!(json["entries"][0]["name"] == Value::from("FLOOR"));
+        check!(json["entries"][1]["index"] == Value::from(1));
+        check!(json["entries"][1]["source_offset"] == Value::from(12));
+        check!(json["entries"][1]["map_code"] == Value::from(0x0304));
+        check!(json["entries"][1]["flags_hex"] == Value::from("0x0006"));
+        check!(json["entries"][1]["is_stair"] == Value::from(false));
+        check!(json["entries"][1]["is_vine"] == Value::from(false));
+        check!(json["entries"][1]["name"] == Value::from("LAD"));
+    }
+
+    /// Unit under test: `dump vcl` payload rendering.
+    ///
+    /// Preconditions: a complete synthetic fixture exists and the caller
+    /// chooses a file output path outside `data/original/`; the VCL input is
+    /// replaced with sparse text entries so parser-order output can be checked.
+    ///
+    /// Invariants asserted: output includes only non-empty entries in table
+    /// order and preserves each entry's original index, declared length, and
+    /// decoded text.
+    #[test]
+    fn dump_writes_vcl_payload_metadata_in_table_order() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-vcl-file");
+        write_valid_episode_one_fixture(temp_dir.path());
+        fs::write(temp_dir.path().join("JILL1.vcl"), valid_vcl_dump_bytes())
+            .expect("write custom JILL1.vcl");
+        let output = temp_dir.path().join("vcl-text.json");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "vcl",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        dispatch(cli.command).expect("dump command should succeed");
+
+        let json = read_json_file(&output);
+        check!(json["source_file"] == Value::from("JILL1.VCL"));
+        check!(json["sound_entries_supported"] == Value::from(false));
+        check!(json["text_entry_count"] == Value::from(2));
+        check!(json["entries"][0]["index"] == Value::from(3));
+        check!(json["entries"][0]["source_offset"] == Value::from(700));
+        check!(json["entries"][0]["declared_length"] == Value::from(5));
+        check!(json["entries"][0]["text"] == Value::from("HELLO"));
+        check!(json["entries"][1]["index"] == Value::from(10));
+        check!(json["entries"][1]["source_offset"] == Value::from(705));
+        check!(json["entries"][1]["declared_length"] == Value::from(3));
+        check!(json["entries"][1]["text"] == Value::from("BYE"));
     }
 
     /// Unit under test: dump framework output creation for directory-based dumps.
@@ -1244,8 +1453,73 @@ mod tests {
         dispatch(cli.command).expect("dump command should succeed");
 
         let json = fs::read_to_string(&output).expect("read dump output");
-        check!(json.contains("\"kind\": \"dma\""));
+        check!(json.contains("\"source_file\": \"JILL.DMA\""));
         check!(!output.with_extension("json.tmp").exists());
+    }
+
+    /// Unit under test: parser-error reporting for `dump dma`.
+    ///
+    /// Preconditions: a synthetic fixture contains a truncated DMA file.
+    ///
+    /// Invariants asserted: command execution fails with parse context that
+    /// names the failing source file.
+    #[test]
+    fn dump_dma_reports_parser_errors_with_file_context() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-dma-parse-error");
+        write_valid_episode_one_fixture(temp_dir.path());
+        fs::write(temp_dir.path().join("jill.dma"), [0x34, 0x12, 0x01, 0x02])
+            .expect("write malformed jill.dma");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "dma",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        let Err(error) = dispatch(cli.command) else {
+            panic!("dump should fail for malformed dma");
+        };
+
+        check!(
+            error
+                .to_string()
+                .contains("failed to parse input file JILL.DMA")
+        );
+    }
+
+    /// Unit under test: parser-error reporting for `dump vcl`.
+    ///
+    /// Preconditions: a synthetic fixture contains a truncated VCL file.
+    ///
+    /// Invariants asserted: command execution fails with parse context that
+    /// names the failing source file.
+    #[test]
+    fn dump_vcl_reports_parser_errors_with_file_context() {
+        let temp_dir = TempDirGuard::new("openjill-cli-dump-vcl-parse-error");
+        write_valid_episode_one_fixture(temp_dir.path());
+        fs::write(temp_dir.path().join("JILL1.vcl"), [0u8; 20]).expect("write malformed JILL1.vcl");
+
+        let cli = Cli::try_parse_from([
+            "openjill-rs",
+            "dump",
+            "vcl",
+            "--data-dir",
+            temp_dir.path().to_string_lossy().as_ref(),
+        ])
+        .expect("dump command should parse");
+
+        let Err(error) = dispatch(cli.command) else {
+            panic!("dump should fail for malformed vcl");
+        };
+
+        check!(
+            error
+                .to_string()
+                .contains("failed to parse input file JILL1.VCL")
+        );
     }
 
     /// Unit under test: directory dump output validation.
@@ -1422,6 +1696,37 @@ mod tests {
         bytes
     }
 
+    /// Builds a valid synthetic `JILL.DMA` file with two entries for dump-order tests.
+    fn valid_dma_dump_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend(0x0102u16.to_le_bytes());
+        bytes.push(0x08);
+        bytes.push(0x03);
+        bytes.extend(0x0039u16.to_le_bytes());
+        bytes.push(5);
+        bytes.extend(b"FLOOR");
+
+        bytes.extend(0x0304u16.to_le_bytes());
+        bytes.push(0x02);
+        bytes.push(0x40);
+        bytes.extend(0x0006u16.to_le_bytes());
+        bytes.push(3);
+        bytes.extend(b"LAD");
+        bytes
+    }
+
+    /// Builds a valid synthetic `JILL1.VCL` file with sparse non-empty text entries.
+    fn valid_vcl_dump_bytes() -> Vec<u8> {
+        let mut bytes = vec![0u8; 708];
+        bytes[412..416].copy_from_slice(&(700u32).to_le_bytes());
+        bytes[440..444].copy_from_slice(&(705u32).to_le_bytes());
+        bytes[566..568].copy_from_slice(&(5u16).to_le_bytes());
+        bytes[580..582].copy_from_slice(&(3u16).to_le_bytes());
+        bytes[700..705].copy_from_slice(b"HELLO");
+        bytes[705..708].copy_from_slice(b"BYE");
+        bytes
+    }
+
     /// Builds one valid synthetic `JILL1.CFG` file with defaulted values.
     fn valid_cfg_bytes() -> Vec<u8> {
         vec![0u8; 254]
@@ -1435,6 +1740,12 @@ mod tests {
     /// Builds one valid synthetic `*.JN1` file with empty object and string sections.
     fn valid_jn_bytes() -> Vec<u8> {
         vec![0u8; 16_456]
+    }
+
+    /// Reads and deserializes a JSON file written by dump commands.
+    fn read_json_file(path: &Path) -> Value {
+        let bytes = fs::read(path).expect("read dump output");
+        serde_json::from_slice(&bytes).expect("parse dump output json")
     }
 
     /// Owned temporary directory guard that removes its path on drop.
