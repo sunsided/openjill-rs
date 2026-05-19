@@ -7,6 +7,7 @@ on:
     branches:
       - main
       - 'feature/**'
+      - 'copilot/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,6 +17,9 @@ jobs:
   test:
     name: cargo test
     runs-on: ubuntu-latest
+    env:
+      ZIP_LINK: ${{ secrets.ZIP_LINK }}
+      ZIP_PASS: ${{ secrets.ZIP_PASS }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -23,8 +27,24 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Task runner
+        if: env.ZIP_LINK != '' && env.ZIP_PASS != ''
+        uses: arduino/setup-task@v2
+
+      - name: Install 7z for data extraction
+        if: env.ZIP_LINK != '' && env.ZIP_PASS != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Fetch original Jill data
+        if: env.ZIP_LINK != '' && env.ZIP_PASS != ''
+        run: task -t Taskfile.dist.yaml binary:fetch
+
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
 
       - name: cargo test (workspace)
+        env:
+          OPENJILL_DATA_DIR: ${{ github.workspace }}/data/original/JILL1
         run: cargo test --workspace --all-targets --locked
