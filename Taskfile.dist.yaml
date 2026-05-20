@@ -73,7 +73,7 @@ tasks:
   run:
     desc: Run the default binary (pass args via -- arg1 arg2)
     cmds:
-      - cargo run --bin openjill-rs {{.CLI_ARGS}}
+      - cargo run --bin openjill-rs -- run {{.CLI_ARGS}}
 
   ci:
     desc: Run the checks expected in CI (fmt, lint, test)

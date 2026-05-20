@@ -85,6 +85,11 @@ impl Presenter {
         self.surface.configure(&self.device, &self.surface_config);
     }
 
+    /// Reconfigures the surface with the current configuration, used for `Lost`/`Outdated` recovery.
+    pub fn reconfigure(&mut self) {
+        self.surface.configure(&self.device, &self.surface_config);
+    }
+
     /// Renders one frame with a black clear color and presents it to the window surface.
     pub fn present(&mut self) -> Result<(), PresenterError> {
         let frame = self.surface.get_current_texture()?;

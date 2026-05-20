@@ -100,6 +100,22 @@ impl ApplicationHandler for GameApp {
                     presenter.resize(size.width, size.height);
                 }
             }
+            WindowEvent::RedrawRequested => {
+                if let Some(presenter) = self.presenter.as_mut() {
+                    match presenter.present() {
+                        Ok(()) => {}
+                        Err(PresenterError::SurfaceError(wgpu::SurfaceError::Lost))
+                        | Err(PresenterError::SurfaceError(wgpu::SurfaceError::Outdated)) => {
+                            presenter.reconfigure();
+                        }
+                        Err(PresenterError::SurfaceError(wgpu::SurfaceError::Timeout)) => {}
+                        Err(error) => {
+                            self.error = Some(GameError::Presenter(error));
+                            event_loop.exit();
+                        }
+                    }
+                }
+            }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
@@ -107,29 +123,8 @@ impl ApplicationHandler for GameApp {
         }
     }
 
-    /// Presents one frame whenever the event loop is about to idle.
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(presenter) = self.presenter.as_mut() {
-            match presenter.present() {
-                Ok(()) => {}
-                Err(PresenterError::SurfaceError(wgpu::SurfaceError::Lost))
-                | Err(PresenterError::SurfaceError(wgpu::SurfaceError::Outdated)) => {
-                    if let Some(window) = self.window.as_ref() {
-                        let size = window.inner_size();
-                        if size.width > 0 && size.height > 0 {
-                            presenter.resize(size.width, size.height);
-                        }
-                    }
-                }
-                Err(PresenterError::SurfaceError(wgpu::SurfaceError::Timeout)) => {}
-                Err(error) => {
-                    self.error = Some(GameError::Presenter(error));
-                    event_loop.exit();
-                    return;
-                }
-            }
-        }
-
+    /// Requests a redraw so the surface presents continuously while the loop is idle.
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
