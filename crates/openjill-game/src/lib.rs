@@ -163,7 +163,7 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
     let mut reader = match directory.open_reader("JILL1.SHA") {
         Ok(reader) => reader,
         Err(error) => {
-            println!(
+            eprintln!(
                 "openjill-game: JILL1.SHA unavailable ({error}); using greyscale palette fallback"
             );
             return StartupAssets {
@@ -175,7 +175,7 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
     let sha = match ShaFile::parse(&mut reader) {
         Ok(sha) => sha,
         Err(error) => {
-            println!(
+            eprintln!(
                 "openjill-game: failed to parse JILL1.SHA color map ({error}); using greyscale palette fallback"
             );
             return StartupAssets {
@@ -190,7 +190,7 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
     if observed_tile_types.contains(&0) {
         println!("openjill-game: SHA tile type 0 is available for the startup preview tile");
     } else {
-        println!(
+        eprintln!(
             "openjill-game: SHA tile type 0 is not present; startup preview tile will be skipped"
         );
     }
@@ -201,7 +201,7 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
             font_tileset.entry_index()
         );
     } else {
-        println!("openjill-game: no SHA tileset with is_font=true was found");
+        eprintln!("openjill-game: no SHA tileset with is_font=true was found");
     }
 
     let startup_tile_preview = startup_tile_preview(&sha);
@@ -219,7 +219,7 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
         }
     }
 
-    println!(
+    eprintln!(
         "openjill-game: no non-empty color map in JILL1.SHA; using greyscale palette fallback"
     );
     StartupAssets {
@@ -243,10 +243,13 @@ fn observed_tile_types(sha: &ShaFile) -> Vec<u8> {
 ///
 /// The preview supports only SHA tile type `0` (row-major indexed pixels), which is the
 /// data format required for this check.
+///
+/// Returns `None` when tileset `0` or tile `0` does not exist, or when tile `0` uses an
+/// unsupported non-zero SHA tile type.
 fn startup_tile_preview(sha: &ShaFile) -> Option<StartupTilePreview> {
     let tile = sha.tilesets().first()?.tiles().first()?;
     if tile.data_format() != 0 {
-        println!(
+        eprintln!(
             "openjill-game: startup SHA tile preview skipped because tileset 0 tile 0 has unsupported type {}",
             tile.data_format()
         );
