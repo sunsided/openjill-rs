@@ -66,8 +66,8 @@ enum DataCommand {
 
 #[derive(Args, Debug)]
 struct DataDirArgs {
-    #[arg(long, default_value = "data/original/JILL1")]
-    data_dir: PathBuf,
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -141,7 +141,7 @@ fn dispatch(command: Command) -> Result<()> {
 
 /// Runs the interactive game loop using the configured data directory.
 fn run_command(args: RunArgs) -> Result<()> {
-    run_game(args.common.data_dir).map_err(Into::into)
+    run_game(resolve_run_data_dir(&args)).map_err(Into::into)
 }
 
 fn data_verify_command(args: VerifyArgs) -> Result<()> {
@@ -294,6 +294,14 @@ fn resolve_verify_data_dir(args: &VerifyArgs) -> PathBuf {
     resolve_data_dir_with_env(
         args.data_dir.clone(),
         nonempty_env_os(DATA_DIR_ENV).or_else(|| nonempty_env_os(OPENJILL_DATA_DIR_ENV)),
+    )
+}
+
+/// Resolves the data directory for `run` using CLI flag, environment, and fallback order.
+fn resolve_run_data_dir(args: &RunArgs) -> PathBuf {
+    resolve_data_dir_with_env(
+        args.common.data_dir.clone(),
+        nonempty_env_os(OPENJILL_DATA_DIR_ENV),
     )
 }
 
