@@ -74,6 +74,8 @@ impl GameApp {
     }
 
     /// Translates one physical key code into its mapped logical command.
+    ///
+    /// Returns `None` when no default binding exists for the key.
     fn map_key_to_input_command(key_code: KeyCode) -> Option<InputCommand> {
         INPUT_COMMAND_KEY_MAP
             .iter()
@@ -81,6 +83,8 @@ impl GameApp {
     }
 
     /// Applies one key press or release to the active input-command set.
+    ///
+    /// Unmapped keys are silently ignored and leave the set unchanged.
     fn update_active_commands(
         active_commands: &mut BTreeSet<InputCommand>,
         key_code: KeyCode,
@@ -98,7 +102,9 @@ impl GameApp {
         }
     }
 
-    /// Runs one game tick using the current active logical input commands.
+    /// Runs one game tick with the currently active logical input commands.
+    ///
+    /// This per-frame hook is where orchestration code advances game state from inputs.
     fn tick(active_commands: &BTreeSet<InputCommand>) {
         let _ = active_commands;
     }
