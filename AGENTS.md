@@ -5,12 +5,20 @@ Guidance for AI coding agents working in this repository.
 ## Format reference
 
 For byte-level layout of the original Jill data files (DMA, SHA, JN, MAC,
-CFG, EXE palette offsets), consult
-[`docs/port/00-format-reference.md`](docs/port/00-format-reference.md) before
-touching parsers or anything that reads original bytes. It cites the
-ModdingWiki sources and is the canonical answer for "what does this byte
-mean?". Phase subplans and `PORT.md` link into it rather than duplicating
-the spec.
+CFG, VCL, CMF/`*.DDT`, Crunched Screen Image, EXE palette offsets),
+consult [`docs/port/00-format-reference.md`](docs/port/00-format-reference.md)
+before touching parsers or anything that reads original bytes. It cites
+the ModdingWiki sources and is the canonical answer for "what does this
+byte mean?". Phase subplans and `PORT.md` link into it rather than
+duplicating the spec.
+
+Agents working in this repo also have the
+[`jill-data-formats`](.claude/skills/jill-data-formats/SKILL.md) skill
+available. Invoke it (or let the model pick it up automatically) for
+parser/dumper/extractor work, format quirks, iType questions, and
+byte-layout debugging — it routes into the reference doc and keeps the
+high-leverage pitfalls (`KILLME` sentinel, malformed `dan.cmf`
+end-of-track, preserved-unknown-bytes rule) in one place.
 
 ## Documentation comments
 
