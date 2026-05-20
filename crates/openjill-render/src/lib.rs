@@ -44,6 +44,11 @@ pub struct ShaFontTiles {
 impl ShaFontTiles {
     /// Decodes a SHA font tileset into blit-ready glyph pixels.
     pub fn from_tileset(tileset: &ShaTileSet) -> Result<Self, TileDecodeError> {
+        if !tileset.is_font() {
+            return Err(TileDecodeError::NotFontTileset {
+                tileset_index: tileset.entry_index(),
+            });
+        }
         let mut glyphs = Vec::with_capacity(tileset.tiles().len());
         for tile in tileset.tiles() {
             glyphs.push(DecodedGlyphTile::from_sha_tile(tile)?);
@@ -108,6 +113,12 @@ pub enum TileDecodeError {
         tile_index: usize,
         /// Unsupported SHA tile `type`/`data_format` value.
         data_format: u8,
+    },
+    /// The SHA tileset passed to a font decoder is not flagged as a font tileset.
+    #[error("SHA tileset {tileset_index} is not a font tileset")]
+    NotFontTileset {
+        /// Header entry index of the offending tileset.
+        tileset_index: usize,
     },
 }
 
@@ -767,6 +778,21 @@ mod tests {
         );
     }
 
+    /// Unit under test: `ShaFontTiles::from_tileset` font-flag precondition.
+    ///
+    /// Preconditions: a synthetic SHA payload declares one tileset whose `flags` field does not
+    /// set `FLAG_FONT`.
+    ///
+    /// Invariants asserted: decoding rejects the tileset with
+    /// `TileDecodeError::NotFontTileset`, preserving the tileset entry index.
+    #[test]
+    fn sha_font_tiles_rejects_non_font_tileset() {
+        let sha = parse_synthetic_sha_tileset(&[(1, 1, 0, &[1])], 0);
+        let error = ShaFontTiles::from_tileset(&sha.tilesets()[0])
+            .expect_err("non-font tileset should be rejected");
+        assert_eq!(error, TileDecodeError::NotFontTileset { tileset_index: 0 });
+    }
+
     /// Unit under test: glyph placement in `draw_text_indexed`.
     ///
     /// Preconditions: a synthetic font contains at least the space glyph and the `!` glyph; the
@@ -810,9 +836,14 @@ mod tests {
     /// Builds and parses a minimal SHA payload containing one font tileset with caller-provided
     /// tile records.
     fn parse_synthetic_sha_with_font_tiles(tile_specs: &[(u8, u8, u8, &[u8])]) -> ShaFile {
+        const FLAG_FONT: u16 = 0x0001;
+        parse_synthetic_sha_tileset(tile_specs, FLAG_FONT)
+    }
+
+    /// Builds and parses a minimal SHA payload with the given tileset `flags` value.
+    fn parse_synthetic_sha_tileset(tile_specs: &[(u8, u8, u8, &[u8])], flags: u16) -> ShaFile {
         const TILESET_ENTRY_COUNT: usize = 128;
         const HEADER_BYTES: usize = TILESET_ENTRY_COUNT * 4 + TILESET_ENTRY_COUNT * 2;
-        const FLAG_FONT: u16 = 0x0001;
 
         let tile_count =
             u8::try_from(tile_specs.len()).expect("synthetic fixture expects <=255 glyph tiles");
@@ -823,7 +854,7 @@ mod tests {
         tileset_bytes.extend_from_slice(&0u16.to_le_bytes());
         tileset_bytes.extend_from_slice(&0u16.to_le_bytes());
         tileset_bytes.push(8);
-        tileset_bytes.extend_from_slice(&FLAG_FONT.to_le_bytes());
+        tileset_bytes.extend_from_slice(&flags.to_le_bytes());
 
         for &(width, height, data_format, pixels) in tile_specs {
             assert_eq!(pixels.len(), usize::from(width) * usize::from(height));
