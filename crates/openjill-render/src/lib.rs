@@ -125,7 +125,7 @@ impl Presenter {
             .await?;
         let capabilities = surface.get_capabilities(&adapter);
         let format = select_surface_format(&capabilities.formats)?;
-        let mut surface_config = SurfaceConfiguration {
+        let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
             format,
             width: window_size.0,
@@ -266,11 +266,7 @@ impl Presenter {
             surface,
             device,
             queue,
-            surface_config: {
-                surface_config.width = window_size.0;
-                surface_config.height = window_size.1;
-                surface_config
-            },
+            surface_config,
             framebuffer: [0; FRAMEBUFFER_PIXELS],
             rgba_buffer: [0; RGBA_BUFFER_BYTES],
             frame_texture,
