@@ -20,6 +20,7 @@ pub mod asset_cache;
 pub mod level_config;
 pub mod orchestrator;
 pub mod screens;
+pub mod status_bar;
 
 use orchestrator::GameOrchestrator;
 
@@ -62,8 +63,6 @@ pub struct GameApp {
     presenter: Option<Presenter>,
     /// Active palette used to expand indexed frame data during presentation.
     palette: Palette,
-    /// Optional SHA tile preview blitted at startup for manual integration checks.
-    startup_tile_preview: Option<StartupTilePreview>,
     /// Deferred startup/runtime error propagated after event-loop shutdown.
     error: Option<GameError>,
     /// Physical keys currently held down; source of truth for active commands.
@@ -108,7 +107,6 @@ impl GameApp {
             window: None,
             presenter: None,
             palette: startup_assets.palette,
-            startup_tile_preview: startup_assets.startup_tile_preview,
             error: None,
             pressed_keys: BTreeSet::new(),
             orchestrator,
@@ -162,32 +160,13 @@ impl GameApp {
 struct StartupAssets {
     /// Palette used to present indexed frames.
     palette: Palette,
-    /// Optional SHA tile preview blitted at `(0, 0)` during manual integration checks.
-    startup_tile_preview: Option<StartupTilePreview>,
-}
-
-/// One decoded SHA tile ready to be blitted into the indexed framebuffer.
-struct StartupTilePreview {
-    /// Row-major indexed pixel payload copied directly from the SHA tile.
-    indexed_pixels: Box<[u8]>,
-    /// Tile width in pixels.
-    width: u16,
-    /// Tile height in pixels.
-    height: u16,
 }
 
 /// Loads startup rendering assets from `JILL1.SHA`.
 ///
 /// Falls back to [`Palette::greyscale_fallback`] when the file is missing, unreadable, or
-/// contains no non-empty color map. Informational diagnostics are logged to stdout, while
-/// warnings and fallback notices are logged to stderr.
-///
-/// Manual integration check procedure:
-/// run `openjill-rs run` with `OPENJILL_DATA_DIR` pointing at an episode-1 directory,
-/// then verify that the startup window shows SHA tileset index `0` tile `0` at `(0, 0)`.
-///
-/// Known limitation: startup currently uses the first available SHA color map and does not yet
-/// select palettes per screen/level (tracked for epic 5).
+/// contains no non-empty color map. Informational diagnostics are logged to stdout; warnings
+/// and fallback notices are logged to stderr.
 fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAssets {
     let directory = DataDirectory::new(data_dir.to_path_buf());
     let mut reader = match directory.open_reader("JILL1.SHA") {
@@ -198,7 +177,6 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
             );
             return StartupAssets {
                 palette: Palette::greyscale_fallback(),
-                startup_tile_preview: None,
             };
         }
     };
@@ -210,22 +188,9 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
             );
             return StartupAssets {
                 palette: Palette::greyscale_fallback(),
-                startup_tile_preview: None,
             };
         }
     };
-
-    let observed_tile_types = observed_tile_types(&sha);
-    println!(
-        "openjill-game: observed JILL1.SHA tile type/data_format values: {observed_tile_types:?}"
-    );
-    if observed_tile_types.contains(&0) {
-        println!("openjill-game: SHA tile type 0 is present somewhere in JILL1.SHA");
-    } else {
-        eprintln!(
-            "openjill-game: SHA tile type 0 is not observed in JILL1.SHA; startup preview tile will be skipped"
-        );
-    }
 
     if let Some(font_tileset) = sha.tilesets().iter().find(|tileset| tileset.is_font()) {
         println!(
@@ -236,8 +201,6 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
         eprintln!("openjill-game: no SHA tileset with is_font=true was found");
     }
 
-    let startup_tile_preview = startup_tile_preview(&sha);
-
     for tileset in sha.tilesets() {
         if let Some(color_map) = tileset.color_map().filter(|entries| !entries.is_empty()) {
             println!(
@@ -246,7 +209,6 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
             );
             return StartupAssets {
                 palette: Palette::from_sha_color_map(color_map),
-                startup_tile_preview,
             };
         }
     }
@@ -256,43 +218,7 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
     );
     StartupAssets {
         palette: Palette::greyscale_fallback(),
-        startup_tile_preview,
     }
-}
-
-/// Returns all distinct SHA tile `type`/`data_format` values present in the file.
-fn observed_tile_types(sha: &ShaFile) -> Vec<u8> {
-    let mut values = BTreeSet::new();
-    for tileset in sha.tilesets() {
-        for tile in tileset.tiles() {
-            values.insert(tile.data_format());
-        }
-    }
-    values.into_iter().collect()
-}
-
-/// Extracts SHA tileset index `0` tile `0` for the startup integration preview.
-///
-/// The preview supports only SHA tile type `0` (row-major indexed pixels), which is the
-/// data format required for this check.
-///
-/// Returns `None` when tileset `0` or tile `0` does not exist, or when tile `0` uses an
-/// unsupported non-zero SHA tile type.
-fn startup_tile_preview(sha: &ShaFile) -> Option<StartupTilePreview> {
-    let tile = sha.tilesets().first()?.tiles().first()?;
-    if tile.data_format() != 0 {
-        eprintln!(
-            "openjill-game: startup SHA tile preview skipped because tileset 0 tile 0 has unsupported type {}",
-            tile.data_format()
-        );
-        return None;
-    }
-
-    Some(StartupTilePreview {
-        indexed_pixels: Box::from(tile.indexed_pixels()),
-        width: tile.width().into(),
-        height: tile.height().into(),
-    })
 }
 
 impl ApplicationHandler for GameApp {
@@ -370,12 +296,13 @@ impl ApplicationHandler for GameApp {
         }
     }
 
-    /// Advances the game tick when the 55 ms interval has elapsed, then presents
-    /// one frame and requests the next redraw.
+    /// Advances the game tick when the 55 ms interval has elapsed, then presents one frame.
     ///
-    /// Game ticks fire at approximately 18 Hz (every 55 ms). Render commands
-    /// returned by the orchestrator are cached but not yet executed against the
-    /// presenter; `execute_and_present` wiring is added in child issue 3.
+    /// Game ticks fire at approximately 18 Hz (every 55 ms). When an orchestrator is active,
+    /// the render commands it produces are executed via [`Presenter::execute_and_present`],
+    /// which dispatches each command against the indexed framebuffer and then uploads the
+    /// result to the GPU. When no orchestrator is available (assets missing at startup),
+    /// a black frame is presented instead.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         let should_tick = self
@@ -396,11 +323,18 @@ impl ApplicationHandler for GameApp {
         }
 
         if let Some(presenter) = self.presenter.as_mut() {
-            presenter.clear(0);
-            if let Some(tile) = self.startup_tile_preview.take() {
-                presenter.blit(&tile.indexed_pixels, tile.width, tile.height, 0, 0, true);
-            }
-            match presenter.present(&self.palette) {
+            let result = match &self.orchestrator {
+                Some(orch) => presenter.execute_and_present(
+                    orch.last_commands(),
+                    &orch.cache().sha,
+                    &self.palette,
+                ),
+                None => {
+                    presenter.clear(0);
+                    presenter.present(&self.palette)
+                }
+            };
+            match result {
                 Ok(()) => {}
                 Err(PresenterError::SurfaceError(SurfaceError::Lost))
                 | Err(PresenterError::SurfaceError(SurfaceError::Outdated)) => {

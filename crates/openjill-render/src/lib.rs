@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use openjill_core::Palette;
-use openjill_data::sha::{ShaTile, ShaTileSet};
+use openjill_core::{Palette, RenderCommand};
+use openjill_data::sha::{ShaFile, ShaTile, ShaTileSet};
 use thiserror::Error;
 use wgpu::{
     AddressMode, Backends, BindGroup, Buffer, BufferBindingType, BufferUsages, ColorTargetState,
@@ -449,6 +449,23 @@ impl Presenter {
         frame.present();
         Ok(())
     }
+
+    /// Executes render commands against the internal framebuffer, then presents one frame.
+    ///
+    /// Each command is dispatched in order: [`RenderCommand::Clear`] fills the entire buffer,
+    /// [`RenderCommand::Blit`] resolves tile pixel data from `sha` by header entry index and blits
+    /// it, [`RenderCommand::DrawText`] uses the first font tileset found in `sha` (skipped when
+    /// none exists or decoding fails), and [`RenderCommand::FillRect`] fills a framebuffer region.
+    /// After all commands are dispatched, [`Presenter::present`] uploads the result to the GPU.
+    pub fn execute_and_present(
+        &mut self,
+        commands: &[RenderCommand],
+        sha: &ShaFile,
+        palette: &Palette,
+    ) -> Result<(), PresenterError> {
+        execute_commands_on_framebuffer(&mut self.framebuffer, commands, sha);
+        self.present(palette)
+    }
 }
 
 /// Maps a [`CurrentSurfaceTexture`] result into a usable texture or a typed surface error.
@@ -554,6 +571,145 @@ fn draw_text_indexed(framebuffer: &mut [u8], text: &str, x: i32, y: i32, font: &
     }
 }
 
+/// Draws text as a glyph mask filled with one palette index.
+///
+/// Non-zero glyph pixels write `color_index`; zero glyph pixels remain transparent. Character
+/// lookup and cursor advancement match [`draw_text_indexed`].
+fn draw_text_colorized_indexed(
+    framebuffer: &mut [u8],
+    text: &str,
+    x: i32,
+    y: i32,
+    font: &ShaFontTiles,
+    color_index: u8,
+) {
+    let mut cursor_x = x;
+    for character in text.chars() {
+        let Some(glyph) = font.glyph_for_character(character) else {
+            continue;
+        };
+
+        for glyph_y in 0..usize::from(glyph.height) {
+            let target_y = y + glyph_y as i32;
+            if !(0..FRAMEBUFFER_HEIGHT as i32).contains(&target_y) {
+                continue;
+            }
+
+            for glyph_x in 0..usize::from(glyph.width) {
+                let target_x = cursor_x + glyph_x as i32;
+                if !(0..FRAMEBUFFER_WIDTH as i32).contains(&target_x) {
+                    continue;
+                }
+
+                let glyph_index = glyph_y * usize::from(glyph.width) + glyph_x;
+                if glyph.pixels[glyph_index] == 0 {
+                    continue;
+                }
+
+                let framebuffer_index = target_y as usize * FRAMEBUFFER_WIDTH + target_x as usize;
+                framebuffer[framebuffer_index] = color_index;
+            }
+        }
+
+        cursor_x += i32::from(glyph.width);
+    }
+}
+
+/// Fills a rectangle in a 320×200 indexed framebuffer with `color`, clipping to buffer bounds.
+///
+/// Returns immediately when `width` or `height` is zero. Negative or out-of-bounds coordinates
+/// are clipped to the framebuffer edges so no out-of-bounds write is possible.
+fn fill_rect_indexed(framebuffer: &mut [u8], x: i32, y: i32, width: u32, height: u32, color: u8) {
+    debug_assert_eq!(framebuffer.len(), FRAMEBUFFER_PIXELS);
+    if width == 0 || height == 0 {
+        return;
+    }
+    let x_start = x.clamp(0, FRAMEBUFFER_WIDTH as i32) as usize;
+    let x_end = (x as i64 + width as i64).clamp(0, FRAMEBUFFER_WIDTH as i64) as usize;
+    let y_start = y.clamp(0, FRAMEBUFFER_HEIGHT as i32) as usize;
+    let y_end = (y as i64 + height as i64).clamp(0, FRAMEBUFFER_HEIGHT as i64) as usize;
+    if x_start >= x_end || y_start >= y_end {
+        return;
+    }
+    for row in y_start..y_end {
+        let row_start = row * FRAMEBUFFER_WIDTH + x_start;
+        let row_end = row * FRAMEBUFFER_WIDTH + x_end;
+        framebuffer[row_start..row_end].fill(color);
+    }
+}
+
+/// Dispatches a slice of render commands onto a 320×200 indexed framebuffer.
+///
+/// Resolves [`RenderCommand::Blit`] tile data from `sha` by matching the command's `tileset`
+/// value against each [`ShaTileSet::entry_index`]. The first font tileset in `sha` is decoded
+/// once and reused for all [`RenderCommand::DrawText`] commands; glyph masks are filled with
+/// each command's `color_index`. `DrawText` commands are skipped silently when no font tileset
+/// is present or decoding fails.
+fn execute_commands_on_framebuffer(
+    framebuffer: &mut [u8],
+    commands: &[RenderCommand],
+    sha: &ShaFile,
+) {
+    let font = sha
+        .tilesets()
+        .iter()
+        .find(|ts| ts.is_font())
+        .and_then(|ts| ShaFontTiles::from_tileset(ts).ok());
+
+    for command in commands {
+        match command {
+            RenderCommand::Clear { color } => {
+                framebuffer.fill(*color);
+            }
+            RenderCommand::Blit {
+                tileset,
+                tile,
+                x,
+                y,
+                opaque,
+            } => {
+                let tileset_idx = *tileset as usize;
+                let tile_idx = *tile as usize;
+                if let Some(ts) = sha
+                    .tilesets()
+                    .iter()
+                    .find(|ts| ts.entry_index() == tileset_idx)
+                    && let Some(t) = ts.tiles().get(tile_idx)
+                {
+                    blit_indexed(
+                        framebuffer,
+                        t.indexed_pixels(),
+                        u16::from(t.width()),
+                        u16::from(t.height()),
+                        *x,
+                        *y,
+                        *opaque,
+                    );
+                }
+            }
+            RenderCommand::DrawText {
+                text,
+                x,
+                y,
+                color_index,
+            } => {
+                if let Some(ref f) = font {
+                    draw_text_colorized_indexed(framebuffer, text, *x, *y, f, *color_index);
+                }
+            }
+            RenderCommand::FillRect {
+                x,
+                y,
+                width,
+                height,
+                color,
+            } => {
+                fill_rect_indexed(framebuffer, *x, *y, *width, *height, *color);
+            }
+        }
+    }
+}
+
 /// Computes letterbox/pillarbox scaling in NDC space for the current surface size.
 fn calculate_present_scale(width: u32, height: u32) -> [f32; 2] {
     let width = width.max(1) as f32;
@@ -635,9 +791,10 @@ mod tests {
     use super::{
         FRAMEBUFFER_HEIGHT, FRAMEBUFFER_PIXELS, FRAMEBUFFER_WIDTH, RGBA_BUFFER_BYTES, ShaFontTiles,
         TileDecodeError, blit_indexed, calculate_present_scale, clamp_surface_size,
-        draw_text_indexed, expand_indexed_framebuffer, select_surface_format,
+        draw_text_colorized_indexed, draw_text_indexed, execute_commands_on_framebuffer,
+        expand_indexed_framebuffer, fill_rect_indexed, select_surface_format,
     };
-    use openjill_core::Palette;
+    use openjill_core::{Palette, RenderCommand};
     use openjill_data::sha::ShaFile;
     use wgpu::TextureFormat;
 
@@ -831,6 +988,26 @@ mod tests {
         assert_eq!(framebuffer[4 * FRAMEBUFFER_WIDTH + 3], 7);
     }
 
+    /// Unit under test: colorized glyph mask rendering in `draw_text_colorized_indexed`.
+    ///
+    /// Preconditions: a synthetic font provides a `!` glyph with one non-zero pixel and one
+    /// transparent pixel; the framebuffer starts at all zeroes.
+    ///
+    /// Invariants asserted: non-zero glyph pixels are written with the requested color index,
+    /// while transparent glyph pixels remain untouched.
+    #[test]
+    fn draw_text_colorized_indexed_applies_requested_color_index() {
+        let sha = parse_synthetic_sha_with_font_tiles(&[(1, 1, 0, &[0]), (2, 1, 0, &[9, 0])]);
+        let font = ShaFontTiles::from_tileset(&sha.tilesets()[0])
+            .expect("font tileset should decode successfully");
+        let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
+
+        draw_text_colorized_indexed(&mut framebuffer, "!", 10, 3, &font, 12);
+
+        assert_eq!(framebuffer[3 * FRAMEBUFFER_WIDTH + 10], 12);
+        assert_eq!(framebuffer[3 * FRAMEBUFFER_WIDTH + 11], 0);
+    }
+
     /// Builds and parses a minimal SHA payload containing one font tileset with caller-provided
     /// tile records.
     fn parse_synthetic_sha_with_font_tiles(tile_specs: &[(u8, u8, u8, &[u8])]) -> ShaFile {
@@ -873,5 +1050,153 @@ mod tests {
         bytes.extend_from_slice(&tileset_bytes);
 
         ShaFile::from_bytes(bytes).expect("synthetic SHA fixture should parse")
+    }
+
+    /// Verifies that `fill_rect_indexed` writes the correct region and leaves adjacent pixels
+    /// untouched.
+    #[test]
+    fn fill_rect_indexed_fills_expected_region() {
+        let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
+        fill_rect_indexed(&mut fb, 10, 20, 5, 3, 7);
+        assert_eq!(
+            fb[20 * FRAMEBUFFER_WIDTH + 10],
+            7,
+            "top-left corner must be filled"
+        );
+        assert_eq!(
+            fb[22 * FRAMEBUFFER_WIDTH + 14],
+            7,
+            "bottom-right corner must be filled"
+        );
+        assert_eq!(
+            fb[20 * FRAMEBUFFER_WIDTH + 15],
+            0,
+            "pixel just right of rect must be untouched"
+        );
+        assert_eq!(
+            fb[23 * FRAMEBUFFER_WIDTH + 10],
+            0,
+            "pixel just below rect must be untouched"
+        );
+        assert_eq!(
+            fb[19 * FRAMEBUFFER_WIDTH + 10],
+            0,
+            "pixel just above rect must be untouched"
+        );
+    }
+
+    /// Verifies that `fill_rect_indexed` clips negative origin coordinates rather than panicking.
+    #[test]
+    fn fill_rect_indexed_clips_negative_coords() {
+        let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
+        fill_rect_indexed(&mut fb, -2, -1, 4, 3, 3);
+        assert_eq!(fb[0], 3, "clipped region starting at (0,0) must be filled");
+        assert_eq!(
+            fb[FRAMEBUFFER_WIDTH], 3,
+            "second row of clipped region must be filled"
+        );
+    }
+
+    /// Verifies that `fill_rect_indexed` is a no-op when width or height is zero.
+    #[test]
+    fn fill_rect_indexed_zero_dimension_fills_nothing() {
+        let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
+        fill_rect_indexed(&mut fb, 0, 0, 0, 10, 5);
+        fill_rect_indexed(&mut fb, 0, 0, 10, 0, 5);
+        assert!(
+            fb.iter().all(|&b| b == 0),
+            "zero-dimension fill must leave framebuffer unchanged"
+        );
+    }
+
+    /// Unit under test: `execute_commands_on_framebuffer` with `RenderCommand::Blit`.
+    ///
+    /// Preconditions: a synthetic SHA has one tileset at header entry 0 with one 1×1 tile
+    /// containing pixel value 42.
+    ///
+    /// Invariants asserted: the framebuffer pixel at the blit destination contains 42 after
+    /// dispatch, confirming tile lookup by entry index, pixel copying, and coordinate placement.
+    #[test]
+    fn execute_commands_on_framebuffer_blit_copies_tile_pixel() {
+        let sha = parse_synthetic_sha_tileset(&[(1, 1, 0, &[42])], 0);
+        let commands = [RenderCommand::Blit {
+            tileset: 0,
+            tile: 0,
+            x: 5,
+            y: 7,
+            opaque: true,
+        }];
+        let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
+        execute_commands_on_framebuffer(&mut fb, &commands, &sha);
+        assert_eq!(
+            fb[7 * FRAMEBUFFER_WIDTH + 5],
+            42,
+            "blit must copy tile pixel to destination"
+        );
+    }
+
+    /// Unit under test: `execute_commands_on_framebuffer` with `RenderCommand::FillRect`.
+    ///
+    /// Preconditions: an empty (zero-header) SHA is supplied so no tile lookup is needed.
+    ///
+    /// Invariants asserted: the framebuffer region described by the command is filled with
+    /// `color`, and pixels outside the region remain at their initial value of zero.
+    #[test]
+    fn execute_commands_on_framebuffer_fill_rect_fills_region() {
+        const SHA_HEADER_BYTES: usize = 128 * 4 + 128 * 2;
+        let sha =
+            ShaFile::from_bytes(vec![0u8; SHA_HEADER_BYTES]).expect("zero SHA header should parse");
+        let commands = [RenderCommand::FillRect {
+            x: 2,
+            y: 3,
+            width: 4,
+            height: 5,
+            color: 9,
+        }];
+        let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
+        execute_commands_on_framebuffer(&mut fb, &commands, &sha);
+        assert_eq!(
+            fb[3 * FRAMEBUFFER_WIDTH + 2],
+            9,
+            "top-left corner must be filled"
+        );
+        assert_eq!(
+            fb[7 * FRAMEBUFFER_WIDTH + 5],
+            9,
+            "bottom-right corner (x+w-1, y+h-1) must be filled"
+        );
+        assert_eq!(
+            fb[3 * FRAMEBUFFER_WIDTH + 6],
+            0,
+            "pixel just right of rect must be untouched"
+        );
+        assert_eq!(
+            fb[2 * FRAMEBUFFER_WIDTH + 2],
+            0,
+            "pixel just above rect must be untouched"
+        );
+    }
+
+    /// Unit under test: `execute_commands_on_framebuffer` with `RenderCommand::DrawText`.
+    ///
+    /// Preconditions: a synthetic SHA has a font tileset containing a `!` glyph with one
+    /// non-zero pixel; the command requests palette index 13.
+    ///
+    /// Invariants asserted: the rendered glyph pixel uses the command's `color_index` rather
+    /// than the source glyph's stored pixel value.
+    #[test]
+    fn execute_commands_on_framebuffer_draw_text_applies_color_index() {
+        let sha = parse_synthetic_sha_with_font_tiles(&[(1, 1, 0, &[0]), (1, 1, 0, &[9])]);
+        let commands = [RenderCommand::DrawText {
+            text: "!".to_owned(),
+            x: 4,
+            y: 6,
+            color_index: 13,
+        }];
+        let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
+
+        execute_commands_on_framebuffer(&mut fb, &commands, &sha);
+
+        assert_eq!(fb[6 * FRAMEBUFFER_WIDTH + 4], 13);
     }
 }

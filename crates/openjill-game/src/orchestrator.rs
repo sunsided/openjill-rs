@@ -69,16 +69,18 @@ impl GameOrchestrator {
 
     /// Advances the active screen handler by one fixed game tick.
     ///
-    /// Applies any [`ScreenTransition`] returned by the handler, then returns
-    /// this tick's render commands. The caller should cache and re-present
-    /// these commands on vsync ticks that do not fire a game tick.
+    /// Applies any [`ScreenTransition`] returned by the handler, then prepends the static
+    /// status bar commands before the handler's commands. The returned command list begins with
+    /// the status bar so renderers always draw it first without each screen needing to emit it.
     pub fn tick(&mut self, input: &ActiveInput) -> Vec<RenderCommand> {
         let result = self.handler.tick(input, &mut self.state);
         if let Some(transition) = result.transition {
             self.apply_transition(transition);
         }
-        self.last_commands = result.commands.clone();
-        result.commands
+        let mut commands = crate::status_bar::status_bar_commands();
+        commands.extend(result.commands);
+        self.last_commands = commands.clone();
+        commands
     }
 
     /// Returns `true` when the active handler has requested
@@ -234,10 +236,10 @@ mod tests {
     /// `ScreenTransition::StartMenu` on its first tick is installed in the
     /// orchestrator.
     ///
-    /// Invariants asserted: the first tick returns the handler's marker render
-    /// command and fires the transition; the second tick returns empty commands
-    /// from the swapped-in `StartMenuScreen` stub, confirming that
-    /// `apply_transition` replaced the handler.
+    /// Invariants asserted: the first tick includes the handler's marker render
+    /// command alongside the prepended status bar commands; the second tick contains
+    /// only the status bar commands (no marker), confirming that `apply_transition`
+    /// replaced the handler with `StartMenuScreen`.
     #[test]
     fn tick_swaps_handler_on_screen_transition() {
         let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
@@ -245,14 +247,21 @@ mod tests {
 
         let input: ActiveInput = Default::default();
 
-        let commands = orchestrator.tick(&input);
-        assert_eq!(commands, vec![RenderCommand::Clear { color: 42 }]);
+        let first = orchestrator.tick(&input);
+        assert!(
+            first.contains(&RenderCommand::Clear { color: 42 }),
+            "marker command must appear in first tick alongside status bar commands"
+        );
         assert!(!orchestrator.is_quitting());
 
-        let commands = orchestrator.tick(&input);
+        let second = orchestrator.tick(&input);
         assert!(
-            commands.is_empty(),
-            "expected empty commands from StartMenuScreen after transition"
+            !second.contains(&RenderCommand::Clear { color: 42 }),
+            "marker command must not appear after handler swap to StartMenuScreen"
+        );
+        assert!(
+            !second.is_empty(),
+            "second tick must include status bar commands even after handler swap"
         );
     }
 

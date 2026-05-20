@@ -13,6 +13,7 @@ openjill-core = { path = "../openjill-core" }
 openjill-data = { path = "../openjill-data" }
 openjill-render = { path = "../openjill-render" }
 pollster.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 wgpu.workspace = true
 winit.workspace = true
