@@ -66,8 +66,8 @@ enum DataCommand {
 
 #[derive(Args, Debug)]
 struct DataDirArgs {
-    #[arg(long, default_value = "data/original/JILL1")]
-    data_dir: PathBuf,
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -141,7 +141,7 @@ fn dispatch(command: Command) -> Result<()> {
 
 /// Runs the interactive game loop using the configured data directory.
 fn run_command(args: RunArgs) -> Result<()> {
-    run_game(args.common.data_dir).map_err(Into::into)
+    run_game(resolve_run_data_dir(&args)).map_err(Into::into)
 }
 
 fn data_verify_command(args: VerifyArgs) -> Result<()> {
@@ -295,6 +295,22 @@ fn resolve_verify_data_dir(args: &VerifyArgs) -> PathBuf {
         args.data_dir.clone(),
         nonempty_env_os(DATA_DIR_ENV).or_else(|| nonempty_env_os(OPENJILL_DATA_DIR_ENV)),
     )
+}
+
+/// Resolves the data directory for `run` using CLI flag, environment, and fallback order.
+fn resolve_run_data_dir(args: &RunArgs) -> PathBuf {
+    resolve_run_data_dir_with_env(args, nonempty_env_os(OPENJILL_DATA_DIR_ENV))
+}
+
+/// Resolves the data directory for `run` from explicit args plus an injected env override.
+///
+/// Splits the env read out of [`resolve_run_data_dir`] so unit tests can exercise the
+/// flag/env/default precedence without mutating process environment state.
+fn resolve_run_data_dir_with_env(
+    args: &RunArgs,
+    env_override: Option<std::ffi::OsString>,
+) -> PathBuf {
+    resolve_data_dir_with_env(args.common.data_dir.clone(), env_override)
 }
 
 /// Resolves the data directory for `dump` using CLI flag, environment, and fallback order.
@@ -1390,9 +1406,10 @@ fn print_file_report(label: &str, file: &FileVerification) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Command, DataCommand, FileVerification, SHA_ATLAS_INDEXED_FILE,
-        SHA_ATLAS_TILE_PADDING, VerificationStatus, dispatch,
-        reject_original_data_output_with_roots, resolve_data_dir_with_env, verify_data_directory,
+        Cli, Command, DEFAULT_DATA_DIR, DataCommand, DataDirArgs, FileVerification, RunArgs,
+        SHA_ATLAS_INDEXED_FILE, SHA_ATLAS_TILE_PADDING, VerificationStatus, dispatch,
+        reject_original_data_output_with_roots, resolve_data_dir_with_env,
+        resolve_run_data_dir_with_env, verify_data_directory,
     };
     use assert2::check;
     use clap::Parser;
@@ -1553,6 +1570,56 @@ mod tests {
     fn dump_uses_environment_fallback_when_flag_is_omitted() {
         let resolved = resolve_data_dir_with_env(None, Some("/tmp/openjill-fixture".into()));
         check!(resolved == PathBuf::from("/tmp/openjill-fixture"));
+    }
+
+    /// Unit under test: explicit `--data-dir` precedence in run data-dir resolution.
+    ///
+    /// Preconditions: an explicit `--data-dir` value is supplied alongside an
+    /// environment override.
+    ///
+    /// Invariants asserted: the explicit flag value wins over the environment
+    /// override.
+    #[test]
+    fn run_prefers_explicit_data_dir_over_environment() {
+        let args = RunArgs {
+            common: DataDirArgs {
+                data_dir: Some(PathBuf::from("/tmp/openjill-run-explicit")),
+            },
+        };
+        let resolved = resolve_run_data_dir_with_env(&args, Some("/tmp/openjill-run-env".into()));
+        check!(resolved == PathBuf::from("/tmp/openjill-run-explicit"));
+    }
+
+    /// Unit under test: environment-variable fallback in run data-dir resolution.
+    ///
+    /// Preconditions: no explicit `--data-dir` value is supplied while an
+    /// environment override (modeling `OPENJILL_DATA_DIR`) is provided.
+    ///
+    /// Invariants asserted: the environment value is used as the resolved run
+    /// data directory.
+    #[test]
+    fn run_uses_environment_fallback_when_flag_is_omitted() {
+        let args = RunArgs {
+            common: DataDirArgs { data_dir: None },
+        };
+        let resolved = resolve_run_data_dir_with_env(&args, Some("/tmp/openjill-run-env".into()));
+        check!(resolved == PathBuf::from("/tmp/openjill-run-env"));
+    }
+
+    /// Unit under test: default fallback in run data-dir resolution.
+    ///
+    /// Preconditions: neither an explicit `--data-dir` value nor an environment
+    /// override is provided.
+    ///
+    /// Invariants asserted: the workspace-relative `DEFAULT_DATA_DIR` is used as
+    /// the resolved run data directory.
+    #[test]
+    fn run_falls_back_to_default_when_flag_and_env_are_absent() {
+        let args = RunArgs {
+            common: DataDirArgs { data_dir: None },
+        };
+        let resolved = resolve_run_data_dir_with_env(&args, None);
+        check!(resolved == PathBuf::from(DEFAULT_DATA_DIR));
     }
 
     /// Unit under test: failing exit status from `data verify`.

@@ -103,9 +103,7 @@ impl DecodedGlyphTile {
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum TileDecodeError {
     /// The SHA tile `type`/`data_format` is unsupported by the current decoder.
-    #[error(
-        "unsupported SHA tile type {data_format} in tileset {tileset_index} tile {tile_index}"
-    )]
+    #[error("unsupported SHA tile type {data_format} in tileset {tileset_index} tile {tile_index}")]
     UnknownType {
         /// Header entry index of the parent tileset.
         tileset_index: usize,
@@ -635,8 +633,8 @@ fn select_surface_format(formats: &[TextureFormat]) -> Result<TextureFormat, Pre
 #[cfg(test)]
 mod tests {
     use super::{
-        FRAMEBUFFER_HEIGHT, FRAMEBUFFER_PIXELS, FRAMEBUFFER_WIDTH, RGBA_BUFFER_BYTES,
-        ShaFontTiles, TileDecodeError, blit_indexed, calculate_present_scale, clamp_surface_size,
+        FRAMEBUFFER_HEIGHT, FRAMEBUFFER_PIXELS, FRAMEBUFFER_WIDTH, RGBA_BUFFER_BYTES, ShaFontTiles,
+        TileDecodeError, blit_indexed, calculate_present_scale, clamp_surface_size,
         draw_text_indexed, expand_indexed_framebuffer, select_surface_format,
     };
     use openjill_core::Palette;
