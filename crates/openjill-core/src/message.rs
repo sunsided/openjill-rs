@@ -96,7 +96,7 @@ pub struct MessageDispatcher {
     /// Registered handlers keyed by message type.
     subscribers: HashMap<MessageType, Vec<Box<dyn MessageHandler>>>,
     /// Messages queued because no handler existed at send time, keyed by type.
-    pending: HashMap<MessageType, Vec<(MessageType, MessagePayload)>>,
+    pending: HashMap<MessageType, Vec<MessagePayload>>,
 }
 
 impl MessageDispatcher {
@@ -116,9 +116,9 @@ impl MessageDispatcher {
     pub fn subscribe(&mut self, msg_type: MessageType, handler: Box<dyn MessageHandler>) {
         self.subscribers.entry(msg_type).or_default().push(handler);
         if let Some(queued) = self.pending.remove(&msg_type) {
-            for (t, payload) in queued {
+            for payload in queued {
                 for h in self.subscribers.get_mut(&msg_type).unwrap() {
-                    h.handle(t, &payload);
+                    h.handle(msg_type, &payload);
                 }
             }
         }
@@ -136,10 +136,7 @@ impl MessageDispatcher {
                 }
             }
             _ => {
-                self.pending
-                    .entry(msg_type)
-                    .or_default()
-                    .push((msg_type, payload));
+                self.pending.entry(msg_type).or_default().push(payload);
             }
         }
     }
