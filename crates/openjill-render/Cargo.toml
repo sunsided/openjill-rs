@@ -7,3 +7,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+# Reserved for upcoming vertex/uniform buffer types.
+bytemuck.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+winit.workspace = true

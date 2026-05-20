@@ -7,8 +7,6 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use openjill_audio::AudioBackend;
-use openjill_core::CoreState;
 use openjill_data::ByteReader;
 use openjill_data::cfg::CfgFile;
 use openjill_data::dma::DmaFile;
@@ -16,8 +14,7 @@ use openjill_data::jn::JnFile;
 use openjill_data::sha::ShaFile;
 use openjill_data::vcl::VclFile;
 use openjill_data::{DataDirectory, DataDirectoryError};
-use openjill_game::GameApp;
-use openjill_render::Renderer;
+use openjill_game::run as run_game;
 use png::{BitDepth, ColorType, Encoder};
 use sha2::{Digest, Sha256};
 
@@ -142,11 +139,9 @@ fn dispatch(command: Command) -> Result<()> {
     }
 }
 
+/// Runs the interactive game loop using the configured data directory.
 fn run_command(args: RunArgs) -> Result<()> {
-    let core = CoreState::new(DataDirectory::new(args.common.data_dir));
-    let _game = GameApp::new(core, Renderer::new(), AudioBackend::new());
-    println!("'run' command is currently a workspace-foundation stub.");
-    Ok(())
+    run_game(args.common.data_dir).map_err(Into::into)
 }
 
 fn data_verify_command(args: VerifyArgs) -> Result<()> {
