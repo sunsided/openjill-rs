@@ -3,6 +3,29 @@
 use openjill_data::DataDirectory;
 use openjill_data::sha::ShaColorMapEntry;
 
+/// One logical input action produced by the input layer and consumed by game logic.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum InputCommand {
+    /// Move Jill to the left.
+    MoveLeft,
+    /// Move Jill to the right.
+    MoveRight,
+    /// Trigger a jump.
+    Jump,
+    /// Trigger ducking.
+    Duck,
+    /// Throw the currently held inventory item.
+    ThrowItem,
+    /// Select the next inventory item.
+    NextInventory,
+    /// Select the previous inventory item.
+    PrevInventory,
+    /// Pause or open the in-game menu.
+    Pause,
+    /// Request quitting the current game session.
+    Quit,
+}
+
 #[derive(Clone, Debug)]
 pub struct CoreState {
     data_directory: DataDirectory,

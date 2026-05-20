@@ -1,17 +1,36 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use openjill_core::Palette;
+use openjill_core::{InputCommand, Palette};
 use openjill_data::DataDirectory;
 use openjill_data::sha::ShaFile;
 use openjill_render::{Presenter, PresenterError, SurfaceError};
 use thiserror::Error;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
+
+/// Default keyboard mapping from physical keys to logical input commands.
+static INPUT_COMMAND_KEY_MAP: &[(KeyCode, InputCommand)] = &[
+    (KeyCode::ArrowLeft, InputCommand::MoveLeft),
+    (KeyCode::ArrowRight, InputCommand::MoveRight),
+    (KeyCode::ArrowUp, InputCommand::Jump),
+    (KeyCode::Space, InputCommand::Jump),
+    (KeyCode::AltLeft, InputCommand::Jump),
+    (KeyCode::AltRight, InputCommand::Jump),
+    (KeyCode::ArrowDown, InputCommand::Duck),
+    (KeyCode::ControlLeft, InputCommand::ThrowItem),
+    (KeyCode::ControlRight, InputCommand::ThrowItem),
+    (KeyCode::Tab, InputCommand::NextInventory),
+    (KeyCode::Backspace, InputCommand::PrevInventory),
+    (KeyCode::Escape, InputCommand::Pause),
+    (KeyCode::KeyQ, InputCommand::Quit),
+];
 
 /// Runs the game event loop for the configured data directory.
 pub fn run(data_dir: PathBuf) -> Result<(), GameError> {
@@ -33,6 +52,12 @@ pub struct GameApp {
     palette: Palette,
     /// Deferred startup/runtime error propagated after event-loop shutdown.
     error: Option<GameError>,
+    /// Physical keys currently held down; source of truth for active commands.
+    ///
+    /// Tracking physical keys (rather than commands directly) keeps multi-key
+    /// bindings correct when one of several keys mapped to the same command is
+    /// released while another remains held.
+    pressed_keys: BTreeSet<KeyCode>,
 }
 
 impl GameApp {
@@ -48,7 +73,56 @@ impl GameApp {
             presenter: None,
             palette,
             error: None,
+            pressed_keys: BTreeSet::new(),
         }
+    }
+
+    /// Translates one physical key code into its mapped logical command.
+    ///
+    /// Returns `None` when no default binding exists for the key.
+    fn map_key_to_input_command(key_code: KeyCode) -> Option<InputCommand> {
+        INPUT_COMMAND_KEY_MAP
+            .iter()
+            .find_map(|(mapped_key, command)| (*mapped_key == key_code).then_some(*command))
+    }
+
+    /// Applies one key press or release to the pressed-keys set.
+    ///
+    /// Unmapped keys are silently ignored and leave the set unchanged.
+    fn update_pressed_keys(
+        pressed_keys: &mut BTreeSet<KeyCode>,
+        key_code: KeyCode,
+        state: ElementState,
+    ) {
+        if Self::map_key_to_input_command(key_code).is_none() {
+            return;
+        }
+        match state {
+            ElementState::Pressed => {
+                pressed_keys.insert(key_code);
+            }
+            ElementState::Released => {
+                pressed_keys.remove(&key_code);
+            }
+        }
+    }
+
+    /// Derives the set of logical commands currently active from held keys.
+    ///
+    /// Multiple held keys mapped to the same command collapse to a single entry,
+    /// and a command remains active as long as at least one bound key is held.
+    fn active_commands(pressed_keys: &BTreeSet<KeyCode>) -> BTreeSet<InputCommand> {
+        pressed_keys
+            .iter()
+            .filter_map(|key| Self::map_key_to_input_command(*key))
+            .collect()
+    }
+
+    /// Runs one game tick with the currently active logical input commands.
+    ///
+    /// This per-frame hook is where orchestration code advances game state from inputs.
+    fn tick(active_commands: &BTreeSet<InputCommand>) {
+        let _ = active_commands;
     }
 }
 
@@ -154,12 +228,23 @@ impl ApplicationHandler for GameApp {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(key_code) = event.physical_key {
+                    Self::update_pressed_keys(&mut self.pressed_keys, key_code, event.state);
+                }
+            }
+            WindowEvent::Focused(false) => {
+                // Release events are not delivered when focus is lost (e.g. alt-tab),
+                // so clear held keys to avoid sticky inputs after focus returns.
+                self.pressed_keys.clear();
+            }
             _ => {}
         }
     }
 
     /// Clears and presents one frame while the loop is idle, then requests another redraw.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        Self::tick(&Self::active_commands(&self.pressed_keys));
         if let Some(presenter) = self.presenter.as_mut() {
             presenter.clear(0);
             match presenter.present(&self.palette) {
@@ -195,4 +280,160 @@ pub enum GameError {
     /// Renderer setup or frame presentation failed.
     #[error(transparent)]
     Presenter(#[from] PresenterError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GameApp;
+    use openjill_core::InputCommand;
+    use std::collections::BTreeSet;
+    use winit::event::ElementState;
+    use winit::keyboard::KeyCode;
+
+    /// Unit under test: `GameApp::map_key_to_input_command`.
+    ///
+    /// Preconditions: representative keys from the default control mapping are provided,
+    /// including keys that intentionally share the same command (jump and throw item).
+    ///
+    /// Invariants asserted: each mapped key resolves to the expected `InputCommand`, and
+    /// shared bindings map to the same command consistently.
+    #[test]
+    fn map_key_to_input_command_resolves_default_bindings() {
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::ArrowLeft),
+            Some(InputCommand::MoveLeft)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::ArrowRight),
+            Some(InputCommand::MoveRight)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::ArrowUp),
+            Some(InputCommand::Jump)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::Space),
+            Some(InputCommand::Jump)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::AltLeft),
+            Some(InputCommand::Jump)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::ArrowDown),
+            Some(InputCommand::Duck)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::ControlLeft),
+            Some(InputCommand::ThrowItem)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::Tab),
+            Some(InputCommand::NextInventory)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::Backspace),
+            Some(InputCommand::PrevInventory)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::Escape),
+            Some(InputCommand::Pause)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::KeyQ),
+            Some(InputCommand::Quit)
+        );
+    }
+
+    /// Unit under test: `GameApp::map_key_to_input_command`.
+    ///
+    /// Preconditions: an unmapped key code is provided.
+    ///
+    /// Invariants asserted: unmapped keys are ignored and return `None`.
+    #[test]
+    fn map_key_to_input_command_ignores_unmapped_keys() {
+        assert_eq!(GameApp::map_key_to_input_command(KeyCode::KeyZ), None);
+    }
+
+    /// Unit under test: `GameApp::update_pressed_keys` and `GameApp::active_commands`.
+    ///
+    /// Preconditions: an empty pressed-keys set receives mapped and unmapped key events,
+    /// with both pressed and released states.
+    ///
+    /// Invariants asserted: mapped presses are tracked, mapped releases are removed,
+    /// the derived active-command set reflects held keys, and unmapped keys leave both
+    /// the pressed-key set and the derived command set unchanged.
+    #[test]
+    fn update_pressed_keys_tracks_press_release_and_ignores_unmapped_keys() {
+        let mut pressed = BTreeSet::new();
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ArrowLeft, ElementState::Pressed);
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::Space, ElementState::Pressed);
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::MoveLeft, InputCommand::Jump])
+        );
+
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ArrowLeft, ElementState::Released);
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::Jump])
+        );
+
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::KeyZ, ElementState::Pressed);
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::Jump])
+        );
+    }
+
+    /// Unit under test: `GameApp::active_commands`.
+    ///
+    /// Preconditions: multiple physical keys mapped to the same logical command are held,
+    /// then released one at a time.
+    ///
+    /// Invariants asserted: a command stays active while any of its bound keys is held,
+    /// and clears only after the last bound key is released.
+    #[test]
+    fn active_commands_persist_until_last_bound_key_released() {
+        let mut pressed = BTreeSet::new();
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ArrowUp, ElementState::Pressed);
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::Space, ElementState::Pressed);
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::AltLeft, ElementState::Pressed);
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::Jump])
+        );
+
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ArrowUp, ElementState::Released);
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::Jump])
+        );
+
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::Space, ElementState::Released);
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::Jump])
+        );
+
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::AltLeft, ElementState::Released);
+        assert!(GameApp::active_commands(&pressed).is_empty());
+    }
+
+    /// Unit under test: focus-loss handling clears the pressed-keys set.
+    ///
+    /// Preconditions: keys are held when focus is lost; release events for them never arrive.
+    ///
+    /// Invariants asserted: clearing `pressed_keys` (as the focus-loss handler does)
+    /// drops all derived active commands so inputs do not stick across alt-tab.
+    #[test]
+    fn clearing_pressed_keys_drops_all_active_commands() {
+        let mut pressed = BTreeSet::new();
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ArrowLeft, ElementState::Pressed);
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::Space, ElementState::Pressed);
+        assert!(!GameApp::active_commands(&pressed).is_empty());
+
+        pressed.clear();
+        assert!(GameApp::active_commands(&pressed).is_empty());
+    }
 }
