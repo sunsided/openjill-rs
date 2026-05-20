@@ -1444,6 +1444,7 @@ dependencies = [
  "openjill-data",
  "openjill-render",
  "pollster",
+ "serde_json",
  "thiserror 2.0.18",
  "wgpu",
  "winit",
