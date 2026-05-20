@@ -32,6 +32,9 @@ const RGBA_BUFFER_BYTES: usize = FRAMEBUFFER_PIXELS * 4;
 const GAME_ASPECT_RATIO: f32 = FRAMEBUFFER_WIDTH as f32 / FRAMEBUFFER_HEIGHT as f32;
 
 /// Decoded SHA font glyph tiles used by [`Presenter::draw_text`].
+///
+/// Construct this wrapper with [`ShaFontTiles::from_tileset`] after loading a
+/// font tileset from `JILL1.SHA`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShaFontTiles {
     /// Glyph tiles in printable-ASCII order (`index = codepoint - 32`).
@@ -60,6 +63,9 @@ impl ShaFontTiles {
 }
 
 /// One decoded glyph tile containing row-major indexed source pixels.
+///
+/// Each value represents one ASCII glyph image from a SHA font tileset and
+/// stores the exact pixels plus dimensions consumed by the blitter.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DecodedGlyphTile {
     /// Row-major indexed source pixels for this glyph.
@@ -368,7 +374,13 @@ impl Presenter {
         );
     }
 
-    /// Draws one text string by blitting SHA font glyph tiles in sequence.
+    /// Draws one text string by blitting SHA font glyph tiles left-to-right.
+    ///
+    /// The first glyph is rendered at `(x, y)` using top-left framebuffer
+    /// coordinates; each subsequent glyph advances by the previous glyph width.
+    /// Printable ASCII characters (`' '` through `'~'`) map directly to SHA
+    /// glyph index `c - 32`. Tabs, newlines, and out-of-range characters are
+    /// replaced by the space glyph.
     pub fn draw_text(&mut self, text: &str, x: i32, y: i32, font: &ShaFontTiles) {
         draw_text_indexed(&mut self.framebuffer, text, x, y, font);
     }
@@ -507,12 +519,18 @@ fn blit_indexed(
     }
 }
 
-/// Draws text by blitting glyph tiles into the indexed framebuffer.
+/// Draws text by blitting glyph tiles into a 320x200 indexed framebuffer.
+///
+/// `framebuffer` must contain exactly one byte per pixel in row-major
+/// `y * 320 + x` order. `x`/`y` are top-left destination coordinates for the
+/// first glyph, and each glyph advances the text cursor by its width. Character
+/// lookup follows printable ASCII index `c - 32`, with unsupported characters
+/// replaced by the space glyph. When the font has no glyphs, drawing is a no-op.
 fn draw_text_indexed(framebuffer: &mut [u8], text: &str, x: i32, y: i32, font: &ShaFontTiles) {
     let mut cursor_x = x;
     for character in text.chars() {
         let Some(glyph) = font.glyph_for_character(character) else {
-            return;
+            continue;
         };
         blit_indexed(
             framebuffer,
