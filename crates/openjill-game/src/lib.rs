@@ -150,7 +150,8 @@ struct StartupTilePreview {
 /// Loads startup rendering assets from `JILL1.SHA`.
 ///
 /// Falls back to [`Palette::greyscale_fallback`] when the file is missing, unreadable, or
-/// contains no non-empty color map, and logs which source was used to stdout.
+/// contains no non-empty color map. Informational diagnostics are logged to stdout, while
+/// warnings and fallback notices are logged to stderr.
 ///
 /// Manual integration check procedure:
 /// run `openjill-rs run` with `OPENJILL_DATA_DIR` pointing at an episode-1 directory,
@@ -176,7 +177,7 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
         Ok(sha) => sha,
         Err(error) => {
             eprintln!(
-                "openjill-game: failed to parse JILL1.SHA color map ({error}); using greyscale palette fallback"
+                "openjill-game: failed to parse JILL1.SHA ({error}); using greyscale palette fallback"
             );
             return StartupAssets {
                 palette: Palette::greyscale_fallback(),
@@ -190,10 +191,10 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
         "openjill-game: observed JILL1.SHA tile type/data_format values: {observed_tile_types:?}"
     );
     if observed_tile_types.contains(&0) {
-        println!("openjill-game: SHA tile type 0 is available for the startup preview tile");
+        println!("openjill-game: SHA tile type 0 is present somewhere in JILL1.SHA");
     } else {
         eprintln!(
-            "openjill-game: SHA tile type 0 is not present; startup preview tile will be skipped"
+            "openjill-game: SHA tile type 0 is not observed in JILL1.SHA; startup preview tile will be skipped"
         );
     }
 
