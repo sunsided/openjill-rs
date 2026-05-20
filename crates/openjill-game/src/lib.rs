@@ -186,7 +186,9 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
     };
 
     let observed_tile_types = observed_tile_types(&sha);
-    println!("openjill-game: observed JILL1.SHA tile type values: {observed_tile_types:?}");
+    println!(
+        "openjill-game: observed JILL1.SHA tile type/data_format values: {observed_tile_types:?}"
+    );
     if observed_tile_types.contains(&0) {
         println!("openjill-game: SHA tile type 0 is available for the startup preview tile");
     } else {
@@ -257,7 +259,7 @@ fn startup_tile_preview(sha: &ShaFile) -> Option<StartupTilePreview> {
     }
 
     Some(StartupTilePreview {
-        indexed_pixels: tile.indexed_pixels().to_vec().into_boxed_slice(),
+        indexed_pixels: Box::from(tile.indexed_pixels()),
         width: tile.width().into(),
         height: tile.height().into(),
     })
