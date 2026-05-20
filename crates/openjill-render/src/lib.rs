@@ -42,9 +42,9 @@ pub struct Presenter {
     /// Active swap-chain configuration used for presentation.
     surface_config: SurfaceConfiguration,
     /// Indexed 320x200 framebuffer updated by clear and blit operations.
-    framebuffer: [u8; FRAMEBUFFER_PIXELS],
+    framebuffer: Box<[u8]>,
     /// Expanded RGBA buffer uploaded to the GPU each present call.
-    rgba_buffer: [u8; RGBA_BUFFER_BYTES],
+    rgba_buffer: Box<[u8]>,
     /// GPU texture that stores the expanded RGBA frame.
     frame_texture: Texture,
     /// Bind-group containing the frame texture, sampler, and scaling uniform.
@@ -147,7 +147,7 @@ impl Presenter {
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
+            format: TextureFormat::Rgba8UnormSrgb,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -267,8 +267,8 @@ impl Presenter {
             device,
             queue,
             surface_config,
-            framebuffer: [0; FRAMEBUFFER_PIXELS],
-            rgba_buffer: [0; RGBA_BUFFER_BYTES],
+            framebuffer: vec![0_u8; FRAMEBUFFER_PIXELS].into_boxed_slice(),
+            rgba_buffer: vec![0_u8; RGBA_BUFFER_BYTES].into_boxed_slice(),
             frame_texture,
             frame_bind_group,
             present_pipeline,
@@ -396,19 +396,24 @@ fn acquire_surface_texture(current: CurrentSurfaceTexture) -> Result<SurfaceText
 }
 
 /// Expands indexed pixels into RGBA bytes using a palette lookup per pixel.
-fn expand_indexed_framebuffer(
-    framebuffer: &[u8; FRAMEBUFFER_PIXELS],
-    rgba_buffer: &mut [u8; RGBA_BUFFER_BYTES],
-    palette: &Palette,
-) {
+///
+/// `framebuffer` must be exactly [`FRAMEBUFFER_PIXELS`] bytes; `rgba_buffer` must be exactly
+/// [`RGBA_BUFFER_BYTES`] bytes. The presenter owns these buffers, so the lengths are guaranteed
+/// at the only call site.
+fn expand_indexed_framebuffer(framebuffer: &[u8], rgba_buffer: &mut [u8], palette: &Palette) {
+    debug_assert_eq!(framebuffer.len(), FRAMEBUFFER_PIXELS);
+    debug_assert_eq!(rgba_buffer.len(), RGBA_BUFFER_BYTES);
     for (source, destination) in framebuffer.iter().zip(rgba_buffer.chunks_exact_mut(4)) {
         destination.copy_from_slice(&palette.rgba(*source));
     }
 }
 
 /// Blits indexed source pixels into a framebuffer with clipping and optional transparency.
+///
+/// Returns without writing any pixels when `src` is shorter than `src_width * src_height`,
+/// so a too-small source never produces a partially-updated framebuffer.
 fn blit_indexed(
-    framebuffer: &mut [u8; FRAMEBUFFER_PIXELS],
+    framebuffer: &mut [u8],
     src: &[u8],
     src_width: u16,
     src_height: u16,
@@ -416,9 +421,16 @@ fn blit_indexed(
     dst_y: i32,
     opaque: bool,
 ) {
+    debug_assert_eq!(framebuffer.len(), FRAMEBUFFER_PIXELS);
     let src_width = src_width as usize;
     let src_height = src_height as usize;
     if src_width == 0 || src_height == 0 {
+        return;
+    }
+    let Some(required_bytes) = src_width.checked_mul(src_height) else {
+        return;
+    };
+    if src.len() < required_bytes {
         return;
     }
 
@@ -435,9 +447,7 @@ fn blit_indexed(
             }
 
             let src_index = src_y * src_width + src_x;
-            let Some(&pixel) = src.get(src_index) else {
-                return;
-            };
+            let pixel = src[src_index];
             if !opaque && pixel == 0 {
                 continue;
             }
@@ -559,7 +569,9 @@ mod tests {
     /// Letterboxes frames for tall windows by shrinking only the Y axis.
     #[test]
     fn calculate_present_scale_letterboxes_tall_windows() {
-        assert_eq!(calculate_present_scale(1200, 1200), [1.0, 0.625]);
+        let [scale_x, scale_y] = calculate_present_scale(1200, 1200);
+        assert!((scale_x - 1.0).abs() < 1e-6);
+        assert!((scale_y - 0.625).abs() < 1e-6);
     }
 
     /// Pillarboxes frames for wide windows by shrinking only the X axis.
@@ -567,7 +579,7 @@ mod tests {
     fn calculate_present_scale_pillarboxes_wide_windows() {
         let [scale_x, scale_y] = calculate_present_scale(1920, 800);
         assert!((scale_x - 0.6666667).abs() < 1e-6);
-        assert_eq!(scale_y, 1.0);
+        assert!((scale_y - 1.0).abs() < 1e-6);
     }
 
     /// Expands indexed pixels to RGBA bytes using the supplied palette lookup.
