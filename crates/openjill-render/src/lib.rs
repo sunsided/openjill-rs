@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use openjill_core::Palette;
+use openjill_data::sha::{ShaTile, ShaTileSet};
 use thiserror::Error;
 use wgpu::{
     AddressMode, Backends, BindGroup, Buffer, BufferBindingType, BufferUsages, ColorTargetState,
@@ -29,6 +30,80 @@ const FRAMEBUFFER_PIXELS: usize = FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT;
 const RGBA_BUFFER_BYTES: usize = FRAMEBUFFER_PIXELS * 4;
 /// Native game aspect ratio used for letterbox and pillarbox scaling.
 const GAME_ASPECT_RATIO: f32 = FRAMEBUFFER_WIDTH as f32 / FRAMEBUFFER_HEIGHT as f32;
+
+/// Decoded SHA font glyph tiles used by [`Presenter::draw_text`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShaFontTiles {
+    /// Glyph tiles in printable-ASCII order (`index = codepoint - 32`).
+    glyphs: Vec<DecodedGlyphTile>,
+}
+
+impl ShaFontTiles {
+    /// Decodes a SHA font tileset into blit-ready glyph pixels.
+    pub fn from_tileset(tileset: &ShaTileSet) -> Result<Self, TileDecodeError> {
+        let mut glyphs = Vec::with_capacity(tileset.tiles().len());
+        for tile in tileset.tiles() {
+            glyphs.push(DecodedGlyphTile::from_sha_tile(tile)?);
+        }
+        Ok(Self { glyphs })
+    }
+
+    /// Returns the glyph tile for `character`, replacing unsupported values with space.
+    fn glyph_for_character(&self, character: char) -> Option<&DecodedGlyphTile> {
+        let glyph_index = if character.is_ascii_graphic() || character == ' ' {
+            usize::from(character as u8 - b' ')
+        } else {
+            0
+        };
+        self.glyphs.get(glyph_index).or_else(|| self.glyphs.first())
+    }
+}
+
+/// One decoded glyph tile containing row-major indexed source pixels.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DecodedGlyphTile {
+    /// Row-major indexed source pixels for this glyph.
+    pixels: Vec<u8>,
+    /// Glyph width in pixels.
+    width: u8,
+    /// Glyph height in pixels.
+    height: u8,
+}
+
+impl DecodedGlyphTile {
+    /// Decodes one SHA tile record into a glyph tile.
+    fn from_sha_tile(tile: &ShaTile) -> Result<Self, TileDecodeError> {
+        if tile.data_format() != 0 {
+            return Err(TileDecodeError::UnknownType {
+                tileset_index: tile.tileset_index(),
+                tile_index: tile.image_index(),
+                data_format: tile.data_format(),
+            });
+        }
+        Ok(Self {
+            pixels: tile.indexed_pixels().to_vec(),
+            width: tile.width(),
+            height: tile.height(),
+        })
+    }
+}
+
+/// Errors returned while decoding SHA tiles into renderer-ready pixel buffers.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum TileDecodeError {
+    /// The SHA tile `type`/`data_format` is unsupported by the current decoder.
+    #[error(
+        "unsupported SHA tile type {data_format} in tileset {tileset_index} tile {tile_index}"
+    )]
+    UnknownType {
+        /// Header entry index of the parent tileset.
+        tileset_index: usize,
+        /// Tile index inside the parent tileset.
+        tile_index: usize,
+        /// Unsupported SHA tile `type`/`data_format` value.
+        data_format: u8,
+    },
+}
 
 /// Owns the wgpu instance, surface, and presentation state for the active window.
 pub struct Presenter {
@@ -293,6 +368,11 @@ impl Presenter {
         );
     }
 
+    /// Draws one text string by blitting SHA font glyph tiles in sequence.
+    pub fn draw_text(&mut self, text: &str, x: i32, y: i32, font: &ShaFontTiles) {
+        draw_text_indexed(&mut self.framebuffer, text, x, y, font);
+    }
+
     /// Expands the indexed framebuffer to RGBA, uploads it, and presents one frame.
     pub fn present(&mut self, palette: &Palette) -> Result<(), PresenterError> {
         expand_indexed_framebuffer(&self.framebuffer, &mut self.rgba_buffer, palette);
@@ -427,6 +507,26 @@ fn blit_indexed(
     }
 }
 
+/// Draws text by blitting glyph tiles into the indexed framebuffer.
+fn draw_text_indexed(framebuffer: &mut [u8], text: &str, x: i32, y: i32, font: &ShaFontTiles) {
+    let mut cursor_x = x;
+    for character in text.chars() {
+        let Some(glyph) = font.glyph_for_character(character) else {
+            return;
+        };
+        blit_indexed(
+            framebuffer,
+            &glyph.pixels,
+            u16::from(glyph.width),
+            u16::from(glyph.height),
+            cursor_x,
+            y,
+            false,
+        );
+        cursor_x += i32::from(glyph.width);
+    }
+}
+
 /// Computes letterbox/pillarbox scaling in NDC space for the current surface size.
 fn calculate_present_scale(width: u32, height: u32) -> [f32; 2] {
     let width = width.max(1) as f32;
@@ -506,11 +606,12 @@ fn select_surface_format(formats: &[TextureFormat]) -> Result<TextureFormat, Pre
 #[cfg(test)]
 mod tests {
     use super::{
-        FRAMEBUFFER_HEIGHT, FRAMEBUFFER_PIXELS, FRAMEBUFFER_WIDTH, RGBA_BUFFER_BYTES, blit_indexed,
-        calculate_present_scale, clamp_surface_size, expand_indexed_framebuffer,
-        select_surface_format,
+        FRAMEBUFFER_HEIGHT, FRAMEBUFFER_PIXELS, FRAMEBUFFER_WIDTH, RGBA_BUFFER_BYTES,
+        ShaFontTiles, TileDecodeError, blit_indexed, calculate_present_scale, clamp_surface_size,
+        draw_text_indexed, expand_indexed_framebuffer, select_surface_format,
     };
     use openjill_core::Palette;
+    use openjill_data::sha::ShaFile;
     use wgpu::TextureFormat;
 
     /// Verifies zero-sized dimensions are promoted to one pixel for surface safety.
@@ -624,5 +725,106 @@ mod tests {
         assert_eq!(framebuffer[1], 2);
         assert_eq!(framebuffer[FRAMEBUFFER_WIDTH], 3);
         assert_eq!(framebuffer[FRAMEBUFFER_WIDTH + 1], 5);
+    }
+
+    /// Unit under test: `ShaFontTiles::from_tileset` decode-path validation.
+    ///
+    /// Preconditions: a synthetic SHA payload declares one font tile whose `data_format` is an
+    /// unsupported non-zero type.
+    ///
+    /// Invariants asserted: decoding returns `TileDecodeError::UnknownType` and preserves the
+    /// tileset index, tile index, and unsupported type value in the error payload.
+    #[test]
+    fn sha_font_tiles_reports_unknown_tile_type() {
+        let sha = parse_synthetic_sha_with_font_tiles(&[(1, 1, 7, &[1])]);
+        let error = ShaFontTiles::from_tileset(&sha.tilesets()[0])
+            .expect_err("non-zero tile type should be rejected");
+        assert_eq!(
+            error,
+            TileDecodeError::UnknownType {
+                tileset_index: 0,
+                tile_index: 0,
+                data_format: 7,
+            }
+        );
+    }
+
+    /// Unit under test: glyph placement in `draw_text_indexed`.
+    ///
+    /// Preconditions: a synthetic font contains at least the space glyph and the `!` glyph; the
+    /// framebuffer starts at all zeroes and text is drawn at a known offset.
+    ///
+    /// Invariants asserted: drawing `"!"` writes exactly that glyph's pixels at the requested X/Y
+    /// origin, proving character-to-glyph lookup (`index = c - 32`) and blit destination math.
+    #[test]
+    fn draw_text_indexed_blits_single_character_at_expected_offset() {
+        let sha = parse_synthetic_sha_with_font_tiles(&[(1, 1, 0, &[0]), (2, 1, 0, &[9, 8])]);
+        let font = ShaFontTiles::from_tileset(&sha.tilesets()[0])
+            .expect("font tileset should decode successfully");
+        let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
+
+        draw_text_indexed(&mut framebuffer, "!", 10, 3, &font);
+
+        assert_eq!(framebuffer[3 * FRAMEBUFFER_WIDTH + 10], 9);
+        assert_eq!(framebuffer[3 * FRAMEBUFFER_WIDTH + 11], 8);
+    }
+
+    /// Unit under test: unsupported-character fallback in `draw_text_indexed`.
+    ///
+    /// Preconditions: a synthetic font provides a non-transparent space glyph and text contains a
+    /// newline plus an out-of-range non-ASCII character.
+    ///
+    /// Invariants asserted: each unsupported character is replaced with the space glyph, so both
+    /// draws write the space glyph pixel value at the corresponding destination.
+    #[test]
+    fn draw_text_indexed_replaces_unsupported_characters_with_space_glyph() {
+        let sha = parse_synthetic_sha_with_font_tiles(&[(1, 1, 0, &[7])]);
+        let font = ShaFontTiles::from_tileset(&sha.tilesets()[0])
+            .expect("font tileset should decode successfully");
+        let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
+
+        draw_text_indexed(&mut framebuffer, "\né", 2, 4, &font);
+
+        assert_eq!(framebuffer[4 * FRAMEBUFFER_WIDTH + 2], 7);
+        assert_eq!(framebuffer[4 * FRAMEBUFFER_WIDTH + 3], 7);
+    }
+
+    /// Builds and parses a minimal SHA payload containing one font tileset with caller-provided
+    /// tile records.
+    fn parse_synthetic_sha_with_font_tiles(tile_specs: &[(u8, u8, u8, &[u8])]) -> ShaFile {
+        const TILESET_ENTRY_COUNT: usize = 128;
+        const HEADER_BYTES: usize = TILESET_ENTRY_COUNT * 4 + TILESET_ENTRY_COUNT * 2;
+        const FLAG_FONT: u16 = 0x0001;
+
+        let tile_count =
+            u8::try_from(tile_specs.len()).expect("synthetic fixture expects <=255 glyph tiles");
+        let mut tileset_bytes = Vec::new();
+        tileset_bytes.push(tile_count);
+        tileset_bytes.extend_from_slice(&1u16.to_le_bytes());
+        tileset_bytes.extend_from_slice(&0u16.to_le_bytes());
+        tileset_bytes.extend_from_slice(&0u16.to_le_bytes());
+        tileset_bytes.extend_from_slice(&0u16.to_le_bytes());
+        tileset_bytes.push(8);
+        tileset_bytes.extend_from_slice(&FLAG_FONT.to_le_bytes());
+
+        for &(width, height, data_format, pixels) in tile_specs {
+            assert_eq!(pixels.len(), usize::from(width) * usize::from(height));
+            tileset_bytes.push(width);
+            tileset_bytes.push(height);
+            tileset_bytes.push(data_format);
+            tileset_bytes.extend_from_slice(pixels);
+        }
+
+        let tileset_size =
+            u16::try_from(tileset_bytes.len()).expect("synthetic tileset should fit u16 size");
+        let tileset_offset = u32::try_from(HEADER_BYTES).expect("header fits u32");
+
+        let mut bytes = vec![0_u8; HEADER_BYTES];
+        bytes[0..4].copy_from_slice(&tileset_offset.to_le_bytes());
+        let size_table_start = TILESET_ENTRY_COUNT * 4;
+        bytes[size_table_start..size_table_start + 2].copy_from_slice(&tileset_size.to_le_bytes());
+        bytes.extend_from_slice(&tileset_bytes);
+
+        ShaFile::from_bytes(bytes).expect("synthetic SHA fixture should parse")
     }
 }
