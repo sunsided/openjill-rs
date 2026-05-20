@@ -10,6 +10,7 @@ authors.workspace = true
 # Audio mixer and core domain types are wired in upcoming subsystems; kept here to document the runtime graph.
 openjill-audio = { path = "../openjill-audio" }
 openjill-core = { path = "../openjill-core" }
+openjill-data = { path = "../openjill-data" }
 openjill-render = { path = "../openjill-render" }
 pollster.workspace = true
 thiserror.workspace = true

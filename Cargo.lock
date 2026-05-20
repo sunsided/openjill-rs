@@ -1440,6 +1440,7 @@ version = "0.1.0"
 dependencies = [
  "openjill-audio",
  "openjill-core",
+ "openjill-data",
  "openjill-render",
  "pollster",
  "thiserror 2.0.18",
@@ -1452,6 +1453,7 @@ name = "openjill-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "openjill-core",
  "thiserror 2.0.18",
  "wgpu",
  "winit",

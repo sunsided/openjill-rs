@@ -66,7 +66,7 @@ enum DataCommand {
 
 #[derive(Args, Debug)]
 struct DataDirArgs {
-    #[arg(long, default_value = "data/original/jill1")]
+    #[arg(long, default_value = "data/original/JILL1")]
     data_dir: PathBuf,
 }
 
