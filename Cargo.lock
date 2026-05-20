@@ -1454,6 +1454,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "openjill-core",
+ "openjill-data",
  "thiserror 2.0.18",
  "wgpu",
  "winit",

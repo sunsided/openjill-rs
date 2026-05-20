@@ -10,6 +10,7 @@ authors.workspace = true
 # Reserved for upcoming vertex/uniform buffer types.
 bytemuck.workspace = true
 openjill-core = { path = "../openjill-core" }
+openjill-data = { path = "../openjill-data" }
 thiserror.workspace = true
 wgpu.workspace = true
 winit.workspace = true
