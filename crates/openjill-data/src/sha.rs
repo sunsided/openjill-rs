@@ -74,13 +74,17 @@ impl ShaHeader {
 }
 
 /// One preserved 4-byte color-map entry shared by every tile in a tileset.
+///
+/// The three meaningful bytes map to different color indices for each video mode the engine
+/// supported. In VGA mode, which is the mode used by this port, `cga`, `ega`, and `vga`
+/// store the 6-bit R, G, B components respectively.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShaColorMapEntry {
-    /// CGA palette index for this logical color.
+    /// CGA palette index; in VGA mode this byte contains the 6-bit Red component.
     cga: u8,
-    /// EGA palette index for this logical color.
+    /// EGA palette index; in VGA mode this byte contains the 6-bit Green component.
     ega: u8,
-    /// VGA palette index for this logical color.
+    /// VGA palette index; in VGA mode this byte contains the 6-bit Blue component.
     vga: u8,
     /// Reserved byte preserved verbatim from disk.
     reserved: u8,

@@ -28,9 +28,20 @@ pub struct Palette {
 impl Palette {
     /// Builds a palette from SHA color-map entries.
     ///
-    /// SHA stores VGA components as 6-bit values in the range `0..=63`. Each component is
-    /// expanded to 8-bit with `(value << 2) | (value >> 4)`, which preserves both boundary
-    /// values exactly (`0 -> 0`, `63 -> 255`) while spreading intermediate values uniformly.
+    /// The SHA on-disk color map stores one 4-byte entry per indexed color. Each entry
+    /// contains three bytes for the three video modes the engine supported, followed by a
+    /// reserved byte. In VGA mode the three meaningful bytes are the R, G, B components
+    /// (fields named `cga`, `ega`, `vga` respectively by the original data format convention):
+    ///
+    /// | on-disk field | video-mode name | VGA meaning |
+    /// |---------------|----------------|-------------|
+    /// | `cga`         | CGA index       | Red         |
+    /// | `ega`         | EGA index       | Green       |
+    /// | `vga`         | VGA index       | Blue        |
+    ///
+    /// Each component is a 6-bit value in the range `0..=63`. It is expanded to 8-bit with
+    /// `(value << 2) | (value >> 4)`, which preserves both boundary values exactly
+    /// (`0 → 0`, `63 → 255`) while spreading intermediate values uniformly.
     pub fn from_sha_color_map(entries: &[ShaColorMapEntry]) -> Self {
         let mut expanded = [[0_u8; 3]; 256];
         for (destination, entry) in expanded.iter_mut().zip(entries.iter()) {
