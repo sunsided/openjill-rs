@@ -10,3 +10,7 @@ authors.workspace = true
 openjill-audio = { path = "../openjill-audio" }
 openjill-core = { path = "../openjill-core" }
 openjill-render = { path = "../openjill-render" }
+pollster.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+winit.workspace = true
