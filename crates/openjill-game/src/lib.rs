@@ -373,9 +373,9 @@ impl ApplicationHandler for GameApp {
     /// Advances the game tick when the 55 ms interval has elapsed, then presents
     /// one frame and requests the next redraw.
     ///
-    /// Game ticks fire at approximately 18 Hz (every 55 ms). On vsync ticks that
-    /// do not reach the tick interval the presenter re-presents the command list
-    /// from the last game tick, keeping the display smooth at vsync rate.
+    /// Game ticks fire at approximately 18 Hz (every 55 ms). Render commands
+    /// returned by the orchestrator are cached but not yet executed against the
+    /// presenter; `execute_and_present` wiring is added in child issue 3.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         let should_tick = self

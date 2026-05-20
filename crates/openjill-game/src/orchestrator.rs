@@ -40,8 +40,9 @@ pub struct GameOrchestrator {
     level_jn_bytes: Option<Vec<u8>>,
     /// Render commands from the most recent game tick.
     ///
-    /// Re-presented by the event loop on vsync ticks that do not fire a game
-    /// tick, keeping the display smooth at vsync rate while ticking at 18 Hz.
+    /// Cached here for the event loop to re-present on vsync ticks that do not
+    /// fire a game tick. Actual command execution via `execute_and_present` is
+    /// wired in child issue 3.
     last_commands: Vec<RenderCommand>,
     /// Set to `true` when the active handler requests [`ScreenTransition::Quit`].
     quitting: bool,

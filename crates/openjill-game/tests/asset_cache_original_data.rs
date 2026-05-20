@@ -17,11 +17,8 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     if let Some(path) = env_override {
         return Some(PathBuf::from(path));
     }
-    let fallback = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .map(|workspace_root| workspace_root.join("data/original/JILL1"));
-    fallback.filter(|p| p.is_dir())
+    let default = Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1");
+    Some(default).filter(|p| p.is_dir())
 }
 
 /// Unit under test: `AssetCache::load` with real episode 1 game files.
