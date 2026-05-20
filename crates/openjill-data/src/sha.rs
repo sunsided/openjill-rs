@@ -87,6 +87,16 @@ pub struct ShaColorMapEntry {
 }
 
 impl ShaColorMapEntry {
+    /// Creates a color-map entry from explicit component bytes.
+    pub fn new(cga: u8, ega: u8, vga: u8, reserved: u8) -> Self {
+        Self {
+            cga,
+            ega,
+            vga,
+            reserved,
+        }
+    }
+
     /// Returns the preserved CGA palette index.
     pub fn cga(&self) -> u8 {
         self.cga

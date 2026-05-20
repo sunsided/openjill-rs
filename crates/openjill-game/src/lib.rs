@@ -3,7 +3,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use openjill_render::{Palette, Presenter, PresenterError, SurfaceError};
+use openjill_core::Palette;
+use openjill_data::DataDirectory;
+use openjill_data::sha::ShaFile;
+use openjill_render::{Presenter, PresenterError, SurfaceError};
 use thiserror::Error;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -34,15 +37,60 @@ pub struct GameApp {
 
 impl GameApp {
     /// Creates a new game app shell before the event loop enters `resumed`.
+    ///
+    /// Loads the startup palette from the first non-empty SHA color map found in
+    /// `JILL1.SHA`, or falls back to a greyscale ramp when no color map is available.
     pub fn new(data_dir: PathBuf) -> Self {
+        let palette = load_palette_from_data_dir(&data_dir);
         Self {
             data_dir,
             window: None,
             presenter: None,
-            palette: Palette::default(),
+            palette,
             error: None,
         }
     }
+}
+
+/// Loads the startup palette from the first non-empty SHA color map in `JILL1.SHA`.
+///
+/// Falls back to [`Palette::greyscale_fallback`] when the file is missing, unreadable, or
+/// contains no non-empty color map, and logs which source was used to `stderr`.
+fn load_palette_from_data_dir(data_dir: &std::path::Path) -> Palette {
+    let directory = DataDirectory::new(data_dir.to_path_buf());
+    let mut reader = match directory.open_reader("JILL1.SHA") {
+        Ok(reader) => reader,
+        Err(error) => {
+            eprintln!(
+                "openjill-game: JILL1.SHA unavailable ({error}); using greyscale palette fallback"
+            );
+            return Palette::greyscale_fallback();
+        }
+    };
+    let sha = match ShaFile::parse(&mut reader) {
+        Ok(sha) => sha,
+        Err(error) => {
+            eprintln!(
+                "openjill-game: failed to parse JILL1.SHA color map ({error}); using greyscale palette fallback"
+            );
+            return Palette::greyscale_fallback();
+        }
+    };
+
+    for tileset in sha.tilesets() {
+        if let Some(color_map) = tileset.color_map().filter(|entries| !entries.is_empty()) {
+            eprintln!(
+                "openjill-game: palette loaded from JILL1.SHA tileset entry {}",
+                tileset.entry_index()
+            );
+            return Palette::from_sha_color_map(color_map);
+        }
+    }
+
+    eprintln!(
+        "openjill-game: no non-empty color map in JILL1.SHA; using greyscale palette fallback"
+    );
+    Palette::greyscale_fallback()
 }
 
 impl ApplicationHandler for GameApp {

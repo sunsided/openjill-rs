@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
+use openjill_core::Palette;
 use thiserror::Error;
 use wgpu::{
     AddressMode, Backends, BindGroup, Buffer, BufferBindingType, BufferUsages, ColorTargetState,
@@ -63,38 +64,6 @@ struct ScaleUniform {
     scale: [f32; 2],
     /// Padding to satisfy 16-byte alignment requirements.
     _padding: [f32; 2],
-}
-
-/// Palette used to expand indexed framebuffer values to RGBA colors.
-#[derive(Clone, Debug)]
-pub struct Palette {
-    /// RGBA color entries addressed by indexed framebuffer values.
-    colors: [[u8; 4]; 256],
-}
-
-impl Palette {
-    /// Creates a palette from explicit RGBA entries.
-    pub fn new(colors: [[u8; 4]; 256]) -> Self {
-        Self { colors }
-    }
-
-    /// Returns the RGBA color for one indexed framebuffer value.
-    pub fn rgba(&self, index: u8) -> [u8; 4] {
-        self.colors[index as usize]
-    }
-}
-
-impl Default for Palette {
-    /// Creates a deterministic synthetic palette suitable for startup rendering.
-    fn default() -> Self {
-        let mut colors = [[0_u8; 4]; 256];
-        for (index, color) in colors.iter_mut().enumerate() {
-            let value = index as u8;
-            *color = [value, value, 255_u8.saturating_sub(value), 255];
-        }
-        colors[0] = [32, 48, 96, 255];
-        Self { colors }
-    }
 }
 
 impl Presenter {
@@ -537,10 +506,11 @@ fn select_surface_format(formats: &[TextureFormat]) -> Result<TextureFormat, Pre
 #[cfg(test)]
 mod tests {
     use super::{
-        FRAMEBUFFER_HEIGHT, FRAMEBUFFER_PIXELS, FRAMEBUFFER_WIDTH, Palette, RGBA_BUFFER_BYTES,
-        blit_indexed, calculate_present_scale, clamp_surface_size, expand_indexed_framebuffer,
+        FRAMEBUFFER_HEIGHT, FRAMEBUFFER_PIXELS, FRAMEBUFFER_WIDTH, RGBA_BUFFER_BYTES, blit_indexed,
+        calculate_present_scale, clamp_surface_size, expand_indexed_framebuffer,
         select_surface_format,
     };
+    use openjill_core::Palette;
     use wgpu::TextureFormat;
 
     /// Verifies zero-sized dimensions are promoted to one pixel for surface safety.
@@ -588,10 +558,10 @@ mod tests {
         let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
         framebuffer[0] = 1;
         framebuffer[1] = 2;
-        let mut colors = [[0_u8; 4]; 256];
-        colors[1] = [10, 20, 30, 255];
-        colors[2] = [40, 50, 60, 255];
-        let palette = Palette::new(colors);
+        let mut entries = [[0_u8; 3]; 256];
+        entries[1] = [10, 20, 30];
+        entries[2] = [40, 50, 60];
+        let palette = Palette { entries };
         let mut rgba_buffer = [0_u8; RGBA_BUFFER_BYTES];
 
         expand_indexed_framebuffer(&framebuffer, &mut rgba_buffer, &palette);
@@ -600,11 +570,11 @@ mod tests {
         assert_eq!(&rgba_buffer[4..8], &[40, 50, 60, 255]);
     }
 
-    /// Verifies the synthetic default palette keeps index zero non-black for startup visibility.
+    /// Verifies the greyscale fallback palette keeps index zero black for the transparent convention.
     #[test]
-    fn default_palette_index_zero_is_non_black() {
+    fn default_palette_index_zero_is_black() {
         let palette = Palette::default();
-        assert_eq!(palette.rgba(0), [32, 48, 96, 255]);
+        assert_eq!(palette.rgba(0), [0, 0, 0, 255]);
     }
 
     /// Ensures framebuffer geometry constants match the expected 320x200 resolution.
