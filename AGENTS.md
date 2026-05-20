@@ -2,6 +2,16 @@
 
 Guidance for AI coding agents working in this repository.
 
+## Format reference
+
+For byte-level layout of the original Jill data files (DMA, SHA, JN, MAC,
+CFG, EXE palette offsets), consult
+[`docs/port/00-format-reference.md`](docs/port/00-format-reference.md) before
+touching parsers or anything that reads original bytes. It cites the
+ModdingWiki sources and is the canonical answer for "what does this byte
+mean?". Phase subplans and `PORT.md` link into it rather than duplicating
+the spec.
+
 ## Documentation comments
 
 Every module, type, field, function, and method must carry a doc comment,

@@ -230,6 +230,13 @@ The gameplay runtime should expose these boundaries between crates:
 
 ## File Format Port Notes
 
+For full byte-level specs, including MAC demo macros, JN object/string-stack
+details, SHA palette-override tiles, and CFG round-trip rules, see the
+ModdingWiki-derived reference at
+[`docs/port/00-format-reference.md`](docs/port/00-format-reference.md). The
+notes below are the port-specific deltas (Java source pointers, parser
+expectations) layered on top of that reference.
+
 `DMA`:
 
 - Java source: `dma-file/src/main/java/org/jill/dma`.
