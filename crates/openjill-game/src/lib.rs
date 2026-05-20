@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use openjill_render::{Presenter, PresenterError, SurfaceError};
+use openjill_render::{Palette, Presenter, PresenterError, SurfaceError};
 use thiserror::Error;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -26,6 +26,8 @@ pub struct GameApp {
     window: Option<Arc<Window>>,
     /// Rendering presenter initialized from the native window.
     presenter: Option<Presenter>,
+    /// Active palette used to expand indexed frame data during presentation.
+    palette: Palette,
     /// Deferred startup/runtime error propagated after event-loop shutdown.
     error: Option<GameError>,
 }
@@ -37,6 +39,7 @@ impl GameApp {
             data_dir,
             window: None,
             presenter: None,
+            palette: Palette::default(),
             error: None,
         }
     }
@@ -100,23 +103,6 @@ impl ApplicationHandler for GameApp {
                     presenter.resize(size.width, size.height);
                 }
             }
-            WindowEvent::RedrawRequested => {
-                if let Some(presenter) = self.presenter.as_mut() {
-                    match presenter.present() {
-                        Ok(()) => {}
-                        Err(PresenterError::SurfaceError(SurfaceError::Lost))
-                        | Err(PresenterError::SurfaceError(SurfaceError::Outdated)) => {
-                            presenter.reconfigure();
-                        }
-                        Err(PresenterError::SurfaceError(SurfaceError::Timeout))
-                        | Err(PresenterError::SurfaceError(SurfaceError::Occluded)) => {}
-                        Err(error) => {
-                            self.error = Some(GameError::Presenter(error));
-                            event_loop.exit();
-                        }
-                    }
-                }
-            }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
@@ -124,8 +110,25 @@ impl ApplicationHandler for GameApp {
         }
     }
 
-    /// Requests a redraw so the surface presents continuously while the loop is idle.
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    /// Clears and presents one frame while the loop is idle, then requests another redraw.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(presenter) = self.presenter.as_mut() {
+            presenter.clear(0);
+            match presenter.present(&self.palette) {
+                Ok(()) => {}
+                Err(PresenterError::SurfaceError(SurfaceError::Lost))
+                | Err(PresenterError::SurfaceError(SurfaceError::Outdated)) => {
+                    presenter.reconfigure();
+                }
+                Err(PresenterError::SurfaceError(SurfaceError::Timeout))
+                | Err(PresenterError::SurfaceError(SurfaceError::Occluded)) => {}
+                Err(error) => {
+                    self.error = Some(GameError::Presenter(error));
+                    event_loop.exit();
+                    return;
+                }
+            }
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
