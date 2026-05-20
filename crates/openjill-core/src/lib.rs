@@ -1,7 +1,25 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
+
 use openjill_data::DataDirectory;
 use openjill_data::sha::ShaColorMapEntry;
+
+pub mod layout;
+pub mod message;
+pub mod render;
+pub mod runtime;
+pub mod screen;
+
+pub use message::{
+    ChangeLevelPayload, MessageDispatcher, MessageHandler, MessagePayload, MessageType,
+};
+pub use render::RenderCommand;
+pub use runtime::{InventoryObject, MAP_LEVEL, RuntimeState};
+pub use screen::{ScreenHandler, ScreenTransition, SoundEvent, TickResult};
+
+/// Set of logical input commands currently active (held) during one tick.
+pub type ActiveInput = BTreeSet<InputCommand>;
 
 /// One logical input action produced by the input layer and consumed by game logic.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
