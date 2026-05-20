@@ -1335,7 +1335,13 @@ fn path_relative_to_data_dir(data_dir: &Path, path: &Path) -> PathBuf {
 
 /// Computes a lowercase hexadecimal SHA-256 digest for `bytes`.
 fn sha256_lower_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter() {
+        use std::fmt::Write as _;
+        write!(&mut hex, "{:02x}", byte).expect("writing to a String never fails");
+    }
+    hex
 }
 
 /// Prints a human-readable verification report.

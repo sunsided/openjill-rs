@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use thiserror::Error;
 use wgpu::{
-    Backends, CompositeAlphaMode, Device, DeviceDescriptor, Features, Instance, InstanceDescriptor,
-    Limits, PowerPreference, PresentMode, Queue, RequestAdapterOptions, Surface,
-    SurfaceConfiguration, SurfaceError, TextureUsages,
+    Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, DeviceDescriptor, Features,
+    Instance, InstanceDescriptor, Limits, PowerPreference, PresentMode, Queue, RequestAdapterError,
+    RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceTexture, TextureUsages,
 };
 use winit::window::Window;
 
@@ -27,9 +27,9 @@ pub struct Presenter {
 impl Presenter {
     /// Creates a presenter by resolving instance, surface, adapter, device, and queue.
     pub async fn new(window: Arc<Window>) -> Result<Self, PresenterError> {
-        let instance = Instance::new(&InstanceDescriptor {
+        let instance = Instance::new(InstanceDescriptor {
             backends: Backends::all(),
-            ..InstanceDescriptor::default()
+            ..InstanceDescriptor::new_without_display_handle()
         });
         let window_size = clamp_surface_size(window.inner_size().width, window.inner_size().height);
         let surface = instance.create_surface(window)?;
@@ -39,18 +39,16 @@ impl Presenter {
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
-            .await
-            .ok_or(PresenterError::NoCompatibleAdapter)?;
+            .await?;
         let (device, queue) = adapter
-            .request_device(
-                &DeviceDescriptor {
-                    label: Some("openjill-render-device"),
-                    required_features: Features::empty(),
-                    required_limits: Limits::default(),
-                    memory_hints: wgpu::MemoryHints::Performance,
-                },
-                None,
-            )
+            .request_device(&DeviceDescriptor {
+                label: Some("openjill-render-device"),
+                required_features: Features::empty(),
+                required_limits: Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::Off,
+            })
             .await?;
         let capabilities = surface.get_capabilities(&adapter);
         let format = select_surface_format(&capabilities.formats)?;
@@ -92,7 +90,7 @@ impl Presenter {
 
     /// Renders one frame with a black clear color and presents it to the window surface.
     pub fn present(&mut self) -> Result<(), PresenterError> {
-        let frame = self.surface.get_current_texture()?;
+        let frame = acquire_surface_texture(self.surface.get_current_texture())?;
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -107,6 +105,7 @@ impl Presenter {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
@@ -115,12 +114,27 @@ impl Presenter {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             drop(render_pass);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         Ok(())
+    }
+}
+
+/// Maps a [`CurrentSurfaceTexture`] result into a usable texture or a typed surface error.
+fn acquire_surface_texture(current: CurrentSurfaceTexture) -> Result<SurfaceTexture, SurfaceError> {
+    match current {
+        CurrentSurfaceTexture::Success(texture) | CurrentSurfaceTexture::Suboptimal(texture) => {
+            Ok(texture)
+        }
+        CurrentSurfaceTexture::Timeout => Err(SurfaceError::Timeout),
+        CurrentSurfaceTexture::Outdated => Err(SurfaceError::Outdated),
+        CurrentSurfaceTexture::Lost => Err(SurfaceError::Lost),
+        CurrentSurfaceTexture::Occluded => Err(SurfaceError::Occluded),
+        CurrentSurfaceTexture::Validation => Err(SurfaceError::Validation),
     }
 }
 
@@ -131,8 +145,8 @@ pub enum PresenterError {
     #[error("failed to create wgpu surface: {0}")]
     SurfaceCreation(#[from] wgpu::CreateSurfaceError),
     /// No compatible adapter could be selected for the current window surface.
-    #[error("no compatible GPU adapter found for the active window surface")]
-    NoCompatibleAdapter,
+    #[error("no compatible GPU adapter found for the active window surface: {0}")]
+    NoCompatibleAdapter(#[from] RequestAdapterError),
     /// Device or queue creation failed after adapter selection.
     #[error("failed to create wgpu device: {0}")]
     RequestDevice(#[from] wgpu::RequestDeviceError),
@@ -142,6 +156,26 @@ pub enum PresenterError {
     /// Frame acquisition or presentation failed.
     #[error("surface presentation failed: {0}")]
     SurfaceError(#[from] SurfaceError),
+}
+
+/// Surface acquisition outcomes that callers can handle to recover or skip a frame.
+#[derive(Debug, Error)]
+pub enum SurfaceError {
+    /// Frame acquisition timed out; callers should skip this frame and try again.
+    #[error("timed out while acquiring the next surface texture")]
+    Timeout,
+    /// Surface configuration is outdated; callers should reconfigure and retry.
+    #[error("surface configuration is outdated")]
+    Outdated,
+    /// Surface has been lost; callers should reconfigure and retry.
+    #[error("surface has been lost and must be reconfigured")]
+    Lost,
+    /// Window is occluded; callers should skip this frame until visible again.
+    #[error("window is occluded")]
+    Occluded,
+    /// Validation error reported during acquisition; the prior error scope captured it.
+    #[error("validation error during surface acquisition")]
+    Validation,
 }
 
 /// Clamps zero-sized window dimensions to the minimum valid surface extent.

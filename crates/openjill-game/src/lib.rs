@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use openjill_render::{Presenter, PresenterError};
+use openjill_render::{Presenter, PresenterError, SurfaceError};
 use thiserror::Error;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -104,11 +104,12 @@ impl ApplicationHandler for GameApp {
                 if let Some(presenter) = self.presenter.as_mut() {
                     match presenter.present() {
                         Ok(()) => {}
-                        Err(PresenterError::SurfaceError(wgpu::SurfaceError::Lost))
-                        | Err(PresenterError::SurfaceError(wgpu::SurfaceError::Outdated)) => {
+                        Err(PresenterError::SurfaceError(SurfaceError::Lost))
+                        | Err(PresenterError::SurfaceError(SurfaceError::Outdated)) => {
                             presenter.reconfigure();
                         }
-                        Err(PresenterError::SurfaceError(wgpu::SurfaceError::Timeout)) => {}
+                        Err(PresenterError::SurfaceError(SurfaceError::Timeout))
+                        | Err(PresenterError::SurfaceError(SurfaceError::Occluded)) => {}
                         Err(error) => {
                             self.error = Some(GameError::Presenter(error));
                             event_loop.exit();
