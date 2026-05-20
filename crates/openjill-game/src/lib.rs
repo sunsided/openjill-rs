@@ -346,7 +346,7 @@ impl ApplicationHandler for GameApp {
         Self::tick(&Self::active_commands(&self.pressed_keys));
         if let Some(presenter) = self.presenter.as_mut() {
             presenter.clear(0);
-            if let Some(tile) = self.startup_tile_preview.as_ref() {
+            if let Some(tile) = self.startup_tile_preview.take() {
                 presenter.blit(&tile.indexed_pixels, tile.width, tile.height, 0, 0, true);
             }
             match presenter.present(&self.palette) {
