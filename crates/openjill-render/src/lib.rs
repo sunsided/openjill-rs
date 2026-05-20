@@ -53,10 +53,7 @@ impl Presenter {
             )
             .await?;
         let capabilities = surface.get_capabilities(&adapter);
-        let format = *capabilities
-            .formats
-            .first()
-            .ok_or(PresenterError::NoSurfaceFormats)?;
+        let format = select_surface_format(&capabilities.formats)?;
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -100,7 +97,7 @@ impl Presenter {
                 label: Some("openjill-render-present-encoder"),
             });
         {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("openjill-render-present-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -114,6 +111,7 @@ impl Presenter {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            drop(render_pass);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
@@ -146,15 +144,47 @@ fn clamp_surface_size(width: u32, height: u32) -> (u32, u32) {
     (width.max(1), height.max(1))
 }
 
-#[cfg(test)]
+/// Selects the preferred presentable format, favoring sRGB where possible.
+fn select_surface_format(
+    formats: &[wgpu::TextureFormat],
+) -> Result<wgpu::TextureFormat, PresenterError> {
+    const PREFERRED_FORMATS: [wgpu::TextureFormat; 2] = [
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ];
+
+    for preferred in PREFERRED_FORMATS {
+        if formats.contains(&preferred) {
+            return Ok(preferred);
+        }
+    }
+
+    formats
+        .first()
+        .copied()
+        .ok_or(PresenterError::NoSurfaceFormats)
+}
+
 /// Unit tests for presenter helper behavior.
+#[cfg(test)]
 mod tests {
-    use super::clamp_surface_size;
+    use super::{clamp_surface_size, select_surface_format};
+    use wgpu::TextureFormat;
 
     /// Verifies zero-sized dimensions are promoted to one pixel for surface safety.
     #[test]
     fn clamp_surface_size_promotes_zero_to_one() {
         assert_eq!(clamp_surface_size(0, 0), (1, 1));
         assert_eq!(clamp_surface_size(320, 200), (320, 200));
+    }
+
+    /// Prefers sRGB surface formats when they are available.
+    #[test]
+    fn select_surface_format_prefers_srgb() {
+        let formats = [TextureFormat::Rgba8Unorm, TextureFormat::Bgra8UnormSrgb];
+        assert_eq!(
+            select_surface_format(&formats).expect("surface format should be selected"),
+            TextureFormat::Bgra8UnormSrgb
+        );
     }
 }

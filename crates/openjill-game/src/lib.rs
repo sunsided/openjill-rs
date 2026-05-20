@@ -49,12 +49,17 @@ impl ApplicationHandler for GameApp {
             return;
         }
 
-        let title = format!("OpenJill - {}", self.data_dir.display());
+        let data_label = self
+            .data_dir
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("data");
+        let title = format!("OpenJill - {data_label}");
         let attributes = WindowAttributes::default().with_title(title);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
-                self.error = Some(GameError::WindowCreation(error.to_string()));
+                self.error = Some(GameError::WindowCreation(error));
                 event_loop.exit();
                 return;
             }
@@ -111,7 +116,9 @@ impl ApplicationHandler for GameApp {
                 | Err(PresenterError::SurfaceError(wgpu::SurfaceError::Outdated)) => {
                     if let Some(window) = self.window.as_ref() {
                         let size = window.inner_size();
-                        presenter.resize(size.width, size.height);
+                        if size.width > 0 && size.height > 0 {
+                            presenter.resize(size.width, size.height);
+                        }
                     }
                 }
                 Err(PresenterError::SurfaceError(wgpu::SurfaceError::Timeout)) => {}
@@ -137,7 +144,7 @@ pub enum GameError {
     EventLoop(#[from] winit::error::EventLoopError),
     /// Native window creation failed during `resumed`.
     #[error("failed to create native game window: {0}")]
-    WindowCreation(String),
+    WindowCreation(#[source] winit::error::OsError),
     /// Renderer setup or frame presentation failed.
     #[error(transparent)]
     Presenter(#[from] PresenterError),
