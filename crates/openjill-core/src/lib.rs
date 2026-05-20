@@ -22,10 +22,20 @@ impl CoreState {
 #[derive(Clone, Debug)]
 pub struct Palette {
     /// Expanded 8-bit RGB entries indexed by framebuffer color index.
-    pub entries: [[u8; 3]; 256],
+    entries: [[u8; 3]; 256],
 }
 
 impl Palette {
+    /// Builds a palette from a fully expanded 256-entry RGB table.
+    pub fn new(entries: [[u8; 3]; 256]) -> Self {
+        Self { entries }
+    }
+
+    /// Returns the expanded 8-bit RGB entries indexed by framebuffer color index.
+    pub fn entries(&self) -> &[[u8; 3]; 256] {
+        &self.entries
+    }
+
     /// Builds a palette from SHA color-map entries.
     ///
     /// The SHA on-disk color map stores one 4-byte entry per indexed color. Each entry

@@ -561,7 +561,7 @@ mod tests {
         let mut entries = [[0_u8; 3]; 256];
         entries[1] = [10, 20, 30];
         entries[2] = [40, 50, 60];
-        let palette = Palette { entries };
+        let palette = Palette::new(entries);
         let mut rgba_buffer = [0_u8; RGBA_BUFFER_BYTES];
 
         expand_indexed_framebuffer(&framebuffer, &mut rgba_buffer, &palette);

@@ -101,17 +101,17 @@ impl ShaColorMapEntry {
         }
     }
 
-    /// Returns the preserved CGA palette index.
+    /// Returns the preserved `cga` byte (Red component in VGA mode).
     pub fn cga(&self) -> u8 {
         self.cga
     }
 
-    /// Returns the preserved EGA palette index.
+    /// Returns the preserved `ega` byte (Green component in VGA mode).
     pub fn ega(&self) -> u8 {
         self.ega
     }
 
-    /// Returns the preserved VGA palette index.
+    /// Returns the preserved `vga` byte (Blue component in VGA mode).
     pub fn vga(&self) -> u8 {
         self.vga
     }
