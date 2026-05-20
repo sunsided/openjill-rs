@@ -25,6 +25,8 @@ tasks:
 
   lint:
     desc: Run clippy across the workspace (warnings as errors)
+    aliases:
+      - lint:check
     cmds:
       - cargo clippy --workspace --all-targets --all-features -- -D warnings
 
