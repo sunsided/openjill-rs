@@ -6,6 +6,9 @@ use openjill_data::DataDirectory;
 use thiserror::Error;
 
 use crate::asset_cache::{AssetCache, AssetError};
+use crate::screens::intro_screens::{
+    credits_screen, noisemaker_screen, ordering_info_screen, story_screen,
+};
 use crate::screens::start_menu::StartMenuScreen;
 
 /// Owns the current screen handler and drives the game tick and transition loop.
@@ -55,10 +58,16 @@ impl GameOrchestrator {
     /// fails to parse.
     pub fn new(data_dir: DataDirectory) -> Result<Self, OrchestratorError> {
         let cache = AssetCache::load(&data_dir)?;
+        let handler: Box<dyn ScreenHandler> = Box::new(StartMenuScreen::new(
+            cache.intro_jn.clone(),
+            cache.dma.clone(),
+            cache.vcl.clone(),
+            cache.cfg.clone(),
+        ));
         Ok(Self {
             cache,
             state: RuntimeState::new(),
-            handler: Box::new(StartMenuScreen::new()),
+            handler,
             data_dir,
             map_jn_bytes: None,
             level_jn_bytes: None,
@@ -111,21 +120,49 @@ impl GameOrchestrator {
 
         match transition {
             ScreenTransition::StartMenu => {
-                self.handler = Box::new(StartMenuScreen::new());
+                self.handler = Box::new(StartMenuScreen::new(
+                    self.cache.intro_jn.clone(),
+                    self.cache.dma.clone(),
+                    self.cache.vcl.clone(),
+                    self.cache.cfg.clone(),
+                ));
+            }
+            ScreenTransition::Story => {
+                self.handler = Box::new(story_screen(
+                    self.cache.intro_jn.clone(),
+                    self.cache.dma.clone(),
+                ));
+            }
+            ScreenTransition::Credits => {
+                self.handler = Box::new(credits_screen(
+                    self.cache.intro_jn.clone(),
+                    self.cache.dma.clone(),
+                ));
+            }
+            ScreenTransition::OrderingInfo => {
+                self.handler = Box::new(ordering_info_screen(
+                    self.cache.intro_jn.clone(),
+                    self.cache.dma.clone(),
+                ));
+            }
+            ScreenTransition::Noisemaker => {
+                self.handler = Box::new(noisemaker_screen(
+                    self.cache.intro_jn.clone(),
+                    self.cache.dma.clone(),
+                ));
             }
             ScreenTransition::Quit => {
                 self.quitting = true;
             }
-            // The remaining transitions are implemented in later child issues.
+            // Map and Level transitions are implemented in later child issues.
             // Until then, fall back to StartMenuScreen so the loop stays valid.
-            ScreenTransition::Map
-            | ScreenTransition::Level { .. }
-            | ScreenTransition::RestartLevel
-            | ScreenTransition::Story
-            | ScreenTransition::Credits
-            | ScreenTransition::OrderingInfo
-            | ScreenTransition::Noisemaker => {
-                self.handler = Box::new(StartMenuScreen::new());
+            ScreenTransition::Map | ScreenTransition::Level { .. } | ScreenTransition::RestartLevel => {
+                self.handler = Box::new(StartMenuScreen::new(
+                    self.cache.intro_jn.clone(),
+                    self.cache.dma.clone(),
+                    self.cache.vcl.clone(),
+                    self.cache.cfg.clone(),
+                ));
             }
         }
     }
@@ -148,6 +185,7 @@ mod tests {
     use openjill_data::DataDirectory;
     use openjill_data::cfg::CfgFile;
     use openjill_data::dma::DmaFile;
+    use openjill_data::jn::JnFile;
     use openjill_data::sha::ShaFile;
     use openjill_data::vcl::VclFile;
 
@@ -169,6 +207,11 @@ mod tests {
     /// 6 save names (12 bytes each) + setup/joystick/display/music/sound flags.
     const CFG_MIN_BYTES: usize = 10 * 10 + 20 + 10 * 4 + 6 * 12 + 2 + 2 + 6 * 2 + 2 + 2 + 2;
 
+    /// Byte count for a minimal valid `JnFile` with all-zero background and save data.
+    ///
+    /// 128×64 background cells (u16 each) + 0-object count (u16) + save data block.
+    const JN_MIN_BYTES: usize = 128 * 64 * 2 + 2 + 70;
+
     /// Creates a minimal valid [`AssetCache`] from synthetic zero-byte buffers.
     ///
     /// Used by orchestrator tests to avoid loading real game files.
@@ -179,7 +222,9 @@ mod tests {
         let vcl = VclFile::from_bytes(vec![0u8; VCL_MIN_BYTES]).expect("zero VCL should parse");
         let cfg =
             CfgFile::from_bytes(vec![0u8; CFG_MIN_BYTES], "JN1").expect("zero CFG should parse");
-        AssetCache { dma, sha, vcl, cfg }
+        let intro_jn =
+            JnFile::from_bytes(vec![0u8; JN_MIN_BYTES]).expect("zero JN should parse");
+        AssetCache { dma, sha, vcl, cfg, intro_jn }
     }
 
     /// Creates a [`GameOrchestrator`] from a synthetic cache and a custom handler.
