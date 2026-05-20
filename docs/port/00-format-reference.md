@@ -21,12 +21,27 @@ section below cites the upstream URL.
 - [MAC Format (Jill of the Jungle)][wiki-mac] — `*.MAC` demo macro stream.
 - [CFG Format (Jill of the Jungle)][wiki-cfg] — `*.CFG` high scores, save
   names, joystick/display/audio config.
+- [VCL Format][wiki-vcl] — `*.VCL` sound (8-bit signed PCM) and text tables.
+- [CMF Format][wiki-cmf] — `*.DDT` Adlib/OPL music (Creative Music Format).
+- [Crunched Screen Image][wiki-csi] — TheDraw byte-code stream used for
+  hardware-detect, ordering, and ending screens inside the loader EXE.
+- [Using the official Jill of the Jungle level editor][wiki-editor] —
+  in-game editor key bindings and the canonical object/iType name list
+  extracted from the episode 1 EXE.
+- [Category:Jill of the Jungle][wiki-cat] — index of every Jill page on
+  the wiki (B800 Text, CGA Palette, Cheats, palette image, etc.).
 
 [wiki-jill]: https://moddingwiki.shikadi.net/wiki/Jill_of_the_Jungle
 [wiki-jn]: https://moddingwiki.shikadi.net/wiki/Jill_of_the_Jungle_Map_Format
 [wiki-sha]: https://moddingwiki.shikadi.net/wiki/SHA_Format
 [wiki-mac]: https://moddingwiki.shikadi.net/wiki/MAC_Format_%28Jill_of_the_Jungle%29
 [wiki-cfg]: https://moddingwiki.shikadi.net/wiki/CFG_Format_%28Jill_of_the_Jungle%29
+[wiki-vcl]: https://moddingwiki.shikadi.net/wiki/VCL_Format
+[wiki-cmf]: https://moddingwiki.shikadi.net/wiki/CMF_Format
+[wiki-csi]: https://moddingwiki.shikadi.net/wiki/Crunched_Screen_Image
+[wiki-editor]: https://moddingwiki.shikadi.net/wiki/Using_the_official_Jill_of_the_Jungle_level_editor
+[wiki-cat]: https://moddingwiki.shikadi.net/wiki/Category:Jill_of_the_Jungle
+[wiki-dma]: https://moddingwiki.shikadi.net/wiki/DMA_Format
 
 All multi-byte values are little-endian unless stated otherwise.
 
@@ -76,7 +91,8 @@ so the EXE table is here only for parity work and palette extraction tools.
 
 ## DMA — `JILL.DMA`
 
-Source: [Jill of the Jungle Map Format][wiki-jn] §"Tile Mapping Table Entry".
+Sources: [DMA Format][wiki-dma] (entry layout), [Jill of the Jungle Map
+Format][wiki-jn] §"Tile Mapping Table Entry" (full flag bit semantics).
 
 Each entry is variable length:
 
@@ -222,11 +238,32 @@ scroll bug. Preserve order on save.
 
 #### Selected `iType` values (Jill)
 
+Numeric `iType` values are not exhaustively documented on the wiki, but the
+[level editor page][wiki-editor] lists the full object name table extracted
+from the episode 1 EXE. The mapping is positional in the EXE; the names below
+appear in the order they were dumped:
+
+```
+PLAYER, APPLE, KNIFE, KILLME, BIGANT, MACROTRIG, DEMON, BUNNY, INCHWORM,
+ZAPPER, BOBSLUG, CHECKPT, PAUL, WISEMAN, FATSO, FIREBALL, CLOUD, TEXT6,
+TEXT8, FROG, TINY, DOOR, FALLDOOR, BRIDGER, SCORE, TOKEN, PHOENIX, FIRE,
+SWITCH, TXTMSG, BOULDER, EXPL1, EXPL2, STALAG, SNAKE, SEAROCK, BOLL, MEGA,
+KNIGHT, BEENEST, BEESWARM, CRAB, CROC, EPIC, SPINBLAD, SKULL, BUTTON,
+JILLFISH, JILLSPIDER, JILLBIRD, JILLFROG, BUBBLE, JELLYFISH, BADFISH, ELEV,
+FIREBULLET, FISHBULLET, VINECLIMB, FLAG, MAPDEMO, ROMAN
+```
+
+The wiki notes "not all objects are valid", so the Rust port should treat
+unknown `iType` values as no-ops rather than aborting.
+
+Per-iType behavior the wiki documents explicitly:
+
 | iType | Name      | Notes                                                       |
 |-------|-----------|-------------------------------------------------------------|
 | `0`   | PLAYER    | Jill. Must be first object.                                 |
 | `1`   | APPLE     | Pickup.                                                     |
 | `2`   | KNIFE     | Pickup.                                                     |
+| `3`   | KILLME    | **Sentinel for deleted objects.** The editor's "delete" reassigns the object's `iType` to `KILLME` rather than removing the record. Treat as inert/dead. |
 | `12`  | CHECKPT   | Checkpoint. `iCounter` = level number; `iState == 1` resets level on death. |
 | `14`  | KEY       | Pickup; `iCounter` matches DOOR `iCounter`.                 |
 | `15`  | PAD       | Touch trigger; links via `iCounter`.                        |
@@ -235,7 +272,7 @@ scroll bug. Preserve order on save.
 | `23`  | TINY      | Overhead-map Jill sprite.                                   |
 | `24`  | DOOR      | `iYD` = key type; `iCounter` is its own tag.                |
 | `26`  | BRIDGER   | Toggleable wall.                                            |
-| `28`  | TOKEN     | Inventory pickup; `iCounter` = inventory ID `0..=9`.        |
+| `28`  | TOKEN     | Generic pickup; `iCounter` (a.k.a. "CNT" in the editor) selects the powerup variant `0..=9`. Subtype = inventory ID. |
 | `32`  | SWITCH    | Trigger; links via `iCounter`.                              |
 | `33`  | GEM       | Score pickup.                                               |
 | `52`  | BUTTON    | Trigger; links via `iCounter`.                              |
@@ -391,7 +428,154 @@ intact and let the renderer truncate.
 - No key-binding fields are present in this format. Input remapping, if any,
   lives elsewhere (or is absent in stock Jill).
 
+## VCL — `*.VCL`
+
+Source: [VCL Format][wiki-vcl].
+
+Stores up to **50 sound entries** and **40 text entries**. Used by Jill of
+the Jungle and Xargon. The Java OpenJill VCL parser only reads the text
+side; the Rust port should follow the wiki spec for both.
+
+The format's true name is "voclib" (Tim Sweeney, 1991); a Python reference
+implementation lives in the `mrcrowbar` library and matches the offsets
+below verbatim.
+
+### Table layout (fixed offsets)
+
+| Offset | Size  | Field                                       |
+|--------|-------|---------------------------------------------|
+| `0`    | 200 B | `soundOffsets[50]` (`u32le`)                |
+| `200`  | 100 B | `soundLengths[50]` (`u16le`, bytes)         |
+| `300`  | 100 B | `soundFrequencies[50]` (`u16le`, Hz)        |
+| `400`  | 160 B | `textOffsets[40]` (`u32le`)                 |
+| `560`  | 80 B  | `textLengths[40]` (`u16le`, bytes)          |
+| `640`  | var   | Unknown auxiliary block (see below)         |
+| ...    | var   | Sound + text payload heap                   |
+
+Empty entries have `length == 0`.
+
+### Unknown auxiliary block
+
+Between byte 640 and the lowest data offset there is a small region of
+format `u16le sequenceLength`, then `sequenceLength` bytes of payload.
+`sequenceLength` may be 0. Preserve verbatim on any rewrite — its semantics
+are not yet documented.
+
+### Sound payload
+
+- Encoding: 8-bit signed raw PCM (same byte semantics as Creative VOC wave
+  data, no header).
+- Sample rate: per-entry value from `soundFrequencies[]`. Jill ships sounds
+  at ~6000 Hz; Xargon mostly uses 6024 Hz; other Sweeney engines have used
+  6087.7 Hz and 6250 Hz.
+- The Rust port should resample to whatever rate `rodio` is configured for
+  rather than baking a single rate into the audio crate.
+
+### Text payload
+
+- Plain ASCII bytes, length given by `textLengths[]`.
+- Each line is preceded by a **rendering-style byte** (a small integer index
+  into a hardcoded table inside the EXE). Jill's style table differs from
+  Xargon's; the Rust port must keep style indices opaque and look up colors
+  from a table extracted from the EXE or transliterated by hand.
+
+## CMF — `*.DDT` (background music)
+
+Source: [CMF Format][wiki-cmf].
+
+`*.DDT` files are Creative Music Format — Adlib/OPL2 instrument data plus
+single-track MIDI-equivalent song data. Out of scope for episode 1 audio
+priority but documented here so the audio phase has a starting point.
+
+### File header
+
+| Offset | Size | Field                | Notes                                  |
+|--------|------|----------------------|----------------------------------------|
+| `0x00` | 4    | `cSignature`         | ASCII `"CTMF"`. No null terminator.    |
+| `0x04` | 1    | `iVersionMinor`      | Usually `0x01`.                        |
+| `0x05` | 1    | `iVersionMajor`      | Usually `0x01`.                        |
+| `0x06` | 2    | `iOffsetInstruments` | `u16le` offset to instrument block.    |
+| `0x08` | 2    | `iOffsetMusic`       | `u16le` offset to song data.           |
+| `0x0A` | 2    | `iTicksPerQuarter`   | Ticks per beat.                        |
+| `0x0C` | 2    | `iTicksPerSecond`    | **Authoritative** for playback timing. |
+| `0x0E` | 2    | `iOffsetTitle`       | 0 if absent.                           |
+| `0x10` | 2    | `iOffsetComposer`    | 0 if absent.                           |
+| `0x12` | 2    | `iOffsetRemarks`     | 0 if absent.                           |
+| `0x14` | 16   | `iChannelInUse`      | Per-channel use flags (0 or 1).        |
+
+Version-dependent tail at `0x24`:
+
+- **v1.0**: `u8 iInstrumentCount`. Header ends at `0x25`.
+- **v1.1**: `u16le iInstrumentCount`, then `u16le iTempo` (BPM, presumed).
+  Header ends at `0x28`.
+
+Title/composer/remarks are null-terminated ASCII at the offsets above; the
+offsets are authoritative even when they point past EOF (validate before
+reading — Highway Hunter ships with such offsets).
+
+### Instrument block (16 bytes per entry)
+
+| Offset | Field                          | OPL register base |
+|--------|--------------------------------|-------------------|
+| `+0`   | `iModChar` (Mult/KSR/EG/VIB/AM)| `0x20`            |
+| `+1`   | `iCarChar`                     | `0x23`            |
+| `+2`   | `iModScale` (KSL/output level) | `0x40`            |
+| `+3`   | `iCarScale`                    | `0x43`            |
+| `+4`   | `iModAttack/Decay`             | `0x60`            |
+| `+5`   | `iCarAttack/Decay`             | `0x63`            |
+| `+6`   | `iModSustain/Release`          | `0x80`            |
+| `+7`   | `iCarSustain/Release`          | `0x83`            |
+| `+8`   | `iModWaveSel`                  | `0xE0`            |
+| `+9`   | `iCarWaveSel`                  | `0xE3`            |
+| `+10`  | `iFeedback/Connection`         | `0xC0`            |
+| `+11..+15` | Padding (5 bytes)          | —                 |
+
+The 128 MIDI patch slots are pre-filled with 16 default instruments looped
+8 times; the file's instruments overwrite slots from index 0.
+
+### Song data
+
+Raw MIDI track data without the `MTrk` header. Variable-length delta times
+and running status apply.
+
+Events used:
+
+| Event   | Meaning                                                            |
+|---------|--------------------------------------------------------------------|
+| `0x80`  | Note off.                                                          |
+| `0x90`  | Note on. Velocity is loaded near-directly into the OPL (logarithmic).|
+| `0xC0`  | Program change. On rhythm-mode percussive channels, only half the OPL operator pair is loaded. |
+| `0xB0 0x63` | AM+VIB depth (global). Bit 0 → VIB deep, bit 1 → AM deep. Default `3`. |
+| `0xB0 0x66` | Marker byte (player-readable flag).                            |
+| `0xB0 0x67` | Toggle melody/rhythm mode (global).                            |
+| `0xB0 0x68` / `0xB0 0x69` | Transpose up/down in 1/128-semitone units (per channel, absolute). |
+| `0xE0`  | Pitch bend. Ignored by Creative's `SBFMDRV`.                       |
+| Sysex   | Effectively ignored; can break third-party players.                |
+
+End-of-track marker: `FF 2F 00`.
+
+### OPL channel mapping
+
+OPL2 supplies 9 melodic channels, or 6 melodic + 5 percussion in rhythm
+mode. Rhythm mode reserves MIDI channels 12–16 for bass drum, snare,
+tom-tom, top cymbal, and hi-hat respectively. Percussion shares OPL channels
+7/8/9, so e.g. snare and hi-hat share a frequency register — the last note
+written wins. **Event ordering is load-bearing for percussion.**
+
+### Per-file quirks the parser must tolerate
+
+| File                | Quirk                                                             |
+|---------------------|-------------------------------------------------------------------|
+| Jill `dan.cmf`      | End-of-track is malformed as `FF 2F FE` instead of `FF 2F 00`. The trailing `FE` is a truncated/invalid VLQ byte. Treat any `FF 2F xx` as end-of-track. |
+| Xargon `song_9.xr1` | Out-of-order note-off events. Track currently sounding note per channel and only honor a key-off whose pitch matches. |
+| Xargon `song_32.xr1`| Zero-delta note-on/note-off pairs. SBFMDRV still produces audible output, so the port should not silently drop them. |
+
+Related formats: SBI files share the same instrument record with an added
+header; IBK files are banks of these records.
+
 ## Crunched Screen Image (loader EXE only)
+
+Source: [Crunched Screen Image][wiki-csi].
 
 The loader/episode-select EXE that ships with some Jill bundles is roughly
 "90% raw display data", per [Jill of the Jungle][wiki-jill]. A single VGA
@@ -403,9 +587,29 @@ image is faded in by region.
 | Screen palette      | `0xFEE7`          | 768 B      |
 | Order info (regions)| `0x12AF2`         | 23,630 B   |
 
-The order-info region uses the **Crunched Screen Image** format (separate
-ModdingWiki page). Only relevant if porting the original episode-select
-shell; the Rust CLI replaces this flow entirely.
+### Stream format
+
+No header. Read bytes until the cursor's Y-position falls off row 25.
+Decompression starts with text attributes set to `0` (black on black, not
+blinking) and the cursor at the top-left corner.
+
+| Byte value | Meaning                                                       |
+|------------|---------------------------------------------------------------|
+| `0x00`–`0x0F` | Set foreground color to this value.                        |
+| `0x10`–`0x17` | Set background color to lower 4 bits of this value.        |
+| `0x18`        | Newline. Move cursor to start of the next row.             |
+| `0x19`        | Read one byte `n`; emit `n + 1` space characters.          |
+| `0x1A`        | Read two bytes `n` and `c`; emit `c` `n + 1` times.        |
+| `0x1B`        | Toggle blinking text on/off.                               |
+| `0x1C`–`0x1F` | Undefined; skip.                                           |
+| `0x20`–`0xFF` | Output this character verbatim with the current attribute.|
+
+Only relevant if porting the original episode-select shell or the
+hardware-detect screen; the Rust CLI replaces those flows entirely. The
+decompressed image is conceptually a B800 text-mode buffer (see [B800
+Text][wiki-b800] on the wiki).
+
+[wiki-b800]: https://moddingwiki.shikadi.net/wiki/B800_Text
 
 ## Modding capability matrix
 
