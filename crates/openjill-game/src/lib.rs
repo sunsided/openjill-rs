@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use openjill_core::{InputCommand, Palette};
 use openjill_data::DataDirectory;
@@ -14,6 +15,13 @@ use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
+
+pub mod asset_cache;
+pub mod level_config;
+pub mod orchestrator;
+pub mod screens;
+
+use orchestrator::GameOrchestrator;
 
 /// Default keyboard mapping from physical keys to logical input commands.
 static INPUT_COMMAND_KEY_MAP: &[(KeyCode, InputCommand)] = &[
@@ -40,6 +48,10 @@ pub fn run(data_dir: PathBuf) -> Result<(), GameError> {
     app.error.take().map_or(Ok(()), Err)
 }
 
+/// Game tick interval in milliseconds, matching the Java `open_jill.properties`
+/// value of 55 ms.
+const TICK_INTERVAL: Duration = Duration::from_millis(55);
+
 /// Event-loop application state that owns the game window and presenter.
 pub struct GameApp {
     /// Data directory selected by the CLI.
@@ -60,6 +72,14 @@ pub struct GameApp {
     /// bindings correct when one of several keys mapped to the same command is
     /// released while another remains held.
     pressed_keys: BTreeSet<KeyCode>,
+    /// Game orchestrator that owns the active screen handler.
+    ///
+    /// `None` when the required asset files are unavailable at startup, in
+    /// which case the event loop continues with no game logic.
+    orchestrator: Option<GameOrchestrator>,
+    /// Timestamp of the last fired game tick, used to enforce the 55 ms tick
+    /// interval regardless of the vsync rate.
+    last_tick: Option<Instant>,
 }
 
 impl GameApp {
@@ -67,8 +87,22 @@ impl GameApp {
     ///
     /// Loads the startup palette from the first non-empty SHA color map found in
     /// `JILL1.SHA`, or falls back to a greyscale ramp when no color map is available.
+    /// Also constructs the [`GameOrchestrator`] if the required asset files are present;
+    /// logs a warning to stderr and continues without game logic if they are not.
     pub fn new(data_dir: PathBuf) -> Self {
         let startup_assets = load_startup_assets_from_data_dir(&data_dir);
+        let orchestrator = match GameOrchestrator::new(DataDirectory::new(data_dir.clone())) {
+            Ok(orch) => {
+                println!("openjill-game: game orchestrator initialized");
+                Some(orch)
+            }
+            Err(err) => {
+                eprintln!(
+                    "openjill-game: orchestrator init failed ({err}); running without game logic"
+                );
+                None
+            }
+        };
         Self {
             data_dir,
             window: None,
@@ -77,6 +111,8 @@ impl GameApp {
             startup_tile_preview: startup_assets.startup_tile_preview,
             error: None,
             pressed_keys: BTreeSet::new(),
+            orchestrator,
+            last_tick: None,
         }
     }
 
@@ -119,13 +155,6 @@ impl GameApp {
             .iter()
             .filter_map(|key| Self::map_key_to_input_command(*key))
             .collect()
-    }
-
-    /// Runs one game tick with the currently active logical input commands.
-    ///
-    /// This per-frame hook is where orchestration code advances game state from inputs.
-    fn tick(active_commands: &BTreeSet<InputCommand>) {
-        let _ = active_commands;
     }
 }
 
@@ -341,9 +370,31 @@ impl ApplicationHandler for GameApp {
         }
     }
 
-    /// Clears and presents one frame while the loop is idle, then requests another redraw.
+    /// Advances the game tick when the 55 ms interval has elapsed, then presents
+    /// one frame and requests the next redraw.
+    ///
+    /// Game ticks fire at approximately 18 Hz (every 55 ms). On vsync ticks that
+    /// do not reach the tick interval the presenter re-presents the command list
+    /// from the last game tick, keeping the display smooth at vsync rate.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        Self::tick(&Self::active_commands(&self.pressed_keys));
+        let now = Instant::now();
+        let should_tick = self
+            .last_tick
+            .map(|last| now.duration_since(last) >= TICK_INTERVAL)
+            .unwrap_or(true);
+
+        if should_tick {
+            if let Some(orch) = self.orchestrator.as_mut() {
+                let active = Self::active_commands(&self.pressed_keys);
+                orch.tick(&active);
+                if orch.is_quitting() {
+                    event_loop.exit();
+                    return;
+                }
+            }
+            self.last_tick = Some(now);
+        }
+
         if let Some(presenter) = self.presenter.as_mut() {
             presenter.clear(0);
             if let Some(tile) = self.startup_tile_preview.take() {

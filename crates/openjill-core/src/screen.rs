@@ -71,4 +71,15 @@ pub trait ScreenHandler {
     /// Returns render commands for this tick and optionally a transition to a
     /// new screen. The caller applies the transition after rendering.
     fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult;
+
+    /// Serializes the handler's current JN file state to an in-memory byte
+    /// buffer for save and restore operations.
+    ///
+    /// Returns `None` for screens that do not own a JN file (e.g. the start
+    /// menu). Map and level screens override this to support
+    /// `putCurrentLevelInFileMemory` semantics from the Java reference
+    /// implementation.
+    fn map_jn_bytes(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
