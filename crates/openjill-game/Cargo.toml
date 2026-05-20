@@ -16,3 +16,6 @@ pollster.workspace = true
 thiserror.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+
+[dev-dependencies]
+assert2.workspace = true

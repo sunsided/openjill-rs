@@ -68,7 +68,21 @@ pub enum ScreenTransition {
 pub trait ScreenHandler {
     /// Advance the screen state by one fixed tick.
     ///
-    /// Returns render commands for this tick and optionally a transition to a
-    /// new screen. The caller applies the transition after rendering.
+    /// Returns render commands for this tick and an optional transition to a
+    /// new screen. The orchestrator applies the transition after capturing the
+    /// commands from this result; the commands themselves come from the
+    /// outgoing handler and are presented by the caller before the next tick
+    /// uses the new handler.
     fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult;
+
+    /// Serializes the handler's current JN file state to an in-memory byte
+    /// buffer for save and restore operations.
+    ///
+    /// Returns `None` for screens that do not own a JN file (e.g. the start
+    /// menu). Map and level screens override this to support
+    /// `putCurrentLevelInFileMemory` semantics from the Java reference
+    /// implementation.
+    fn map_jn_bytes(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
