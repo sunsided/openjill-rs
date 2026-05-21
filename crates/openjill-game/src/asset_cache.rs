@@ -2,6 +2,7 @@
 
 use openjill_data::cfg::{CfgFile, CfgReadError};
 use openjill_data::dma::{DmaFile, DmaReadError};
+use openjill_data::jn::{JnFile, JnReadError};
 use openjill_data::sha::{ShaFile, ShaReadError};
 use openjill_data::vcl::{VclFile, VclReadError};
 use openjill_data::{DataDirectory, DataDirectoryError};
@@ -10,8 +11,10 @@ use thiserror::Error;
 /// Pre-loaded and cached game data files for one episode.
 ///
 /// Constructed once at application start via [`AssetCache::load`]. Individual
-/// screens borrow from the cache; they do not own or re-load it. JN files are
-/// loaded per screen transition because each screen uses a different JN file.
+/// screens clone the fields they need at construction time; they do not
+/// re-load from disk. `INTRO.JN1` is loaded here (rather than per-screen)
+/// because it is shared across the start-menu and all INTRO-backed special
+/// screens and must be available immediately when the application boots.
 #[derive(Debug)]
 pub struct AssetCache {
     /// Parsed `JILL.DMA` background map-code to tileset/tile/flags lookup.
@@ -22,6 +25,10 @@ pub struct AssetCache {
     pub vcl: VclFile,
     /// Parsed `JILL1.CFG` high scores and save slots.
     pub cfg: CfgFile,
+    /// Parsed `INTRO.JN1` background and object layers shared across all
+    /// INTRO.JN1-backed screens (start menu, story, credits, ordering info,
+    /// and noisemaker).
+    pub intro_jn: JnFile,
 }
 
 impl AssetCache {
@@ -70,7 +77,23 @@ impl AssetCache {
                     })?;
             CfgFile::parse(&mut reader, "JN1").map_err(|source| AssetError::Cfg { source })?
         };
-        Ok(Self { dma, sha, vcl, cfg })
+        let intro_jn = {
+            let mut reader =
+                data_dir
+                    .open_reader("INTRO.JN1")
+                    .map_err(|source| AssetError::Open {
+                        filename: "INTRO.JN1",
+                        source,
+                    })?;
+            JnFile::parse(&mut reader).map_err(|source| AssetError::IntroJn { source })?
+        };
+        Ok(Self {
+            dma,
+            sha,
+            vcl,
+            cfg,
+            intro_jn,
+        })
     }
 }
 
@@ -113,6 +136,13 @@ pub enum AssetError {
         /// Underlying parse error.
         #[source]
         source: CfgReadError,
+    },
+    /// `INTRO.JN1` parse failed.
+    #[error("failed to parse INTRO.JN1: {source}")]
+    IntroJn {
+        /// Underlying parse error.
+        #[source]
+        source: JnReadError,
     },
 }
 

@@ -24,13 +24,14 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
 /// Unit under test: `AssetCache::load` with real episode 1 game files.
 ///
 /// Preconditions: either `OPENJILL_DATA_DIR` points at a directory containing
-/// `JILL.DMA`, `JILL1.SHA`, `JILL1.VCL`, and `JILL1.CFG`, or the
+/// `JILL.DMA`, `JILL1.SHA`, `JILL1.VCL`, `JILL1.CFG`, and `INTRO.JN1`, or the
 /// workspace-relative `data/original/JILL1` directory is present. When neither
 /// is available the test prints a skip message and returns so CI still passes.
 ///
 /// Invariants asserted: `AssetCache::load` succeeds; the loaded DMA file has
 /// at least one entry; the SHA file has at least one tileset; the VCL file and
-/// CFG file load without error.
+/// CFG file load without error; the INTRO.JN1 background layer has the standard
+/// 128×64 dimensions.
 #[test]
 fn loads_all_assets_from_original_episode_1_data() {
     let env_override = std::env::var_os(DATA_DIR_ENV);
@@ -62,5 +63,13 @@ fn loads_all_assets_from_original_episode_1_data() {
     check!(
         !cache.sha.tilesets().is_empty(),
         "JILL1.SHA should have at least one tileset"
+    );
+    check!(
+        cache.intro_jn.background().width() == 128,
+        "INTRO.JN1 background width must be 128 tiles"
+    );
+    check!(
+        cache.intro_jn.background().height() == 64,
+        "INTRO.JN1 background height must be 64 tiles"
     );
 }

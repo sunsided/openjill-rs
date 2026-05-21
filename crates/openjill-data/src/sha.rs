@@ -135,9 +135,11 @@ pub struct ShaTile {
     height: u8,
     /// Data-format byte preserved verbatim from disk.
     data_format: u8,
-    /// Source byte offset where indexed pixel data begins.
+    /// Source byte offset where indexed pixel data begins in the file.
     offset: usize,
-    /// Row-major indexed pixels preserved verbatim from disk.
+    /// Row-major VGA palette indices. For tilesets with `bit_depth < 8` the raw
+    /// per-pixel values are expanded through the tileset color map (`entry.vga()`)
+    /// at parse time; for `bit_depth == 8` tiles the values are direct VGA indices.
     indexed_pixels: Vec<u8>,
 }
 
@@ -172,7 +174,7 @@ impl ShaTile {
         self.offset
     }
 
-    /// Returns the row-major indexed pixels preserved from disk.
+    /// Returns row-major VGA palette indices for this tile.
     pub fn indexed_pixels(&self) -> &[u8] {
         &self.indexed_pixels
     }
@@ -424,7 +426,12 @@ fn parse_tileset(
 
     let mut tiles = Vec::with_capacity(usize::from(tile_count));
     for tile_index in 0..usize::from(tile_count) {
-        tiles.push(parse_tile(reader, entry.index(), tile_index)?);
+        tiles.push(parse_tile(
+            reader,
+            entry.index(),
+            tile_index,
+            color_map.as_deref(),
+        )?);
     }
 
     Ok(ShaTileSet {
@@ -465,10 +472,16 @@ fn parse_color_map(
 }
 
 /// Parses one tile/image record from a SHA tileset.
+///
+/// When `color_map` is supplied (tileset `bit_depth < 8`), each raw pixel value is
+/// expanded through `color_map[raw].vga()` to produce a VGA palette index. When the
+/// raw value is out of range for the color map (malformed data), the raw value is
+/// passed through unchanged, matching the Java reference fallback.
 fn parse_tile(
     reader: &mut ByteReader,
     entry_index: usize,
     tile_index: usize,
+    color_map: Option<&[ShaColorMapEntry]>,
 ) -> Result<ShaTile, ShaReadError> {
     let width = read_u8(reader, "width", Some(entry_index), Some(tile_index))?;
     let height = read_u8(reader, "height", Some(entry_index), Some(tile_index))?;
@@ -478,12 +491,12 @@ fn parse_tile(
     let mut indexed_pixels = Vec::with_capacity(pixel_count);
 
     for _ in 0..pixel_count {
-        indexed_pixels.push(read_u8(
-            reader,
-            "indexed_pixel",
-            Some(entry_index),
-            Some(tile_index),
-        )?);
+        let raw = read_u8(reader, "indexed_pixel", Some(entry_index), Some(tile_index))?;
+        let vga_index = match color_map {
+            Some(cm) => cm.get(raw as usize).map(|e| e.vga()).unwrap_or(raw),
+            None => raw,
+        };
+        indexed_pixels.push(vga_index);
     }
 
     Ok(ShaTile {
@@ -678,7 +691,8 @@ mod tests {
         check!(first_level_tile.height() == 2);
         check!(first_level_tile.data_format() == 7);
         check!(first_level_tile.offset() == fixture.level_tile_offsets[0]);
-        check!(first_level_tile.indexed_pixels() == [0, 1, 2, 3]);
+        // Raw pixels [0,1,2,3] mapped through color_map vga fields [20,21,22,23].
+        check!(first_level_tile.indexed_pixels() == [20, 21, 22, 23]);
 
         let second_level_tile = &level.tiles()[1];
         check!(second_level_tile.tileset_index() == 1);
@@ -687,7 +701,8 @@ mod tests {
         check!(second_level_tile.height() == 3);
         check!(second_level_tile.data_format() == 9);
         check!(second_level_tile.offset() == fixture.level_tile_offsets[1]);
-        check!(second_level_tile.indexed_pixels() == [3, 2, 1]);
+        // Raw pixels [3,2,1] mapped through color_map vga fields [23,22,21].
+        check!(second_level_tile.indexed_pixels() == [23, 22, 21]);
 
         let font = &sha.tilesets()[1];
         check!(font.entry_index() == 2);

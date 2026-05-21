@@ -164,60 +164,32 @@ struct StartupAssets {
 
 /// Loads startup rendering assets from `JILL1.SHA`.
 ///
-/// Falls back to [`Palette::greyscale_fallback`] when the file is missing, unreadable, or
-/// contains no non-empty color map. Informational diagnostics are logged to stdout; warnings
-/// and fallback notices are logged to stderr.
+/// The VGA palette is always the hardcoded `Palette::jill_vga()` — it does not come from
+/// the SHA file. SHA is opened here only for diagnostic logging (font tileset index).
 fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAssets {
     let directory = DataDirectory::new(data_dir.to_path_buf());
-    let mut reader = match directory.open_reader("JILL1.SHA") {
-        Ok(reader) => reader,
+    match directory.open_reader("JILL1.SHA") {
+        Ok(mut reader) => match ShaFile::parse(&mut reader) {
+            Ok(sha) => {
+                if let Some(font_tileset) = sha.tilesets().iter().find(|ts| ts.is_font()) {
+                    println!(
+                        "openjill-game: first SHA font tileset index: {}",
+                        font_tileset.entry_index()
+                    );
+                } else {
+                    eprintln!("openjill-game: no SHA tileset with is_font=true was found");
+                }
+            }
+            Err(error) => {
+                eprintln!("openjill-game: failed to parse JILL1.SHA ({error})");
+            }
+        },
         Err(error) => {
-            eprintln!(
-                "openjill-game: JILL1.SHA unavailable ({error}); using greyscale palette fallback"
-            );
-            return StartupAssets {
-                palette: Palette::greyscale_fallback(),
-            };
-        }
-    };
-    let sha = match ShaFile::parse(&mut reader) {
-        Ok(sha) => sha,
-        Err(error) => {
-            eprintln!(
-                "openjill-game: failed to parse JILL1.SHA ({error}); using greyscale palette fallback"
-            );
-            return StartupAssets {
-                palette: Palette::greyscale_fallback(),
-            };
-        }
-    };
-
-    if let Some(font_tileset) = sha.tilesets().iter().find(|tileset| tileset.is_font()) {
-        println!(
-            "openjill-game: first SHA font tileset index: {}",
-            font_tileset.entry_index()
-        );
-    } else {
-        eprintln!("openjill-game: no SHA tileset with is_font=true was found");
-    }
-
-    for tileset in sha.tilesets() {
-        if let Some(color_map) = tileset.color_map().filter(|entries| !entries.is_empty()) {
-            println!(
-                "openjill-game: palette loaded from JILL1.SHA tileset entry {} (first available map)",
-                tileset.entry_index()
-            );
-            return StartupAssets {
-                palette: Palette::from_sha_color_map(color_map),
-            };
+            eprintln!("openjill-game: JILL1.SHA unavailable ({error})");
         }
     }
-
-    eprintln!(
-        "openjill-game: no non-empty color map in JILL1.SHA; using greyscale palette fallback"
-    );
     StartupAssets {
-        palette: Palette::greyscale_fallback(),
+        palette: Palette::jill_vga(),
     }
 }
 
