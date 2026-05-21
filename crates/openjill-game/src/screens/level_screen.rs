@@ -328,12 +328,20 @@ fn find_checkpoint(jn: &JnFile, level_number: i32) -> Option<&JnObject> {
 /// Returns the message-box text lines for the destination `level_number`,
 /// looked up against the embedded `level_messagebox_vga.json` `messages.JN1`
 /// table and split on `\n`.
+///
+/// `MAP_LEVEL` (-1) maps to `messages.JN1[0]` ("JILL ENTERS THE JUNGLE MAP.")
+/// because the map screen is the destination when returning from a level;
+/// other negative levels yield no text.  Positive level numbers index the
+/// table directly, so level 1 displays `messages.JN1[1]` and so on.
 fn lookup_message_text(level_number: i32) -> Vec<String> {
-    if level_number < 0 {
-        return Vec::new();
-    }
     let table = &MESSAGE_BOX.messages;
-    let index = usize::try_from(level_number).ok().unwrap_or(0);
+    let index = if level_number == openjill_core::MAP_LEVEL {
+        0_usize
+    } else if level_number > 0 {
+        level_number as usize
+    } else {
+        return Vec::new();
+    };
     let Some(entry) = table.get(index) else {
         return Vec::new();
     };
@@ -342,23 +350,36 @@ fn lookup_message_text(level_number: i32) -> Vec<String> {
 
 /// Emits render commands for the level message-box overlay.
 ///
-/// Renders the static frame tile mosaic parsed from
-/// `level_messagebox_vga.json` followed by one `DrawText` per message line up
-/// to [`MESSAGE_MAX_LINES`].
+/// Paints the picture-area and text-area background fills declared in
+/// `level_messagebox_vga.json`, then renders the static frame tile mosaic
+/// (frame border + Jill face), then one `DrawText` per message line up to
+/// [`MESSAGE_MAX_LINES`].  The fills are emitted first so the underlying
+/// level background does not bleed through the box.
 fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
     let layout = &*MESSAGE_BOX;
-    let mut commands: Vec<RenderCommand> = layout
-        .images
-        .iter()
-        .map(|tile| RenderCommand::Blit {
-            tileset: tile.tileset,
-            tile: tile.tile,
-            x: layout.x + tile.x,
-            y: layout.y + tile.y,
-            opaque: false,
-            clip: None,
-        })
-        .collect();
+    let mut commands: Vec<RenderCommand> = Vec::with_capacity(layout.images.len() + 4);
+    commands.push(RenderCommand::FillRect {
+        x: layout.x + layout.picturearea.x,
+        y: layout.y + layout.picturearea.y,
+        width: layout.picturearea.width,
+        height: layout.picturearea.height,
+        color: layout.picturearea.color,
+    });
+    commands.push(RenderCommand::FillRect {
+        x: layout.x + layout.textarea_x,
+        y: layout.y + layout.textarea_y,
+        width: layout.textarea_w,
+        height: layout.textarea_h,
+        color: layout.textarea_color,
+    });
+    commands.extend(layout.images.iter().map(|tile| RenderCommand::Blit {
+        tileset: tile.tileset,
+        tile: tile.tile,
+        x: layout.x + tile.x,
+        y: layout.y + tile.y,
+        opaque: false,
+        clip: None,
+    }));
 
     let text_origin_x = layout.x + layout.textarea_x;
     let text_origin_y = layout.y + layout.textarea_y;
@@ -386,6 +407,22 @@ struct MessageBoxTile {
     y: i32,
 }
 
+/// Rectangle painted as a background fill inside the message box before tiles
+/// and text are drawn over it.
+#[derive(Clone, Copy, Debug)]
+struct MessageBoxArea {
+    /// X offset relative to the message-box origin in pixels.
+    x: i32,
+    /// Y offset relative to the message-box origin in pixels.
+    y: i32,
+    /// Width of the area in pixels.
+    width: u32,
+    /// Height of the area in pixels.
+    height: u32,
+    /// Palette index used to fill the area before tiles are blitted.
+    color: u8,
+}
+
 /// Parsed `level_messagebox_vga.json` layout used by [`LevelScreen`].
 struct MessageBoxLayout {
     /// Top-left X position of the message box in framebuffer pixels.
@@ -396,6 +433,14 @@ struct MessageBoxLayout {
     textarea_x: i32,
     /// Text area Y offset relative to the message-box origin.
     textarea_y: i32,
+    /// Text area width in pixels.
+    textarea_w: u32,
+    /// Text area height in pixels.
+    textarea_h: u32,
+    /// Palette index used to fill the text area before drawing glyphs.
+    textarea_color: u8,
+    /// Picture-area background fill (sits behind the Jill face tiles).
+    picturearea: MessageBoxArea,
     /// Palette index used to draw the message text.
     text_color: u8,
     /// Static tile-mosaic frame and Jill face tiles.
@@ -420,6 +465,10 @@ fn parse_message_box_layout() -> MessageBoxLayout {
         obj.get(key).and_then(|v| v.as_u64()).unwrap_or(default) as u8
     };
 
+    let get_u32 = |obj: &serde_json::Value, key: &str, default: u64| -> u32 {
+        obj.get(key).and_then(|v| v.as_u64()).unwrap_or(default) as u32
+    };
+
     let x = get_i(&value, "x", 0);
     let y = get_i(&value, "y", 0);
     let text_color = get_u(&value, "textColor", 7);
@@ -429,6 +478,20 @@ fn parse_message_box_layout() -> MessageBoxLayout {
         .unwrap_or(serde_json::Value::Null);
     let textarea_x = get_i(&textarea, "x", 0);
     let textarea_y = get_i(&textarea, "y", 0);
+    let textarea_w = get_u32(&textarea, "width", 0);
+    let textarea_h = get_u32(&textarea, "height", 0);
+    let textarea_color = get_u(&textarea, "color", 1);
+    let picturearea_value = value
+        .get("picturearea")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let picturearea = MessageBoxArea {
+        x: get_i(&picturearea_value, "x", 0),
+        y: get_i(&picturearea_value, "y", 0),
+        width: get_u32(&picturearea_value, "width", 0),
+        height: get_u32(&picturearea_value, "height", 0),
+        color: get_u(&picturearea_value, "color", 0),
+    };
 
     let images = value
         .get("images")
@@ -463,6 +526,10 @@ fn parse_message_box_layout() -> MessageBoxLayout {
         y,
         textarea_x,
         textarea_y,
+        textarea_w,
+        textarea_h,
+        textarea_color,
+        picturearea,
         text_color,
         images,
         messages,
@@ -793,24 +860,38 @@ mod tests {
 
     /// Unit under test: `lookup_message_text` returns the JN1 message string
     /// for the destination level number, split on `\n`.
+    ///
+    /// Level 1 displays `messages.JN1[1]` ("JILL BOUNDS THROUGH THE BOULDERS").
     #[test]
     fn lookup_message_text_returns_jn1_entry_lines() {
-        let lines = lookup_message_text(0);
+        let lines = lookup_message_text(1);
         assert!(
             !lines.is_empty(),
-            "level 0 must have a message-box text entry"
+            "level 1 must have a message-box text entry"
         );
         assert!(
-            lines.iter().any(|line| line.contains("JUNGLE")),
-            "level 0 message text should reference the jungle map: got {lines:?}"
+            lines.iter().any(|line| line.contains("BOULDERS")),
+            "level 1 message text should reference the boulders: got {lines:?}"
         );
     }
 
-    /// Unit under test: `lookup_message_text` returns empty for an
-    /// out-of-range level (e.g. the world-map sentinel).
+    /// Unit under test: `lookup_message_text` returns the jungle-map entry
+    /// (`messages.JN1[0]`) for `MAP_LEVEL`, matching the Java reference's
+    /// "return-to-map" message.
     #[test]
-    fn lookup_message_text_returns_empty_for_negative_level() {
-        assert!(lookup_message_text(openjill_core::MAP_LEVEL).is_empty());
+    fn lookup_message_text_returns_map_entry_for_map_level() {
+        let lines = lookup_message_text(openjill_core::MAP_LEVEL);
+        assert!(
+            lines.iter().any(|line| line.contains("JUNGLE MAP")),
+            "MAP_LEVEL must surface the jungle-map entry: got {lines:?}"
+        );
+    }
+
+    /// Unit under test: `lookup_message_text` returns empty for a non-map
+    /// negative level (i.e. an unknown sentinel that is not `MAP_LEVEL`).
+    #[test]
+    fn lookup_message_text_returns_empty_for_other_negative_levels() {
+        assert!(lookup_message_text(-42).is_empty());
     }
 
     /// Unit under test: `LevelScreen::level_jn_bytes` round-trips the bytes
