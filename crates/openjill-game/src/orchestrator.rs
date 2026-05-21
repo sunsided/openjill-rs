@@ -1,7 +1,9 @@
 //! Game orchestrator: owns the active screen handler and drives the tick and
 //! transition loop.
 
-use openjill_core::{ActiveInput, RenderCommand, RuntimeState, ScreenHandler, ScreenTransition};
+use openjill_core::{
+    ActiveInput, MessageDispatcher, RenderCommand, RuntimeState, ScreenHandler, ScreenTransition,
+};
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::JnReadError;
 use openjill_data::{DataDirectory, DataDirectoryError};
@@ -11,6 +13,7 @@ use crate::asset_cache::{AssetCache, AssetError};
 use crate::screens::intro_screens::{
     credits_screen, noisemaker_screen, ordering_info_screen, story_screen,
 };
+use crate::screens::level_screen::LevelScreen;
 use crate::screens::map_screen::MapScreen;
 use crate::screens::start_menu::StartMenuScreen;
 
@@ -35,6 +38,25 @@ fn load_map_screen(data_dir: &DataDirectory, dma: DmaFile) -> Result<MapScreen, 
         .map_err(MapLoadError::Resolve)?;
     let bytes = std::fs::read(&path).map_err(MapLoadError::Read)?;
     MapScreen::from_bytes(bytes, dma).map_err(MapLoadError::Parse)
+}
+
+/// Loads a level JN file from `data_dir` and constructs a [`LevelScreen`].
+///
+/// Used by [`GameOrchestrator::apply_transition`] on
+/// [`ScreenTransition::Level`] when no in-memory bytes are available for the
+/// requested level file.
+fn load_level_screen(
+    data_dir: &DataDirectory,
+    dma: DmaFile,
+    file: &str,
+    level_number: i32,
+    dispatcher: &mut MessageDispatcher,
+) -> Result<LevelScreen, LevelLoadError> {
+    let path = data_dir
+        .resolve_path_case_insensitive(file)
+        .map_err(LevelLoadError::Resolve)?;
+    let bytes = std::fs::read(&path).map_err(LevelLoadError::Read)?;
+    LevelScreen::from_bytes(bytes, dma, level_number, dispatcher).map_err(LevelLoadError::Parse)
 }
 
 /// Owns the current screen handler and drives the game tick and transition loop.
@@ -63,10 +85,31 @@ pub struct GameOrchestrator {
     map_jn_bytes: Option<Vec<u8>>,
     /// Serialized current-level JN bytes preserved for restart-level operations.
     ///
-    /// Used in child issue 6 when `DIE_RESTART_LEVEL` handling needs to reload
-    /// the level from its last saved-to-memory state.
-    #[allow(dead_code)]
+    /// Populated from the outgoing handler's
+    /// [`ScreenHandler::level_jn_bytes`] whenever a level screen is replaced.
+    /// Used to satisfy `ScreenTransition::RestartLevel` and to fall back to
+    /// in-memory bytes for the previously visited level.
     level_jn_bytes: Option<Vec<u8>>,
+    /// File name of the level currently held in [`level_jn_bytes`], when one
+    /// is cached.  Used so [`apply_transition`] can decide whether the
+    /// preserved bytes can be reused for an incoming
+    /// [`ScreenTransition::Level`].
+    ///
+    /// [`apply_transition`]: GameOrchestrator::apply_transition
+    /// [`level_jn_bytes`]: GameOrchestrator::level_jn_bytes
+    level_jn_file: Option<String>,
+    /// Level number associated with [`level_jn_bytes`], when one is cached.
+    ///
+    /// [`level_jn_bytes`]: GameOrchestrator::level_jn_bytes
+    level_jn_number: Option<i32>,
+    /// Shared message dispatcher used by level screens to receive
+    /// `CheckpointChangeLevel`, `CheckpointChangeLevelPrevious`, and
+    /// `DieRestartLevel` messages from gameplay subsystems.
+    ///
+    /// The orchestrator clears the dispatcher before constructing a new
+    /// [`LevelScreen`] so stale handlers from a previous level do not survive
+    /// the transition.
+    dispatcher: MessageDispatcher,
     /// Render commands from the most recent game tick.
     ///
     /// Cached here for the event loop to re-present on vsync ticks that do not
@@ -92,9 +135,37 @@ impl GameOrchestrator {
             data_dir,
             map_jn_bytes: None,
             level_jn_bytes: None,
+            level_jn_file: None,
+            level_jn_number: None,
+            dispatcher: MessageDispatcher::new(),
             last_commands: Vec::new(),
             quitting: false,
         })
+    }
+
+    /// Returns a mutable reference to the orchestrator's shared message
+    /// dispatcher.
+    ///
+    /// Gameplay subsystems publish level-transition messages
+    /// (`CheckpointChangeLevel`, `CheckpointChangeLevelPrevious`,
+    /// `DieRestartLevel`) here; an active [`LevelScreen`] is registered as a
+    /// subscriber.  Tests use this accessor to dispatch synthetic messages.
+    pub fn dispatcher_mut(&mut self) -> &mut MessageDispatcher {
+        &mut self.dispatcher
+    }
+
+    /// Applies `transition` immediately, bypassing the message-dispatcher
+    /// pipeline.
+    ///
+    /// Intended for developer tooling that needs to drop the orchestrator
+    /// into a specific screen without first standing up a full gameplay
+    /// loop: at the time of writing, [`crate::screens::map_screen::MapScreen`]
+    /// has no subscribers on the dispatcher, so a queued
+    /// `CheckpointChangeLevel` will never reach a handler until a
+    /// [`LevelScreen`] has already been constructed.  Calling this method
+    /// builds the destination screen directly.
+    pub fn force_transition(&mut self, transition: ScreenTransition) {
+        self.apply_transition(transition);
     }
 
     /// Advances the active screen handler by one fixed game tick.
@@ -142,30 +213,38 @@ impl GameOrchestrator {
         if let Some(bytes) = self.handler.map_jn_bytes() {
             self.map_jn_bytes = Some(bytes);
         }
+        if let Some(bytes) = self.handler.level_jn_bytes() {
+            self.level_jn_bytes = Some(bytes);
+        }
 
         match transition {
             ScreenTransition::StartMenu => {
+                self.dispatcher.clear();
                 self.handler = Box::new(make_start_menu(&self.cache));
             }
             ScreenTransition::Story => {
+                self.dispatcher.clear();
                 self.handler = Box::new(story_screen(
                     self.cache.intro_jn.clone(),
                     self.cache.dma.clone(),
                 ));
             }
             ScreenTransition::Credits => {
+                self.dispatcher.clear();
                 self.handler = Box::new(credits_screen(
                     self.cache.intro_jn.clone(),
                     self.cache.dma.clone(),
                 ));
             }
             ScreenTransition::OrderingInfo => {
+                self.dispatcher.clear();
                 self.handler = Box::new(ordering_info_screen(
                     self.cache.intro_jn.clone(),
                     self.cache.dma.clone(),
                 ));
             }
             ScreenTransition::Noisemaker => {
+                self.dispatcher.clear();
                 self.handler = Box::new(noisemaker_screen(
                     self.cache.intro_jn.clone(),
                     self.cache.dma.clone(),
@@ -175,6 +254,7 @@ impl GameOrchestrator {
                 self.quitting = true;
             }
             ScreenTransition::Map => {
+                self.dispatcher.clear();
                 // Prefer the in-memory map JN bytes captured from a previous
                 // visit; only reach to disk on the first transition to Map.
                 let map_result = match self.map_jn_bytes.clone() {
@@ -194,10 +274,75 @@ impl GameOrchestrator {
                     }
                 }
             }
-            // Level transitions are implemented in the next child issue.
-            // Until then, fall back to StartMenuScreen so the loop stays valid.
-            ScreenTransition::Level { .. } | ScreenTransition::RestartLevel => {
-                self.handler = Box::new(make_start_menu(&self.cache));
+            ScreenTransition::Level { file, number } => {
+                self.dispatcher.clear();
+                // Filenames are compared with ASCII case-insensitivity to
+                // match `DataDirectory::resolve_path_case_insensitive`; a
+                // transition payload using different casing than the cached
+                // entry should still hit the in-memory bytes.
+                let cached = self
+                    .level_jn_bytes
+                    .as_ref()
+                    .zip(self.level_jn_file.as_ref())
+                    .filter(|(_, cached_file)| cached_file.eq_ignore_ascii_case(file.as_str()))
+                    .map(|(bytes, _)| bytes.clone());
+                let level_result = match cached {
+                    Some(bytes) => LevelScreen::from_bytes(
+                        bytes,
+                        self.cache.dma.clone(),
+                        number,
+                        &mut self.dispatcher,
+                    )
+                    .map_err(LevelLoadError::Parse),
+                    None => load_level_screen(
+                        &self.data_dir,
+                        self.cache.dma.clone(),
+                        &file,
+                        number,
+                        &mut self.dispatcher,
+                    ),
+                };
+                match level_result {
+                    Ok(screen) => {
+                        self.level_jn_bytes = screen.level_jn_bytes();
+                        self.level_jn_file = Some(file);
+                        self.level_jn_number = Some(number);
+                        self.handler = Box::new(screen);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "openjill-game: failed to load level {file} ({err}); falling back to start menu"
+                        );
+                        self.handler = Box::new(make_start_menu(&self.cache));
+                    }
+                }
+            }
+            ScreenTransition::RestartLevel => {
+                self.dispatcher.clear();
+                let Some(bytes) = self.level_jn_bytes.clone() else {
+                    eprintln!(
+                        "openjill-game: RestartLevel requested without cached level bytes; falling back to start menu"
+                    );
+                    self.handler = Box::new(make_start_menu(&self.cache));
+                    return;
+                };
+                let level_number = self.level_jn_number.unwrap_or(0);
+                match LevelScreen::from_bytes(
+                    bytes,
+                    self.cache.dma.clone(),
+                    level_number,
+                    &mut self.dispatcher,
+                ) {
+                    Ok(screen) => {
+                        self.handler = Box::new(screen);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "openjill-game: failed to restart level ({err}); falling back to start menu"
+                        );
+                        self.handler = Box::new(make_start_menu(&self.cache));
+                    }
+                }
             }
         }
     }
@@ -222,6 +367,20 @@ enum MapLoadError {
     Read(#[source] std::io::Error),
     /// Parsing the `MAP.JN1` bytes into a `JnFile` failed.
     #[error("failed to parse MAP.JN1: {0}")]
+    Parse(#[source] JnReadError),
+}
+
+/// Error returned when loading a level JN file during a screen transition fails.
+#[derive(Debug, Error)]
+enum LevelLoadError {
+    /// Case-insensitive lookup of the level file failed.
+    #[error("failed to resolve level file: {0}")]
+    Resolve(#[source] DataDirectoryError),
+    /// Reading the resolved level bytes from disk failed.
+    #[error("failed to read level file: {0}")]
+    Read(#[source] std::io::Error),
+    /// Parsing the level bytes into a `JnFile` failed.
+    #[error("failed to parse level file: {0}")]
     Parse(#[source] JnReadError),
 }
 
@@ -293,6 +452,9 @@ mod tests {
             data_dir: DataDirectory::new(std::env::temp_dir()),
             map_jn_bytes: None,
             level_jn_bytes: None,
+            level_jn_file: None,
+            level_jn_number: None,
+            dispatcher: openjill_core::MessageDispatcher::new(),
             last_commands: Vec::new(),
             quitting: false,
         }
@@ -433,5 +595,191 @@ mod tests {
         orchestrator.tick(&input);
 
         assert_eq!(orchestrator.map_jn_bytes, Some(synthetic_map));
+    }
+
+    /// Test helper: seeds the orchestrator with an in-memory level file so a
+    /// subsequent `ScreenTransition::Level` reuses the bytes instead of
+    /// reaching to disk.
+    fn seed_level_cache(orchestrator: &mut GameOrchestrator, file: &str, number: i32) {
+        let bytes = vec![0u8; JN_MIN_BYTES];
+        orchestrator.level_jn_bytes = Some(bytes);
+        orchestrator.level_jn_file = Some(file.to_string());
+        orchestrator.level_jn_number = Some(number);
+    }
+
+    /// Drives the orchestrator past the level message-box countdown so any
+    /// pending transition fires.
+    fn drive_message_box_countdown(orchestrator: &mut GameOrchestrator) {
+        let input: ActiveInput = Default::default();
+        for _ in 0..openjill_core::layout::LEVEL_MESSAGE_TICKS {
+            orchestrator.tick(&input);
+        }
+    }
+
+    /// Unit under test: `apply_transition` on `ScreenTransition::Level` uses
+    /// preserved bytes from [`GameOrchestrator::level_jn_bytes`] and registers
+    /// the resulting [`LevelScreen`] as the active handler.
+    ///
+    /// Preconditions: the orchestrator is seeded with synthetic level bytes
+    /// for `"JN1L01.JN1"`; a `OneShotTransitionHandler` returns
+    /// `ScreenTransition::Level { file: "JN1L01.JN1", number: 1 }` on its
+    /// first tick.
+    ///
+    /// Invariants asserted: the transition payload uses lower-case
+    /// `"jn1l01.jn1"` while the orchestrator cache holds the upper-case
+    /// `"JN1L01.JN1"`; after the tick, the active handler still reports the
+    /// seeded level bytes, confirming the cache match is ASCII
+    /// case-insensitive (matching `resolve_path_case_insensitive`).
+    #[test]
+    fn level_transition_cache_match_is_case_insensitive() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Level {
+            file: String::from("jn1l01.jn1"),
+            number: 1,
+        }));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        seed_level_cache(&mut orchestrator, "JN1L01.JN1", 1);
+        let expected_bytes = orchestrator.level_jn_bytes.clone();
+
+        let input: ActiveInput = Default::default();
+        orchestrator.tick(&input);
+
+        assert_eq!(
+            orchestrator.handler.level_jn_bytes(),
+            expected_bytes,
+            "case-insensitive cache match must reuse seeded bytes without touching disk"
+        );
+    }
+
+    /// Invariants asserted: after the tick, the active handler's
+    /// `level_jn_bytes` matches the seeded bytes, confirming the in-memory
+    /// path was taken without touching disk.
+    #[test]
+    fn level_transition_reuses_preserved_bytes_without_disk_read() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Level {
+            file: String::from("JN1L01.JN1"),
+            number: 1,
+        }));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        seed_level_cache(&mut orchestrator, "JN1L01.JN1", 1);
+        let expected_bytes = orchestrator.level_jn_bytes.clone();
+
+        let input: ActiveInput = Default::default();
+        orchestrator.tick(&input);
+
+        assert_eq!(
+            orchestrator.handler.level_jn_bytes(),
+            expected_bytes,
+            "LevelScreen must be constructed from preserved bytes, not the (empty) disk dir"
+        );
+    }
+
+    /// Unit under test: `MessageDispatcher::send(CheckpointChangeLevel, …)`
+    /// triggers a [`LevelScreen`] swap inside the orchestrator after exactly
+    /// `LEVEL_MESSAGE_TICKS` further ticks.
+    ///
+    /// Preconditions: orchestrator runs a `LevelScreen` for `"JN1L01.JN1"`
+    /// (level 1); a second synthetic level file `"JN1L02.JN1"` is preloaded
+    /// into the level byte cache so the level transition can avoid disk.
+    ///
+    /// Invariants asserted: the active handler reports level number 2 after
+    /// the countdown.
+    #[test]
+    fn dispatcher_change_level_transitions_after_message_ticks() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Level {
+            file: String::from("JN1L01.JN1"),
+            number: 1,
+        }));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        seed_level_cache(&mut orchestrator, "JN1L01.JN1", 1);
+
+        let input: ActiveInput = Default::default();
+        orchestrator.tick(&input);
+
+        // Replace cached bytes with a second synthetic level so the
+        // dispatched transition can resolve in-memory.
+        let level_two_bytes = vec![0u8; JN_MIN_BYTES];
+        orchestrator.level_jn_bytes = Some(level_two_bytes);
+        orchestrator.level_jn_file = Some(String::from("JN1L02.JN1"));
+        orchestrator.level_jn_number = Some(2);
+
+        orchestrator.dispatcher_mut().send(
+            openjill_core::MessageType::CheckpointChangeLevel,
+            openjill_core::MessagePayload::ChangeLevel(openjill_core::ChangeLevelPayload {
+                level_file: String::from("JN1L02.JN1"),
+                level_number: 2,
+            }),
+        );
+
+        drive_message_box_countdown(&mut orchestrator);
+
+        assert_eq!(orchestrator.level_jn_number, Some(2));
+    }
+
+    /// Unit under test: `MessageDispatcher::send(CheckpointChangeLevelPrevious, …)`
+    /// swaps the active `LevelScreen` back to a `MapScreen` after the level
+    /// message-box countdown.
+    ///
+    /// Preconditions: orchestrator runs a `LevelScreen` for `"JN1L01.JN1"`;
+    /// the world-map byte cache is seeded with synthetic MAP.JN1 bytes.
+    ///
+    /// Invariants asserted: after the countdown, the active handler's
+    /// `map_jn_bytes` reports the seeded MAP.JN1 bytes, confirming a swap to
+    /// `MapScreen`.
+    #[test]
+    fn dispatcher_previous_returns_to_map_screen() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Level {
+            file: String::from("JN1L01.JN1"),
+            number: 1,
+        }));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        seed_level_cache(&mut orchestrator, "JN1L01.JN1", 1);
+        let synthetic_map = vec![0u8; JN_MIN_BYTES];
+        orchestrator.map_jn_bytes = Some(synthetic_map.clone());
+
+        let input: ActiveInput = Default::default();
+        orchestrator.tick(&input);
+
+        orchestrator.dispatcher_mut().send(
+            openjill_core::MessageType::CheckpointChangeLevelPrevious,
+            openjill_core::MessagePayload::None,
+        );
+
+        drive_message_box_countdown(&mut orchestrator);
+
+        assert_eq!(orchestrator.handler.map_jn_bytes(), Some(synthetic_map));
+    }
+
+    /// Unit under test: `MessageDispatcher::send(DieRestartLevel, …)` builds
+    /// a fresh `LevelScreen` from the in-memory level bytes, leaving the
+    /// cached `level_jn_file` and `level_jn_number` unchanged.
+    ///
+    /// Preconditions: orchestrator runs a `LevelScreen` for `"JN1L01.JN1"`;
+    /// the level byte cache holds the bytes used to construct it.
+    ///
+    /// Invariants asserted: after the countdown, the cached level number is
+    /// unchanged (still `1`) and the active handler's `level_jn_bytes`
+    /// matches the cached bytes, confirming a restart-from-memory path.
+    #[test]
+    fn dispatcher_die_restart_reloads_level_from_memory() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Level {
+            file: String::from("JN1L01.JN1"),
+            number: 1,
+        }));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        seed_level_cache(&mut orchestrator, "JN1L01.JN1", 1);
+        let cached_bytes = orchestrator.level_jn_bytes.clone();
+
+        let input: ActiveInput = Default::default();
+        orchestrator.tick(&input);
+
+        orchestrator.dispatcher_mut().send(
+            openjill_core::MessageType::DieRestartLevel,
+            openjill_core::MessagePayload::None,
+        );
+
+        drive_message_box_countdown(&mut orchestrator);
+
+        assert_eq!(orchestrator.level_jn_number, Some(1));
+        assert_eq!(orchestrator.handler.level_jn_bytes(), cached_bytes);
     }
 }

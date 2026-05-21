@@ -13,7 +13,7 @@ pub mod screen;
 pub use message::{
     ChangeLevelPayload, MessageDispatcher, MessageHandler, MessagePayload, MessageType,
 };
-pub use render::RenderCommand;
+pub use render::{ClipRect, RenderCommand};
 pub use runtime::{InventoryObject, MAP_LEVEL, RuntimeState};
 pub use screen::{ScreenHandler, ScreenTransition, SoundEvent, TickResult};
 

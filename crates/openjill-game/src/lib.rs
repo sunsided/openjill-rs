@@ -154,6 +154,58 @@ impl GameApp {
             .filter_map(|key| Self::map_key_to_input_command(*key))
             .collect()
     }
+
+    /// Dispatches debug-only level-transition hotkeys (debug builds only).
+    ///
+    /// Wired so a developer can exercise the level-transition pipeline
+    /// without gameplay (epic 6) having attached real checkpoint objects to
+    /// the world map yet. Single-fire on key down: edge-triggered by the
+    /// caller via `event.state == Pressed && !event.repeat`.
+    ///
+    /// | Key | Action |
+    /// |-----|--------|
+    /// | `L` | Force-transition into `1.JN1` (level 1) |
+    /// | `K` | Send `CheckpointChangeLevelPrevious` (return to map) |
+    /// | `R` | Send `DieRestartLevel` |
+    ///
+    /// Episode 1 level files are named `<level_number>.JN1` on disk
+    /// (`1.JN1`, `2.JN1`, ..., `50.JN1`).  `L` calls
+    /// [`GameOrchestrator::force_transition`] directly: the dispatcher route
+    /// requires a subscriber, and [`crate::screens::map_screen::MapScreen`]
+    /// does not subscribe to `CheckpointChangeLevel`, so a queued message
+    /// would never fire a transition. `K` and `R` use the dispatcher because
+    /// they target [`crate::screens::level_screen::LevelScreen`], which
+    /// subscribes for both.
+    #[cfg(debug_assertions)]
+    fn handle_debug_hotkey(&mut self, key_code: KeyCode) {
+        let Some(orch) = self.orchestrator.as_mut() else {
+            return;
+        };
+        match key_code {
+            KeyCode::KeyL => {
+                orch.force_transition(openjill_core::ScreenTransition::Level {
+                    file: String::from("1.JN1"),
+                    number: 1,
+                });
+                eprintln!("openjill-game: debug: force-transition -> LevelScreen 1.JN1");
+            }
+            KeyCode::KeyK => {
+                orch.dispatcher_mut().send(
+                    openjill_core::MessageType::CheckpointChangeLevelPrevious,
+                    openjill_core::MessagePayload::None,
+                );
+                eprintln!("openjill-game: debug: dispatched CheckpointChangeLevelPrevious");
+            }
+            KeyCode::KeyR => {
+                orch.dispatcher_mut().send(
+                    openjill_core::MessageType::DieRestartLevel,
+                    openjill_core::MessagePayload::None,
+                );
+                eprintln!("openjill-game: debug: dispatched DieRestartLevel");
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Startup rendering assets loaded from `JILL1.SHA`.
@@ -257,6 +309,10 @@ impl ApplicationHandler for GameApp {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key_code) = event.physical_key {
                     Self::update_pressed_keys(&mut self.pressed_keys, key_code, event.state);
+                    #[cfg(debug_assertions)]
+                    if event.state == ElementState::Pressed && !event.repeat {
+                        self.handle_debug_hotkey(key_code);
+                    }
                 }
             }
             WindowEvent::Focused(false) => {

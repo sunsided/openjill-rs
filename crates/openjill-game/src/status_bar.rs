@@ -44,6 +44,7 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
                 x,
                 y,
                 opaque: false,
+                clip: None,
             })
         })
         .collect()
@@ -67,8 +68,22 @@ pub fn game_area_blit(
         x: GAME_AREA_X + game_x,
         y: GAME_AREA_Y + game_y,
         opaque,
+        clip: Some(GAME_AREA_CLIP),
     }
 }
+
+/// Framebuffer clip rectangle that confines blit pixels to the game area.
+///
+/// Game-area background tiles emitted via [`game_area_blit`] carry this clip
+/// rect so partial-overlap edge tiles do not bleed past the game-area border
+/// into the surrounding status-bar frame.  The values mirror `GAME_AREA_*`
+/// from `openjill_core::layout`.
+pub const GAME_AREA_CLIP: openjill_core::ClipRect = openjill_core::ClipRect {
+    x: GAME_AREA_X,
+    y: GAME_AREA_Y,
+    width: openjill_core::layout::GAME_AREA_W,
+    height: openjill_core::layout::GAME_AREA_H,
+};
 
 #[cfg(test)]
 mod tests {
@@ -126,6 +141,7 @@ mod tests {
                     x,
                     y,
                     opaque: true,
+                    clip: Some(_),
                 } if x == GAME_AREA_X + 10 && y == GAME_AREA_Y + 20
             ),
             "game_area_blit must offset x/y by game area origin"

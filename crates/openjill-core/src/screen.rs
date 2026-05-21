@@ -75,14 +75,25 @@ pub trait ScreenHandler {
     /// uses the new handler.
     fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult;
 
-    /// Serializes the handler's current JN file state to an in-memory byte
+    /// Serializes the handler's current world-map JN bytes to an in-memory
     /// buffer for save and restore operations.
     ///
-    /// Returns `None` for screens that do not own a JN file (e.g. the start
-    /// menu). Map and level screens override this to support
-    /// `putCurrentLevelInFileMemory` semantics from the Java reference
-    /// implementation.
+    /// Returns `None` for screens that do not own the map JN file (the start
+    /// menu, intro screens, and level screens). Only `MapScreen` overrides
+    /// this method, mirroring the `putCurrentLevelInFileMemory` semantics from
+    /// the Java reference for the world-map round-trip.
     fn map_jn_bytes(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Serializes the handler's current level JN bytes to an in-memory buffer
+    /// for restart-level operations.
+    ///
+    /// Returns `None` for screens that do not own a level JN file. Only
+    /// `LevelScreen` overrides this method, allowing the orchestrator to
+    /// reload the same level from memory when a `DieRestartLevel` message
+    /// fires.
+    fn level_jn_bytes(&self) -> Option<Vec<u8>> {
         None
     }
 }
