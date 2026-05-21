@@ -22,8 +22,11 @@ pub fn status_bar_commands() -> Vec<RenderCommand> {
 
 /// Parses the embedded `status_bar_vga.json` into static status bar render commands.
 ///
-/// Returns an empty `Vec` if the JSON is missing or structurally invalid; malformed individual
-/// entries are silently skipped. Emits commands in the order: `images` blits, then `text`
+/// Returns an empty `Vec` only when the top-level JSON itself fails to parse. Each of the
+/// three optional top-level arrays (`images`, `text`, `bigtext`) is consumed independently:
+/// a missing or non-array value contributes nothing rather than discarding the other
+/// arrays, and individual entries that omit required fields or carry out-of-range numeric
+/// values are silently skipped. Emits commands in the order: `images` blits, then `text`
 /// `DrawText`, then `bigtext` `DrawText`.
 fn parse_status_bar_commands() -> Vec<RenderCommand> {
     let value: serde_json::Value = match serde_json::from_str(STATUS_BAR_JSON) {
@@ -46,12 +49,13 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
 }
 
 /// Parses one `images` array entry into a [`RenderCommand::Blit`]. Returns `None` if any
-/// required field is missing or has the wrong JSON type.
+/// required field is missing, has the wrong JSON type, or carries a numeric value that
+/// does not fit the target width (treated as malformed rather than silently truncated).
 fn parse_blit_entry(img: &serde_json::Value) -> Option<RenderCommand> {
-    let tileset = img.get("tileset")?.as_u64()? as u8;
-    let tile = img.get("tile")?.as_u64()? as u16;
-    let x = img.get("x")?.as_i64()? as i32;
-    let y = img.get("y")?.as_i64()? as i32;
+    let tileset = u8::try_from(img.get("tileset")?.as_u64()?).ok()?;
+    let tile = u16::try_from(img.get("tile")?.as_u64()?).ok()?;
+    let x = i32::try_from(img.get("x")?.as_i64()?).ok()?;
+    let y = i32::try_from(img.get("y")?.as_i64()?).ok()?;
     Some(RenderCommand::Blit {
         tileset,
         tile,
@@ -63,12 +67,13 @@ fn parse_blit_entry(img: &serde_json::Value) -> Option<RenderCommand> {
 }
 
 /// Parses one `text` or `bigtext` array entry into a [`RenderCommand::DrawText`]. Returns
-/// `None` if any required field is missing or has the wrong JSON type.
+/// `None` if any required field is missing, has the wrong JSON type, or carries a numeric
+/// value that does not fit the target width.
 fn parse_text_entry(entry: &serde_json::Value) -> Option<RenderCommand> {
     let text = entry.get("text")?.as_str()?.to_string();
-    let color_index = entry.get("color")?.as_u64()? as u8;
-    let x = entry.get("x")?.as_i64()? as i32;
-    let y = entry.get("y")?.as_i64()? as i32;
+    let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
+    let x = i32::try_from(entry.get("x")?.as_i64()?).ok()?;
+    let y = i32::try_from(entry.get("y")?.as_i64()?).ok()?;
     Some(RenderCommand::DrawText {
         text,
         x,
@@ -174,13 +179,17 @@ mod tests {
         );
     }
 
-    /// Unit under test: `status_bar_commands` ordering — blits first, then text, then bigtext.
+    /// Unit under test: `status_bar_commands` ordering and contents — blits first, then `text`
+    /// entries, then `bigtext` entries, each preserving JSON array order with verbatim
+    /// `(text, x, y, color)` values.
     ///
-    /// Preconditions: `STATUS_BAR_JSON` has at least one entry in `images`, `text`, and `bigtext`.
+    /// Preconditions: `STATUS_BAR_JSON` has at least one entry in `images`, `text`, and
+    /// `bigtext`.
     ///
-    /// Invariants asserted: every `Blit` command appears before every `DrawText` command, the
-    /// first `DrawText` is the first `text` entry, and the last `DrawText` is the last `bigtext`
-    /// entry.
+    /// Invariants asserted: every `Blit` command appears before every `DrawText` command; the
+    /// emitted `DrawText` sequence is exactly the concatenation `text ++ bigtext` from the
+    /// JSON, both in length and in per-entry `(text, x, y, color)`. Deriving the expectation
+    /// from the JSON keeps the test stable if `status_bar_vga.json` gains additional labels.
     #[test]
     fn status_bar_commands_emit_blits_then_text_then_bigtext() {
         let commands = status_bar_commands();
@@ -197,38 +206,50 @@ mod tests {
             "all Blit commands must precede DrawText commands"
         );
 
-        let text_cmds: Vec<&RenderCommand> = commands
+        let json: serde_json::Value =
+            serde_json::from_str(STATUS_BAR_JSON).expect("STATUS_BAR_JSON must be valid JSON");
+        let expected: Vec<(String, i32, i32, u8)> = json["text"]
+            .as_array()
+            .expect("text must be an array")
             .iter()
-            .filter(|cmd| matches!(cmd, RenderCommand::DrawText { .. }))
+            .chain(
+                json["bigtext"]
+                    .as_array()
+                    .expect("bigtext must be an array")
+                    .iter(),
+            )
+            .map(|entry| {
+                (
+                    entry["text"]
+                        .as_str()
+                        .expect("text field must be a string")
+                        .to_string(),
+                    i32::try_from(entry["x"].as_i64().expect("x must be integer"))
+                        .expect("x must fit i32"),
+                    i32::try_from(entry["y"].as_i64().expect("y must be integer"))
+                        .expect("y must fit i32"),
+                    u8::try_from(entry["color"].as_u64().expect("color must be integer"))
+                        .expect("color must fit u8"),
+                )
+            })
             .collect();
+
+        let actual: Vec<(String, i32, i32, u8)> = commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                RenderCommand::DrawText {
+                    text,
+                    x,
+                    y,
+                    color_index,
+                } => Some((text.clone(), *x, *y, *color_index)),
+                _ => None,
+            })
+            .collect();
+
         assert_eq!(
-            text_cmds.len(),
-            3,
-            "expected 2 text entries + 1 bigtext entry"
-        );
-        assert!(
-            matches!(
-                text_cmds[0],
-                RenderCommand::DrawText { text, x, y, color_index }
-                    if text == "CONTROLS" && *x == 10 && *y == 5 && *color_index == 1
-            ),
-            "first DrawText must be CONTROLS at (10, 5) color 1"
-        );
-        assert!(
-            matches!(
-                text_cmds[1],
-                RenderCommand::DrawText { text, x, y, color_index }
-                    if text == "INVENTORY" && *x == 13 && *y == 179 && *color_index == 1
-            ),
-            "second DrawText must be INVENTORY at (13, 179) color 1"
-        );
-        assert!(
-            matches!(
-                text_cmds[2],
-                RenderCommand::DrawText { text, x, y, color_index }
-                    if text == "Open Jill : Jungle" && *x == 129 && *y == 4 && *color_index == 1
-            ),
-            "last DrawText must be Open Jill : Jungle at (129, 4) color 1"
+            actual, expected,
+            "DrawText sequence must equal JSON `text` followed by `bigtext`, in order"
         );
     }
 

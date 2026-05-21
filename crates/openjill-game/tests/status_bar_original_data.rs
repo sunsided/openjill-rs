@@ -77,8 +77,13 @@ fn sha_tileset_3_exists_in_original_data() {
     );
 }
 
-/// Unit under test: `status_bar_commands` text/bigtext labels render without panicking
-/// against the real `JILL1.SHA` font tileset.
+/// Unit under test: font tileset decode from real `JILL1.SHA` plus `status_bar_commands`
+/// `DrawText` emission for the documented status-bar labels.
+///
+/// Note: no framebuffer rendering happens here. The test asserts that the font tileset
+/// can be located and decoded into `ShaFontTiles` without error, and that the
+/// `RenderCommand` stream contains each expected label entry. The actual on-screen
+/// rendering path is covered by the renderer crate's headless framebuffer tests.
 ///
 /// Preconditions: either `OPENJILL_DATA_DIR` or the workspace `data/original/JILL1`
 /// directory is present. When neither is available the test prints a skip message
@@ -88,7 +93,7 @@ fn sha_tileset_3_exists_in_original_data() {
 /// - `JILL1.SHA` contains at least one font tileset.
 /// - `ShaFontTiles::from_tileset` decodes that tileset successfully.
 /// - `status_bar_commands` emits one `DrawText` for every expected label ("CONTROLS",
-///   "INVENTORY", "Open Jill : Jungle") and matches the documented (x, y, color).
+///   "INVENTORY", "Open Jill : Jungle") at the documented (x, y, color).
 #[test]
 fn status_bar_text_labels_resolve_against_original_font() {
     let env_override = std::env::var_os(DATA_DIR_ENV);
