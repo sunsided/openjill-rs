@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use openjill_core::{Palette, RenderCommand};
+use openjill_core::{ClipRect, Palette, RenderCommand};
 use openjill_data::sha::{ShaFile, ShaTile, ShaTileSet};
 use thiserror::Error;
 use wgpu::{
@@ -380,6 +380,7 @@ impl Presenter {
             dst_x,
             dst_y,
             opaque,
+            None,
         );
     }
 
@@ -499,6 +500,7 @@ fn expand_indexed_framebuffer(framebuffer: &[u8], rgba_buffer: &mut [u8], palett
 ///
 /// Returns without writing any pixels when `src` is shorter than `src_width * src_height`,
 /// so a too-small source never produces a partially-updated framebuffer.
+#[allow(clippy::too_many_arguments)]
 fn blit_indexed(
     framebuffer: &mut [u8],
     src: &[u8],
@@ -507,6 +509,7 @@ fn blit_indexed(
     dst_x: i32,
     dst_y: i32,
     opaque: bool,
+    clip: Option<ClipRect>,
 ) {
     debug_assert_eq!(framebuffer.len(), FRAMEBUFFER_PIXELS);
     let src_width = src_width as usize;
@@ -530,6 +533,11 @@ fn blit_indexed(
         for src_x in 0..src_width {
             let target_x = dst_x + src_x as i32;
             if !(0..FRAMEBUFFER_WIDTH as i32).contains(&target_x) {
+                continue;
+            }
+            if let Some(rect) = clip
+                && !rect.contains(target_x, target_y)
+            {
                 continue;
             }
 
@@ -566,6 +574,7 @@ fn draw_text_indexed(framebuffer: &mut [u8], text: &str, x: i32, y: i32, font: &
             cursor_x,
             y,
             false,
+            None,
         );
         cursor_x += i32::from(glyph.width);
     }
@@ -667,6 +676,7 @@ fn execute_commands_on_framebuffer(
                 x,
                 y,
                 opaque,
+                clip,
             } => {
                 let tileset_idx = *tileset as usize;
                 let tile_idx = *tile as usize;
@@ -684,6 +694,7 @@ fn execute_commands_on_framebuffer(
                         *x,
                         *y,
                         *opaque,
+                        *clip,
                     );
                 }
             }
@@ -876,7 +887,7 @@ mod tests {
         let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
         let src = [1, 2, 3, 4];
 
-        blit_indexed(&mut framebuffer, &src, 2, 2, 5, 7, true);
+        blit_indexed(&mut framebuffer, &src, 2, 2, 5, 7, true, None);
 
         assert_eq!(framebuffer[7 * FRAMEBUFFER_WIDTH + 5], 1);
         assert_eq!(framebuffer[7 * FRAMEBUFFER_WIDTH + 6], 2);
@@ -890,7 +901,7 @@ mod tests {
         let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
         let src = [9, 8, 7, 6];
 
-        blit_indexed(&mut framebuffer, &src, 2, 2, -1, -1, true);
+        blit_indexed(&mut framebuffer, &src, 2, 2, -1, -1, true, None);
 
         assert_eq!(framebuffer[0], 6);
         assert_eq!(framebuffer[1], 0);
@@ -903,12 +914,40 @@ mod tests {
         let mut framebuffer = [5_u8; FRAMEBUFFER_PIXELS];
         let src = [0, 2, 3, 0];
 
-        blit_indexed(&mut framebuffer, &src, 2, 2, 0, 0, false);
+        blit_indexed(&mut framebuffer, &src, 2, 2, 0, 0, false, None);
 
         assert_eq!(framebuffer[0], 5);
         assert_eq!(framebuffer[1], 2);
         assert_eq!(framebuffer[FRAMEBUFFER_WIDTH], 3);
         assert_eq!(framebuffer[FRAMEBUFFER_WIDTH + 1], 5);
+    }
+
+    /// Unit under test: `blit_indexed` honours an optional `ClipRect`.
+    ///
+    /// Preconditions: a 2x2 opaque source `[1, 2, 3, 4]` is blitted at
+    /// destination `(4, 5)` with a clip rectangle that contains only the
+    /// single pixel `(4, 5)`.
+    ///
+    /// Invariants asserted: only the top-left source pixel reaches the
+    /// framebuffer; the other three are clipped because their destination
+    /// coordinates fall outside the clip rectangle.
+    #[test]
+    fn blit_indexed_respects_clip_rectangle() {
+        let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
+        let src = [1_u8, 2, 3, 4];
+
+        let clip = openjill_core::ClipRect {
+            x: 4,
+            y: 5,
+            width: 1,
+            height: 1,
+        };
+        blit_indexed(&mut framebuffer, &src, 2, 2, 4, 5, true, Some(clip));
+
+        assert_eq!(framebuffer[5 * FRAMEBUFFER_WIDTH + 4], 1);
+        assert_eq!(framebuffer[5 * FRAMEBUFFER_WIDTH + 5], 0);
+        assert_eq!(framebuffer[6 * FRAMEBUFFER_WIDTH + 4], 0);
+        assert_eq!(framebuffer[6 * FRAMEBUFFER_WIDTH + 5], 0);
     }
 
     /// Unit under test: `ShaFontTiles::from_tileset` decode-path validation.
@@ -1125,6 +1164,7 @@ mod tests {
             x: 5,
             y: 7,
             opaque: true,
+            clip: None,
         }];
         let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
         execute_commands_on_framebuffer(&mut fb, &commands, &sha);

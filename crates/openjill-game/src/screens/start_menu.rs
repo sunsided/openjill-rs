@@ -458,6 +458,7 @@ fn blit(tileset: u8, tile: u16, game_x: i32, game_y: i32) -> RenderCommand {
         x: GAME_AREA_X + game_x,
         y: GAME_AREA_Y + game_y,
         opaque: false,
+        clip: None,
     }
 }
 

@@ -116,10 +116,11 @@ impl ScreenHandler for MapScreen {
 /// cell.  Map code 0 (the transparent sentinel) is skipped, and map codes
 /// without a DMA entry are silently ignored.  Output blit coordinates are
 /// offset by the game-area origin (`GAME_AREA_X`, `GAME_AREA_Y`); tiles whose
-/// rect lies entirely outside the game-area window are culled here.  Partial-
-/// overlap edge tiles can still bleed by up to one block past the game-area
-/// edge because [`RenderCommand::Blit`] currently carries no per-command clip
-/// rect — the renderer only clips to the 320×200 framebuffer.
+/// rect lies entirely outside the game-area window are culled here.  Each
+/// emitted blit carries the game-area [`openjill_core::ClipRect`] (set by
+/// [`crate::status_bar::game_area_blit`]) so partial-overlap edge tiles are
+/// clipped pixel-perfectly to the game area at render time, without bleeding
+/// into the surrounding status-bar frame.
 ///
 /// `offset_x` and `offset_y` follow OpenJill sign convention: a **negative**
 /// value shifts the source image left/up by `|offset|` pixels, revealing
@@ -301,6 +302,7 @@ mod tests {
                 x,
                 y,
                 opaque,
+                clip: _,
             } => {
                 assert_eq!(*tileset, 1);
                 assert_eq!(*tile, 0);

@@ -355,6 +355,7 @@ fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
             x: layout.x + tile.x,
             y: layout.y + tile.y,
             opaque: false,
+            clip: None,
         })
         .collect();
 

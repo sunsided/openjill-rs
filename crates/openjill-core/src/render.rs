@@ -1,5 +1,37 @@
 //! Rendering instruction type produced by screen handlers each tick.
 
+/// Axis-aligned framebuffer rectangle in pixel coordinates.
+///
+/// Used to clip individual `RenderCommand` outputs to a sub-region of the
+/// 320x200 framebuffer, e.g. so background tiles emitted by a level screen
+/// do not bleed past the right edge of the game area into the status bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipRect {
+    /// Left edge of the clip rectangle in framebuffer pixels.
+    pub x: i32,
+    /// Top edge of the clip rectangle in framebuffer pixels.
+    pub y: i32,
+    /// Width of the clip rectangle in pixels.
+    pub width: u32,
+    /// Height of the clip rectangle in pixels.
+    pub height: u32,
+}
+
+impl ClipRect {
+    /// Returns `true` when `(px, py)` lies inside the clip rectangle.
+    ///
+    /// `(px, py)` is in framebuffer pixel coordinates.  An empty rectangle
+    /// (`width == 0` or `height == 0`) contains no points.
+    pub fn contains(&self, px: i32, py: i32) -> bool {
+        if self.width == 0 || self.height == 0 {
+            return false;
+        }
+        let right = self.x.saturating_add(self.width as i32);
+        let bottom = self.y.saturating_add(self.height as i32);
+        px >= self.x && px < right && py >= self.y && py < bottom
+    }
+}
+
 /// One rendering instruction produced by a screen handler per tick.
 ///
 /// The renderer executes these in order against its indexed framebuffer.
@@ -15,6 +47,9 @@ pub enum RenderCommand {
     /// Blit one SHA tile at framebuffer position `(x, y)`.
     ///
     /// Pixel index 0 in the tile is treated as transparent unless `opaque` is true.
+    /// When `clip` is `Some`, the renderer only writes pixels whose
+    /// framebuffer coordinates lie inside the clip rectangle; otherwise the
+    /// blit is clipped only to the 320x200 framebuffer bounds.
     Blit {
         /// SHA tileset index (0-based).
         tileset: u8,
@@ -26,6 +61,8 @@ pub enum RenderCommand {
         y: i32,
         /// When true, pixel index 0 is rendered as an opaque color rather than skipped.
         opaque: bool,
+        /// Optional per-command clip rectangle in framebuffer pixels.
+        clip: Option<ClipRect>,
     },
     /// Draw a text string at `(x, y)` using the SHA font tileset.
     DrawText {
@@ -55,7 +92,7 @@ pub enum RenderCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::RenderCommand;
+    use super::{ClipRect, RenderCommand};
 
     /// Unit under test: all `RenderCommand` variants.
     ///
@@ -76,6 +113,7 @@ mod tests {
             x: 80,
             y: 16,
             opaque: false,
+            clip: None,
         };
         assert_eq!(blit.clone(), blit);
 
@@ -111,6 +149,12 @@ mod tests {
             x: -10,
             y: 200,
             opaque: true,
+            clip: Some(ClipRect {
+                x: 80,
+                y: 16,
+                width: 232,
+                height: 160,
+            }),
         };
         if let RenderCommand::Blit {
             tileset,
@@ -118,6 +162,7 @@ mod tests {
             x,
             y,
             opaque,
+            clip,
         } = cmd
         {
             assert_eq!(tileset, 7);
@@ -125,8 +170,46 @@ mod tests {
             assert_eq!(x, -10);
             assert_eq!(y, 200);
             assert!(opaque);
+            assert_eq!(
+                clip,
+                Some(ClipRect {
+                    x: 80,
+                    y: 16,
+                    width: 232,
+                    height: 160,
+                })
+            );
         } else {
             panic!("expected Blit variant");
         }
+    }
+
+    /// Unit under test: `ClipRect::contains`.
+    ///
+    /// Preconditions: a clip rectangle with positive width and height.
+    ///
+    /// Invariants asserted: the left/top edges are inclusive, the right/bottom
+    /// edges are exclusive, and empty rectangles contain no points.
+    #[test]
+    fn clip_rect_contains_respects_half_open_bounds() {
+        let rect = ClipRect {
+            x: 80,
+            y: 16,
+            width: 232,
+            height: 160,
+        };
+        assert!(rect.contains(80, 16));
+        assert!(rect.contains(311, 175));
+        assert!(!rect.contains(312, 16));
+        assert!(!rect.contains(80, 176));
+        assert!(!rect.contains(79, 16));
+
+        let empty = ClipRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 10,
+        };
+        assert!(!empty.contains(0, 0));
     }
 }
