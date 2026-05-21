@@ -2,13 +2,16 @@
 //! transition loop.
 
 use openjill_core::{ActiveInput, RenderCommand, RuntimeState, ScreenHandler, ScreenTransition};
-use openjill_data::DataDirectory;
+use openjill_data::dma::DmaFile;
+use openjill_data::jn::JnReadError;
+use openjill_data::{DataDirectory, DataDirectoryError};
 use thiserror::Error;
 
 use crate::asset_cache::{AssetCache, AssetError};
 use crate::screens::intro_screens::{
     credits_screen, noisemaker_screen, ordering_info_screen, story_screen,
 };
+use crate::screens::map_screen::MapScreen;
 use crate::screens::start_menu::StartMenuScreen;
 
 /// Constructs a fresh [`StartMenuScreen`] from the given asset cache.
@@ -19,6 +22,19 @@ fn make_start_menu(cache: &AssetCache) -> StartMenuScreen {
         cache.vcl.clone(),
         cache.cfg.clone(),
     )
+}
+
+/// Loads `MAP.JN1` from `data_dir` and constructs a [`MapScreen`].
+///
+/// Reads the file bytes through the case-insensitive resolver so the screen
+/// keeps both the parsed JN structure for rendering and the raw bytes for
+/// [`openjill_core::ScreenHandler::map_jn_bytes`] save/restore round-trips.
+fn load_map_screen(data_dir: &DataDirectory, dma: DmaFile) -> Result<MapScreen, MapLoadError> {
+    let path = data_dir
+        .resolve_path_case_insensitive("MAP.JN1")
+        .map_err(MapLoadError::Resolve)?;
+    let bytes = std::fs::read(&path).map_err(MapLoadError::Read)?;
+    MapScreen::from_bytes(bytes, dma).map_err(MapLoadError::Parse)
 }
 
 /// Owns the current screen handler and drives the game tick and transition loop.
@@ -154,11 +170,22 @@ impl GameOrchestrator {
             ScreenTransition::Quit => {
                 self.quitting = true;
             }
-            // Map and Level transitions are implemented in later child issues.
+            ScreenTransition::Map => {
+                match load_map_screen(&self.data_dir, self.cache.dma.clone()) {
+                    Ok(screen) => {
+                        self.handler = Box::new(screen);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "openjill-game: failed to load MAP.JN1 ({err}); falling back to start menu"
+                        );
+                        self.handler = Box::new(make_start_menu(&self.cache));
+                    }
+                }
+            }
+            // Level transitions are implemented in the next child issue.
             // Until then, fall back to StartMenuScreen so the loop stays valid.
-            ScreenTransition::Map
-            | ScreenTransition::Level { .. }
-            | ScreenTransition::RestartLevel => {
+            ScreenTransition::Level { .. } | ScreenTransition::RestartLevel => {
                 self.handler = Box::new(make_start_menu(&self.cache));
             }
         }
@@ -171,6 +198,20 @@ pub enum OrchestratorError {
     /// Asset loading from the data directory failed.
     #[error("failed to load game assets: {0}")]
     AssetLoad(#[from] AssetError),
+}
+
+/// Error returned when loading `MAP.JN1` during a screen transition fails.
+#[derive(Debug, Error)]
+enum MapLoadError {
+    /// Case-insensitive lookup of `MAP.JN1` failed.
+    #[error("failed to resolve MAP.JN1: {0}")]
+    Resolve(#[source] DataDirectoryError),
+    /// Reading the resolved `MAP.JN1` bytes from disk failed.
+    #[error("failed to read MAP.JN1: {0}")]
+    Read(#[source] std::io::Error),
+    /// Parsing the `MAP.JN1` bytes into a `JnFile` failed.
+    #[error("failed to parse MAP.JN1: {0}")]
+    Parse(#[source] JnReadError),
 }
 
 #[cfg(test)]
