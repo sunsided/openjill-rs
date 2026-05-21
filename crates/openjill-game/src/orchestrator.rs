@@ -154,6 +154,20 @@ impl GameOrchestrator {
         &mut self.dispatcher
     }
 
+    /// Applies `transition` immediately, bypassing the message-dispatcher
+    /// pipeline.
+    ///
+    /// Intended for developer tooling that needs to drop the orchestrator
+    /// into a specific screen without first standing up a full gameplay
+    /// loop: at the time of writing, [`crate::screens::map_screen::MapScreen`]
+    /// has no subscribers on the dispatcher, so a queued
+    /// `CheckpointChangeLevel` will never reach a handler until a
+    /// [`LevelScreen`] has already been constructed.  Calling this method
+    /// builds the destination screen directly.
+    pub fn force_transition(&mut self, transition: ScreenTransition) {
+        self.apply_transition(transition);
+    }
+
     /// Advances the active screen handler by one fixed game tick.
     ///
     /// Applies any [`ScreenTransition`] returned by the handler, then prepends the static

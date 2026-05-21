@@ -155,7 +155,7 @@ impl GameApp {
             .collect()
     }
 
-    /// Dispatches debug-only message-dispatcher hotkeys (debug builds only).
+    /// Dispatches debug-only level-transition hotkeys (debug builds only).
     ///
     /// Wired so a developer can exercise the level-transition pipeline
     /// without gameplay (epic 6) having attached real checkpoint objects to
@@ -164,9 +164,16 @@ impl GameApp {
     ///
     /// | Key | Action |
     /// |-----|--------|
-    /// | `L` | `CheckpointChangeLevel { JN1L01.JN1, 1 }` |
-    /// | `K` | `CheckpointChangeLevelPrevious` (return to map) |
-    /// | `R` | `DieRestartLevel` |
+    /// | `L` | Force-transition into `JN1L01.JN1` (level 1) |
+    /// | `K` | Send `CheckpointChangeLevelPrevious` (return to map) |
+    /// | `R` | Send `DieRestartLevel` |
+    ///
+    /// `L` calls [`GameOrchestrator::force_transition`] directly: the
+    /// dispatcher route requires a subscriber, and [`crate::screens::map_screen::MapScreen`]
+    /// does not subscribe to `CheckpointChangeLevel`, so a queued message
+    /// would never fire a transition. `K` and `R` use the dispatcher because
+    /// they target [`crate::screens::level_screen::LevelScreen`], which
+    /// subscribes for both.
     #[cfg(debug_assertions)]
     fn handle_debug_hotkey(&mut self, key_code: KeyCode) {
         let Some(orch) = self.orchestrator.as_mut() else {
@@ -174,14 +181,11 @@ impl GameApp {
         };
         match key_code {
             KeyCode::KeyL => {
-                orch.dispatcher_mut().send(
-                    openjill_core::MessageType::CheckpointChangeLevel,
-                    openjill_core::MessagePayload::ChangeLevel(openjill_core::ChangeLevelPayload {
-                        level_file: String::from("JN1L01.JN1"),
-                        level_number: 1,
-                    }),
-                );
-                eprintln!("openjill-game: debug: dispatched CheckpointChangeLevel -> JN1L01.JN1");
+                orch.force_transition(openjill_core::ScreenTransition::Level {
+                    file: String::from("JN1L01.JN1"),
+                    number: 1,
+                });
+                eprintln!("openjill-game: debug: force-transition -> LevelScreen JN1L01.JN1");
             }
             KeyCode::KeyK => {
                 orch.dispatcher_mut().send(
