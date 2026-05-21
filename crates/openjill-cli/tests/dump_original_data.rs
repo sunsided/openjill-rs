@@ -20,6 +20,8 @@ const SHA256_HEX_LEN: usize = 64;
 const VCL_TEXT_ENTRY_COUNT: usize = 40;
 /// File name used by `dump sha` for indexed atlas pixels.
 const SHA_ATLAS_INDEXED_FILE: &str = "atlas-indexed.png";
+/// File name used by `dump sha` for the RGB atlas rendered through the Jill VGA palette.
+const SHA_ATLAS_RGB_FILE: &str = "atlas-rgb.png";
 
 /// Unit under test: end-to-end `openjill-rs dump dma`, `openjill-rs dump vcl`,
 /// and `openjill-rs dump sha` execution against original episode-1 files.
@@ -214,7 +216,7 @@ fn assert_sha_dump(json: &Value, output_dir: &Path, source_len: usize) {
     let atlas_files = json["atlas_files"]
         .as_array()
         .expect("SHA atlas_files must be an array");
-    check!(!atlas_files.is_empty());
+    check!(atlas_files.len() == 2);
     check!(atlas_files[0]["file_name"] == Value::from(SHA_ATLAS_INDEXED_FILE));
     check!(atlas_files[0]["pixel_format"] == Value::from("indexed-luma8"));
     check!(atlas_files[0]["tile_padding"].as_u64().is_some());
@@ -223,6 +225,13 @@ fn assert_sha_dump(json: &Value, output_dir: &Path, source_len: usize) {
     check!(atlas_width > 0);
     check!(atlas_height > 0);
     check!(output_dir.join(SHA_ATLAS_INDEXED_FILE).is_file());
+
+    check!(atlas_files[1]["file_name"] == Value::from(SHA_ATLAS_RGB_FILE));
+    check!(atlas_files[1]["pixel_format"] == Value::from("rgb8"));
+    check!(atlas_files[1]["palette_source"] == Value::from("jill_vga"));
+    check!(json_usize(&atlas_files[1], "width") == atlas_width);
+    check!(json_usize(&atlas_files[1], "height") == atlas_height);
+    check!(output_dir.join(SHA_ATLAS_RGB_FILE).is_file());
 
     for tileset in tilesets {
         check!(tileset["entry_index"].as_u64().is_some());
