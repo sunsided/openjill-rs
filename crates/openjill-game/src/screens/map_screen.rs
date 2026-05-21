@@ -115,8 +115,11 @@ impl ScreenHandler for MapScreen {
 /// code up in `JILL.DMA`, and emits one [`RenderCommand::Blit`] per non-empty
 /// cell.  Map code 0 (the transparent sentinel) is skipped, and map codes
 /// without a DMA entry are silently ignored.  Output blit coordinates are
-/// offset by the game-area origin so the renderer clips them to the game
-/// area.
+/// offset by the game-area origin (`GAME_AREA_X`, `GAME_AREA_Y`); tiles whose
+/// rect lies entirely outside the game-area window are culled here.  Partial-
+/// overlap edge tiles can still bleed by up to one block past the game-area
+/// edge because [`RenderCommand::Blit`] currently carries no per-command clip
+/// rect — the renderer only clips to the 320×200 framebuffer.
 ///
 /// `offset_x` and `offset_y` follow OpenJill sign convention: a **negative**
 /// value shifts the source image left/up by `|offset|` pixels, revealing
@@ -144,6 +147,9 @@ pub fn render_map_background(
     let tiles_x = (GAME_AREA_W as i32) / BLOCK_SIZE_I + 2;
     let tiles_y = (GAME_AREA_H as i32) / BLOCK_SIZE_I + 2;
 
+    let game_area_w = GAME_AREA_W as i32;
+    let game_area_h = GAME_AREA_H as i32;
+
     let mut commands = Vec::new();
     for row in 0..tiles_y {
         for col in 0..tiles_x {
@@ -169,6 +175,18 @@ pub fn render_map_background(
 
             let game_x = col * BLOCK_SIZE_I - sub_x;
             let game_y = row * BLOCK_SIZE_I - sub_y;
+
+            // Cull tiles whose rect lies entirely outside the game-area
+            // window; partial-overlap tiles still pass through because the
+            // renderer cannot clip them per-command.
+            if game_x + BLOCK_SIZE_I <= 0
+                || game_x >= game_area_w
+                || game_y + BLOCK_SIZE_I <= 0
+                || game_y >= game_area_h
+            {
+                continue;
+            }
+
             commands.push(game_area_blit(
                 entry.tileset(),
                 u16::from(entry.tile()),
@@ -399,5 +417,44 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(positions, expected);
+    }
+
+    /// Unit under test: `render_map_background` with a non-zero viewport
+    /// offset culls tiles whose rect lies entirely past the game-area right
+    /// edge while still emitting a blit for a partially clipped left-edge
+    /// tile.
+    ///
+    /// Preconditions: viewport offset `(-100, 0)` (world x = 100, sub_x = 4,
+    /// `start_tile_x = 6`).  Cells (6, 0) and (21, 0) both hold map code 1.
+    /// Cell (6, 0) maps to col 0 with `game_x = -4` (partial overlap on the
+    /// left, kept). Cell (21, 0) maps to col 15 with `game_x = 236`, past
+    /// `GAME_AREA_W = 232` (culled).
+    ///
+    /// Invariants asserted: exactly one `Blit` is emitted, at framebuffer
+    /// coordinates `(GAME_AREA_X - 4, GAME_AREA_Y)`; no blit reaches the
+    /// `game_x >= 232` half-open right edge.
+    #[test]
+    fn non_zero_offset_culls_tiles_past_right_edge() {
+        const BACKGROUND_HEIGHT: usize = 64;
+        let mut bytes = vec![0u8; JN_MIN_BYTES];
+        for &(cx, cy) in &[(6usize, 0usize), (21, 0)] {
+            let cell_index = cx * BACKGROUND_HEIGHT + cy;
+            let off = cell_index * 2;
+            bytes[off..off + 2].copy_from_slice(&1u16.to_le_bytes());
+        }
+        let jn = JnFile::from_bytes(bytes).expect("JN should parse");
+        let dma = DmaFile::from_bytes(dma_bytes_single(1, 0, 1)).expect("DMA should parse");
+
+        let commands = render_map_background(&jn, &dma, -100, 0);
+        let blits: Vec<(i32, i32)> = commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::Blit { x, y, .. } => Some((*x, *y)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(blits.len(), 1, "right-edge tile must be culled");
+        assert_eq!(blits[0], (GAME_AREA_X - 4, GAME_AREA_Y));
     }
 }

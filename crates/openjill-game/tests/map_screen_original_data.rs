@@ -13,15 +13,37 @@ use std::path::{Path, PathBuf};
 /// Environment variable for overriding the data directory.
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 
+/// Outcome of resolving the data directory location.
+///
+/// Distinguishes a missing-default skip from an explicit-but-invalid
+/// `OPENJILL_DATA_DIR` so the skip log line tells the developer which case
+/// they are in.
+enum DataDirOutcome {
+    /// A usable data directory was found at the contained path.
+    Found(PathBuf),
+    /// `OPENJILL_DATA_DIR` was set but the supplied path is not a directory.
+    EnvSetButNotDirectory(PathBuf),
+    /// `OPENJILL_DATA_DIR` was unset and the workspace default is absent.
+    UnsetAndDefaultMissing(PathBuf),
+}
+
 /// Resolves the data directory from `OPENJILL_DATA_DIR` or the workspace
-/// fallback at `data/original/JILL1`.
-fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+/// fallback at `data/original/JILL1`, returning the cause when no usable
+/// directory is found.
+fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> DataDirOutcome {
     if let Some(path) = env_override {
         let buf = PathBuf::from(path);
-        return Some(buf).filter(|p| p.is_dir());
+        if buf.is_dir() {
+            return DataDirOutcome::Found(buf);
+        }
+        return DataDirOutcome::EnvSetButNotDirectory(buf);
     }
     let default = Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1");
-    Some(default).filter(|p| p.is_dir())
+    if default.is_dir() {
+        DataDirOutcome::Found(default)
+    } else {
+        DataDirOutcome::UnsetAndDefaultMissing(default)
+    }
 }
 
 /// Unit under test: `MapScreen::from_bytes` and `MapScreen::tick` against the
@@ -43,11 +65,20 @@ fn map_screen_constructs_and_renders_with_original_data() {
 
     let env_override = std::env::var_os(DATA_DIR_ENV);
     let data_dir = match resolve_data_dir(env_override.as_deref()) {
-        Some(dir) => dir,
-        None => {
+        DataDirOutcome::Found(dir) => dir,
+        DataDirOutcome::EnvSetButNotDirectory(path) => {
             eprintln!(
-                "skipping integration test; {DATA_DIR_ENV} is not set \
-                 and default data directory is missing"
+                "skipping integration test; {DATA_DIR_ENV} is set to '{}' \
+                 which is not a directory",
+                path.display()
+            );
+            return;
+        }
+        DataDirOutcome::UnsetAndDefaultMissing(default) => {
+            eprintln!(
+                "skipping integration test; {DATA_DIR_ENV} is not set and \
+                 default '{}' is missing",
+                default.display()
             );
             return;
         }
