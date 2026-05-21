@@ -4,7 +4,9 @@
 //! default `data/original/JILL1` path is present.
 
 use assert2::check;
+use openjill_core::RenderCommand;
 use openjill_data::DataDirectory;
+use openjill_render::ShaFontTiles;
 use std::path::{Path, PathBuf};
 
 /// Environment variable that lets a developer override the data directory.
@@ -72,5 +74,72 @@ fn sha_tileset_3_exists_in_original_data() {
     check!(
         !status_bar_tileset.tiles().is_empty(),
         "SHA tileset {STATUS_BAR_TILESET_INDEX} must have at least one tile"
+    );
+}
+
+/// Unit under test: `status_bar_commands` text/bigtext labels render without panicking
+/// against the real `JILL1.SHA` font tileset.
+///
+/// Preconditions: either `OPENJILL_DATA_DIR` or the workspace `data/original/JILL1`
+/// directory is present. When neither is available the test prints a skip message
+/// and returns.
+///
+/// Invariants asserted:
+/// - `JILL1.SHA` contains at least one font tileset.
+/// - `ShaFontTiles::from_tileset` decodes that tileset successfully.
+/// - `status_bar_commands` emits one `DrawText` for every expected label ("CONTROLS",
+///   "INVENTORY", "Open Jill : Jungle") and matches the documented (x, y, color).
+#[test]
+fn status_bar_text_labels_resolve_against_original_font() {
+    let env_override = std::env::var_os(DATA_DIR_ENV);
+    let data_dir = match resolve_data_dir(env_override.as_deref()) {
+        Some(dir) => dir,
+        None => {
+            eprintln!(
+                "skipping integration test; {DATA_DIR_ENV} is unset or invalid \
+                 and default data directory is missing"
+            );
+            return;
+        }
+    };
+
+    let directory = DataDirectory::new(&data_dir);
+    let cache = openjill_game::asset_cache::AssetCache::load(&directory)
+        .unwrap_or_else(|err| panic!("AssetCache::load should succeed with real data: {err}"));
+
+    let font_tileset = cache
+        .sha
+        .tilesets()
+        .iter()
+        .find(|ts| ts.is_font())
+        .expect("JILL1.SHA must contain at least one font tileset for status-bar labels");
+    let _font = ShaFontTiles::from_tileset(font_tileset)
+        .expect("font tileset from JILL1.SHA must decode without error");
+
+    let commands = openjill_game::status_bar::status_bar_commands();
+    let labels: Vec<(&str, i32, i32, u8)> = commands
+        .iter()
+        .filter_map(|cmd| match cmd {
+            RenderCommand::DrawText {
+                text,
+                x,
+                y,
+                color_index,
+            } => Some((text.as_str(), *x, *y, *color_index)),
+            _ => None,
+        })
+        .collect();
+
+    check!(
+        labels.contains(&("CONTROLS", 10, 5, 1)),
+        "status bar must emit CONTROLS DrawText at (10, 5) color 1"
+    );
+    check!(
+        labels.contains(&("INVENTORY", 13, 179, 1)),
+        "status bar must emit INVENTORY DrawText at (13, 179) color 1"
+    );
+    check!(
+        labels.contains(&("Open Jill : Jungle", 129, 4, 1)),
+        "status bar must emit Open Jill : Jungle DrawText at (129, 4) color 1"
     );
 }
