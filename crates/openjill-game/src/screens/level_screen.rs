@@ -170,17 +170,26 @@ impl LevelScreen {
 
     /// Drains the dispatcher inbox and promotes the first new request to a
     /// pending transition, starting the message-box countdown.
+    ///
+    /// The inbox is drained unconditionally on every tick so messages
+    /// dispatched during an active 72-tick hold are dropped immediately
+    /// rather than accumulating until the screen is swapped.
     fn pump_inbox(&mut self) {
+        let next = {
+            let mut queue = self.inbox.lock().expect("level inbox mutex poisoned");
+            if queue.is_empty() {
+                return;
+            }
+            let first = queue.remove(0);
+            queue.clear();
+            first
+        };
+
+        // A transition is already pending: drop the late-arriving request to
+        // match the Java reference's single-shot behavior.
         if self.pending.is_some() {
             return;
         }
-        let mut queue = self.inbox.lock().expect("level inbox mutex poisoned");
-        if queue.is_empty() {
-            return;
-        }
-        let next = queue.remove(0);
-        queue.clear();
-        drop(queue);
 
         let target_level = match &next {
             PendingRequest::ChangeLevel(payload) => payload.level_number,
@@ -221,12 +230,15 @@ impl ScreenHandler for LevelScreen {
         let commands = self.render_frame();
 
         let mut transition: Option<ScreenTransition> = None;
-        if let Some(pending) = self.pending.clone() {
+        if self.pending.is_some() {
             if self.message_ticks > 0 {
                 self.message_ticks -= 1;
                 if self.message_ticks == 0 {
-                    transition = Some(pending_to_transition(&pending));
-                    self.pending = None;
+                    // Take the pending request without cloning so the
+                    // ChangeLevel payload's String is moved into the
+                    // ScreenTransition on the final tick only.
+                    let pending = self.pending.take().expect("pending verified Some above");
+                    transition = Some(pending_into_transition(pending));
                     self.message_text.clear();
                 }
             }
@@ -274,12 +286,16 @@ impl MessageHandler for InboxHandler {
     }
 }
 
-/// Maps a [`PendingRequest`] to the [`ScreenTransition`] surfaced once the
-/// message-box countdown reaches zero.
-fn pending_to_transition(request: &PendingRequest) -> ScreenTransition {
+/// Consumes a [`PendingRequest`] and yields the [`ScreenTransition`]
+/// surfaced once the message-box countdown reaches zero.
+///
+/// Takes ownership so the inner `ChangeLevel` payload's `String` moves
+/// directly into the resulting `ScreenTransition::Level` without an
+/// extra clone.
+fn pending_into_transition(request: PendingRequest) -> ScreenTransition {
     match request {
         PendingRequest::ChangeLevel(payload) => ScreenTransition::Level {
-            file: payload.level_file.clone(),
+            file: payload.level_file,
             number: payload.level_number,
         },
         PendingRequest::PreviousMap => ScreenTransition::Map,
@@ -615,6 +631,54 @@ mod tests {
             last = screen.tick(&input, &mut state).transition.or(last);
         }
         assert_eq!(last, Some(ScreenTransition::Map));
+    }
+
+    /// Unit under test: messages dispatched during an active 72-tick hold
+    /// are dropped rather than queued, so the inbox does not grow without
+    /// bound while the message-box is on screen.
+    ///
+    /// Preconditions: level 1 screen subscribed; `CheckpointChangeLevel` is
+    /// sent before the first tick to start the hold; many `DieRestartLevel`
+    /// messages are then sent while the hold is active and a tick is run
+    /// after each send so the inbox is drained.
+    ///
+    /// Invariants asserted: after the burst, the inbox is empty, and the
+    /// transition that eventually fires is the original `Level` transition
+    /// (the late-arriving `DieRestartLevel` messages are dropped, not
+    /// promoted).
+    #[test]
+    fn pending_hold_drops_late_messages_and_drains_inbox() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(
+            MessageType::CheckpointChangeLevel,
+            MessagePayload::ChangeLevel(ChangeLevelPayload {
+                level_file: String::from("JN1L02.JN1"),
+                level_number: 2,
+            }),
+        );
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let mut transition: Option<ScreenTransition> = None;
+        for _ in 0..LEVEL_MESSAGE_TICKS {
+            // Bombard the dispatcher mid-hold with restart requests.
+            dispatcher.send(MessageType::DieRestartLevel, MessagePayload::None);
+            transition = screen.tick(&input, &mut state).transition.or(transition);
+        }
+
+        assert_eq!(
+            transition,
+            Some(ScreenTransition::Level {
+                file: String::from("JN1L02.JN1"),
+                number: 2,
+            }),
+            "original Level transition must fire; late RestartLevel messages must not preempt it"
+        );
+        assert!(
+            screen.inbox.lock().unwrap().is_empty(),
+            "inbox must be drained even while a transition is pending"
+        );
     }
 
     /// Unit under test: `DieRestartLevel` produces `ScreenTransition::RestartLevel`.

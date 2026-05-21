@@ -262,11 +262,15 @@ impl GameOrchestrator {
             }
             ScreenTransition::Level { file, number } => {
                 self.dispatcher.clear();
+                // Filenames are compared with ASCII case-insensitivity to
+                // match `DataDirectory::resolve_path_case_insensitive`; a
+                // transition payload using different casing than the cached
+                // entry should still hit the in-memory bytes.
                 let cached = self
                     .level_jn_bytes
                     .as_ref()
                     .zip(self.level_jn_file.as_ref())
-                    .filter(|(_, cached_file)| cached_file.as_str() == file.as_str())
+                    .filter(|(_, cached_file)| cached_file.eq_ignore_ascii_case(file.as_str()))
                     .map(|(bytes, _)| bytes.clone());
                 let level_result = match cached {
                     Some(bytes) => LevelScreen::from_bytes(
@@ -607,6 +611,31 @@ mod tests {
     /// `ScreenTransition::Level { file: "JN1L01.JN1", number: 1 }` on its
     /// first tick.
     ///
+    /// Invariants asserted: the transition payload uses lower-case
+    /// `"jn1l01.jn1"` while the orchestrator cache holds the upper-case
+    /// `"JN1L01.JN1"`; after the tick, the active handler still reports the
+    /// seeded level bytes, confirming the cache match is ASCII
+    /// case-insensitive (matching `resolve_path_case_insensitive`).
+    #[test]
+    fn level_transition_cache_match_is_case_insensitive() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Level {
+            file: String::from("jn1l01.jn1"),
+            number: 1,
+        }));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        seed_level_cache(&mut orchestrator, "JN1L01.JN1", 1);
+        let expected_bytes = orchestrator.level_jn_bytes.clone();
+
+        let input: ActiveInput = Default::default();
+        orchestrator.tick(&input);
+
+        assert_eq!(
+            orchestrator.handler.level_jn_bytes(),
+            expected_bytes,
+            "case-insensitive cache match must reuse seeded bytes without touching disk"
+        );
+    }
+
     /// Invariants asserted: after the tick, the active handler's
     /// `level_jn_bytes` matches the seeded bytes, confirming the in-memory
     /// path was taken without touching disk.
