@@ -14,7 +14,10 @@ use std::path::{Path, PathBuf};
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 
 /// First playable level file in episode 1.
-const LEVEL_FILE: &str = "JN1L01.JN1";
+///
+/// Episode 1 level files are named `<level_number>.JN1` on disk
+/// (`1.JN1`, `2.JN1`, ..., `50.JN1`).
+const LEVEL_FILE: &str = "1.JN1";
 
 /// Outcome of resolving the data directory location.
 ///
@@ -50,7 +53,7 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> DataDirOutcome {
 }
 
 /// Unit under test: `LevelScreen::from_bytes` and `LevelScreen::tick` against
-/// the real `JN1L01.JN1` and `JILL.DMA` files from episode 1.
+/// the real `1.JN1` and `JILL.DMA` files from episode 1.
 ///
 /// Preconditions: either `OPENJILL_DATA_DIR` or the workspace
 /// `data/original/JILL1` directory is present.  When neither is available

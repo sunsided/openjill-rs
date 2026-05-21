@@ -164,12 +164,14 @@ impl GameApp {
     ///
     /// | Key | Action |
     /// |-----|--------|
-    /// | `L` | Force-transition into `JN1L01.JN1` (level 1) |
+    /// | `L` | Force-transition into `1.JN1` (level 1) |
     /// | `K` | Send `CheckpointChangeLevelPrevious` (return to map) |
     /// | `R` | Send `DieRestartLevel` |
     ///
-    /// `L` calls [`GameOrchestrator::force_transition`] directly: the
-    /// dispatcher route requires a subscriber, and [`crate::screens::map_screen::MapScreen`]
+    /// Episode 1 level files are named `<level_number>.JN1` on disk
+    /// (`1.JN1`, `2.JN1`, ..., `50.JN1`).  `L` calls
+    /// [`GameOrchestrator::force_transition`] directly: the dispatcher route
+    /// requires a subscriber, and [`crate::screens::map_screen::MapScreen`]
     /// does not subscribe to `CheckpointChangeLevel`, so a queued message
     /// would never fire a transition. `K` and `R` use the dispatcher because
     /// they target [`crate::screens::level_screen::LevelScreen`], which
@@ -182,10 +184,10 @@ impl GameApp {
         match key_code {
             KeyCode::KeyL => {
                 orch.force_transition(openjill_core::ScreenTransition::Level {
-                    file: String::from("JN1L01.JN1"),
+                    file: String::from("1.JN1"),
                     number: 1,
                 });
-                eprintln!("openjill-game: debug: force-transition -> LevelScreen JN1L01.JN1");
+                eprintln!("openjill-game: debug: force-transition -> LevelScreen 1.JN1");
             }
             KeyCode::KeyK => {
                 orch.dispatcher_mut().send(

@@ -1,4 +1,5 @@
-//! Level screen handler backed by a `JN1L??.JN1` level file.
+//! Level screen handler backed by a `<level_number>.JN1` level file
+//! (`1.JN1`, `2.JN1`, ..., `50.JN1` on disk for episode 1).
 //!
 //! Renders the level background identically to [`MapScreen`](super::map_screen)
 //! and listens on the shared [`MessageDispatcher`] for the three level
