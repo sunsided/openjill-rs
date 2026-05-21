@@ -2,13 +2,16 @@
 //! transition loop.
 
 use openjill_core::{ActiveInput, RenderCommand, RuntimeState, ScreenHandler, ScreenTransition};
-use openjill_data::DataDirectory;
+use openjill_data::dma::DmaFile;
+use openjill_data::jn::JnReadError;
+use openjill_data::{DataDirectory, DataDirectoryError};
 use thiserror::Error;
 
 use crate::asset_cache::{AssetCache, AssetError};
 use crate::screens::intro_screens::{
     credits_screen, noisemaker_screen, ordering_info_screen, story_screen,
 };
+use crate::screens::map_screen::MapScreen;
 use crate::screens::start_menu::StartMenuScreen;
 
 /// Constructs a fresh [`StartMenuScreen`] from the given asset cache.
@@ -19,6 +22,19 @@ fn make_start_menu(cache: &AssetCache) -> StartMenuScreen {
         cache.vcl.clone(),
         cache.cfg.clone(),
     )
+}
+
+/// Loads `MAP.JN1` from `data_dir` and constructs a [`MapScreen`].
+///
+/// Reads the file bytes through the case-insensitive resolver so the screen
+/// keeps both the parsed JN structure for rendering and the raw bytes for
+/// [`openjill_core::ScreenHandler::map_jn_bytes`] save/restore round-trips.
+fn load_map_screen(data_dir: &DataDirectory, dma: DmaFile) -> Result<MapScreen, MapLoadError> {
+    let path = data_dir
+        .resolve_path_case_insensitive("MAP.JN1")
+        .map_err(MapLoadError::Resolve)?;
+    let bytes = std::fs::read(&path).map_err(MapLoadError::Read)?;
+    MapScreen::from_bytes(bytes, dma).map_err(MapLoadError::Parse)
 }
 
 /// Owns the current screen handler and drives the game tick and transition loop.
@@ -115,13 +131,17 @@ impl GameOrchestrator {
 
     /// Applies a screen transition returned by the active handler.
     ///
-    /// Serializes the outgoing handler's JN bytes into [`map_jn_bytes`] before
-    /// swapping, mirroring `putCurrentLevelInFileMemory` from the Java reference
-    /// implementation. Then constructs and installs the next handler.
+    /// When the outgoing handler owns map JN bytes, captures them into
+    /// [`map_jn_bytes`] before swapping (mirroring `putCurrentLevelInFileMemory`
+    /// from the Java reference). Handlers that do not own a JN file return
+    /// `None`, and the stored bytes are left intact so map state survives
+    /// trips through start-menu and intro/credits screens.
     ///
     /// [`map_jn_bytes`]: GameOrchestrator::map_jn_bytes
     fn apply_transition(&mut self, transition: ScreenTransition) {
-        self.map_jn_bytes = self.handler.map_jn_bytes();
+        if let Some(bytes) = self.handler.map_jn_bytes() {
+            self.map_jn_bytes = Some(bytes);
+        }
 
         match transition {
             ScreenTransition::StartMenu => {
@@ -154,11 +174,29 @@ impl GameOrchestrator {
             ScreenTransition::Quit => {
                 self.quitting = true;
             }
-            // Map and Level transitions are implemented in later child issues.
+            ScreenTransition::Map => {
+                // Prefer the in-memory map JN bytes captured from a previous
+                // visit; only reach to disk on the first transition to Map.
+                let map_result = match self.map_jn_bytes.clone() {
+                    Some(bytes) => MapScreen::from_bytes(bytes, self.cache.dma.clone())
+                        .map_err(MapLoadError::Parse),
+                    None => load_map_screen(&self.data_dir, self.cache.dma.clone()),
+                };
+                match map_result {
+                    Ok(screen) => {
+                        self.handler = Box::new(screen);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "openjill-game: failed to load MAP.JN1 ({err}); falling back to start menu"
+                        );
+                        self.handler = Box::new(make_start_menu(&self.cache));
+                    }
+                }
+            }
+            // Level transitions are implemented in the next child issue.
             // Until then, fall back to StartMenuScreen so the loop stays valid.
-            ScreenTransition::Map
-            | ScreenTransition::Level { .. }
-            | ScreenTransition::RestartLevel => {
+            ScreenTransition::Level { .. } | ScreenTransition::RestartLevel => {
                 self.handler = Box::new(make_start_menu(&self.cache));
             }
         }
@@ -171,6 +209,20 @@ pub enum OrchestratorError {
     /// Asset loading from the data directory failed.
     #[error("failed to load game assets: {0}")]
     AssetLoad(#[from] AssetError),
+}
+
+/// Error returned when loading `MAP.JN1` during a screen transition fails.
+#[derive(Debug, Error)]
+enum MapLoadError {
+    /// Case-insensitive lookup of `MAP.JN1` failed.
+    #[error("failed to resolve MAP.JN1: {0}")]
+    Resolve(#[source] DataDirectoryError),
+    /// Reading the resolved `MAP.JN1` bytes from disk failed.
+    #[error("failed to read MAP.JN1: {0}")]
+    Read(#[source] std::io::Error),
+    /// Parsing the `MAP.JN1` bytes into a `JnFile` failed.
+    #[error("failed to parse MAP.JN1: {0}")]
+    Parse(#[source] JnReadError),
 }
 
 #[cfg(test)]
@@ -327,5 +379,59 @@ mod tests {
         let input: ActiveInput = Default::default();
         orchestrator.tick(&input);
         assert!(orchestrator.is_quitting());
+    }
+
+    /// Unit under test: `apply_transition` on `ScreenTransition::Map` uses
+    /// preserved bytes from [`GameOrchestrator::map_jn_bytes`] instead of
+    /// reaching to disk, mirroring `putCurrentLevelInFileMemory` semantics.
+    ///
+    /// Preconditions: the orchestrator is seeded with synthetic zero MAP.JN1
+    /// bytes in `self.map_jn_bytes`; its `data_dir` points at a temp directory
+    /// that does **not** contain `MAP.JN1`.  A `OneShotTransitionHandler`
+    /// returns `ScreenTransition::Map` on its first tick.
+    ///
+    /// Invariants asserted: after the tick, the new handler is a `MapScreen`
+    /// (its `map_jn_bytes` returns the same bytes the orchestrator was seeded
+    /// with).  Reaching to disk would fail because the temp dir has no
+    /// `MAP.JN1`, so the only way this assertion passes is via the in-memory
+    /// path.
+    #[test]
+    fn map_transition_reuses_preserved_bytes_without_disk_read() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Map));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        let synthetic_map = vec![0u8; JN_MIN_BYTES];
+        orchestrator.map_jn_bytes = Some(synthetic_map.clone());
+
+        let input: ActiveInput = Default::default();
+        orchestrator.tick(&input);
+
+        assert_eq!(
+            orchestrator.handler.map_jn_bytes(),
+            Some(synthetic_map),
+            "MapScreen must be constructed from preserved bytes, not the (empty) disk dir"
+        );
+    }
+
+    /// Unit under test: `apply_transition` does not overwrite preserved
+    /// [`GameOrchestrator::map_jn_bytes`] with `None` when the outgoing
+    /// handler does not own a JN file.
+    ///
+    /// Preconditions: the orchestrator is seeded with synthetic map bytes and
+    /// runs a `OneShotTransitionHandler` (returns `None` from
+    /// `map_jn_bytes`) that transitions to `StartMenu`.
+    ///
+    /// Invariants asserted: `self.map_jn_bytes` is still `Some(synthetic)`
+    /// after the transition.
+    #[test]
+    fn transition_does_not_drop_preserved_bytes_for_jn_less_handlers() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        let synthetic_map = vec![0u8; JN_MIN_BYTES];
+        orchestrator.map_jn_bytes = Some(synthetic_map.clone());
+
+        let input: ActiveInput = Default::default();
+        orchestrator.tick(&input);
+
+        assert_eq!(orchestrator.map_jn_bytes, Some(synthetic_map));
     }
 }
