@@ -48,10 +48,13 @@ pub fn render_intro_background(
             let tile_x = start_tile_x + col;
             let tile_y = start_tile_y + row;
 
+            // Reject negative tile coordinates before casting to `usize`.
+            if tile_x < 0 || tile_y < 0 {
+                continue;
+            }
+
             // map_code returns None for out-of-bounds tile coordinates.
-            let Some(map_code) = jn.background().map_code(tile_x as usize, tile_y as usize).filter(|_| {
-                tile_x >= 0 && tile_y >= 0
-            }) else {
+            let Some(map_code) = jn.background().map_code(tile_x as usize, tile_y as usize) else {
                 continue;
             };
 

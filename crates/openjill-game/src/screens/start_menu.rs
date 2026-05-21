@@ -438,9 +438,6 @@ fn parse_menu_layout() -> MenuLayout {
     let get_u = |obj: &serde_json::Value, key: &str, default: u64| -> u8 {
         obj.get(key).and_then(|v| v.as_u64()).unwrap_or(default) as u8
     };
-    let get_u16 = |obj: &serde_json::Value, key: &str, default: u64| -> u16 {
-        obj.get(key).and_then(|v| v.as_u64()).unwrap_or(default) as u16
-    };
     let get_str = |obj: &serde_json::Value, key: &str, default: &str| -> String {
         obj.get(key)
             .and_then(|v| v.as_str())
@@ -493,13 +490,11 @@ fn parse_menu_layout() -> MenuLayout {
     let (_, lower_bar) = tile_ref("lowerBar");
     let (_, right_bar) = tile_ref("rightBar");
     let (_, left_bar) = tile_ref("leftBar");
-    let back_image = get_u16(
-        value.get("backImage").cloned().unwrap_or(serde_json::Value::Null).as_object()
-            .map(|_| &value["backImage"])
-            .unwrap_or(&serde_json::Value::Null),
-        "tile",
-        9,
-    );
+    let back_image = value
+        .get("backImage")
+        .and_then(|o| o.get("tile"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(9) as u16;
 
     MenuLayout {
         x,
@@ -691,4 +686,3 @@ mod tests {
         );
     }
 }
-
