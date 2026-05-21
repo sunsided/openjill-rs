@@ -305,15 +305,20 @@ fn pending_into_transition(request: PendingRequest) -> ScreenTransition {
 }
 
 /// Locates the checkpoint object for `level_number` in `jn` and returns the
-/// viewport offset that places that object at the game-area top-left.
+/// viewport offset that places that object near the center of the game area.
 ///
-/// Mirrors `findCheckPoint` from the Java reference: the first object whose
-/// signed counter equals the level number is the checkpoint, and its pixel
-/// coordinates seed the viewport.  When no checkpoint exists the viewport is
-/// pinned at `(0, 0)`.
+/// Mirrors `findCheckPoint` + `centerScreen` from the Java reference: the
+/// first object whose signed counter equals the level number is the
+/// checkpoint, and the viewport is offset so the checkpoint pixel appears at
+/// the game-area center rather than the top-left corner.  When no checkpoint
+/// exists the viewport is pinned at `(0, 0)`.
 fn checkpoint_viewport(jn: &JnFile, level_number: i32) -> (i32, i32) {
     if let Some(object) = find_checkpoint(jn, level_number) {
-        return (-(object.x() as i32), -(object.y() as i32));
+        let world_x = object.x() as i32;
+        let world_y = object.y() as i32;
+        let center_x = openjill_core::layout::GAME_AREA_W as i32 / 2;
+        let center_y = openjill_core::layout::GAME_AREA_H as i32 / 2;
+        return (center_x - world_x, center_y - world_y);
     }
     (0, 0)
 }
@@ -820,18 +825,26 @@ mod tests {
     }
 
     /// Unit under test: a checkpoint object whose counter matches the level
-    /// number seeds the viewport offset.
+    /// number seeds the viewport offset to center the checkpoint within the
+    /// game area, matching the Java reference's `centerScreen`.
     ///
     /// Preconditions: JN file holds a single object with `counter = 3`,
-    /// `(x, y) = (256, 128)`; the screen is constructed for level 3.
+    /// `(x, y) = (256, 128)`; the screen is constructed for level 3.  The
+    /// game area is `GAME_AREA_W = 232` by `GAME_AREA_H = 160` pixels.
     ///
-    /// Invariants asserted: the viewport offset is `(-256, -128)`, which
-    /// places the checkpoint position at the game-area origin.
+    /// Invariants asserted: the viewport offset is
+    /// `(GAME_AREA_W/2 - 256, GAME_AREA_H/2 - 128) = (-140, -48)`, which
+    /// places the checkpoint at the center of the game area
+    /// (`(116, 80)` in game-area-relative pixels).
     #[test]
     fn checkpoint_seeds_viewport_for_matching_counter() {
         let bytes = jn_bytes_with_objects(&[(3, 256, 128)]);
         let (screen, _dispatcher) = screen_with_dispatcher(bytes, 3);
-        assert_eq!(screen.viewport(), (-256, -128));
+        let (vx, vy) = screen.viewport();
+        let center_x = openjill_core::layout::GAME_AREA_W as i32 / 2;
+        let center_y = openjill_core::layout::GAME_AREA_H as i32 / 2;
+        assert_eq!(vx, center_x - 256);
+        assert_eq!(vy, center_y - 128);
     }
 
     /// Unit under test: an absent checkpoint falls back to viewport `(0, 0)`.

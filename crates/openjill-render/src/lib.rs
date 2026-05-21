@@ -464,6 +464,12 @@ impl Presenter {
         sha: &ShaFile,
         palette: &Palette,
     ) -> Result<(), PresenterError> {
+        // Clear the framebuffer before each frame so pixels left over from
+        // earlier frames (transparent map cells, dismissed overlays) cannot
+        // bleed into the new frame.  Palette index 0 is the canonical
+        // transparent black sentinel; status-bar and screen commands write
+        // over it as needed.
+        self.framebuffer.fill(0);
         execute_commands_on_framebuffer(&mut self.framebuffer, commands, sha);
         self.present(palette)
     }
