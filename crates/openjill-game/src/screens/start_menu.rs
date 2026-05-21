@@ -36,6 +36,30 @@ const START_MENU_OFFSET_X: i32 = -1808;
 /// `-(53 + 1) * 16 = -864`.
 const START_MENU_OFFSET_Y: i32 = -864;
 
+/// Left edge of the info-box text in framebuffer pixels.
+///
+/// Matches `information_box.json` text origin (box `x` 92 + `offsetTextDrawX` 8).
+const INFO_BOX_TEXT_X: i32 = 100;
+
+/// Top edge of the info-box first text line in framebuffer pixels.
+const INFO_BOX_TEXT_Y: i32 = 44;
+
+/// Vertical advance per info-box text line in pixels.
+///
+/// Matches the SHA font row height used by [`StartMenuScreen::render_menu_text`].
+const INFO_BOX_LINE_HEIGHT: i32 = 8;
+
+/// Maximum number of info-box text lines drawn before clipping.
+///
+/// Mirrors `nbLineDraw` from `information_box.json` so overflow lines beyond the
+/// 106-pixel textarea height are dropped rather than running past the box.
+const INFO_BOX_MAX_LINES: usize = 12;
+
+/// Palette index used for info-box text.
+///
+/// Matches `information_box.json` `textColor`.
+const INFO_BOX_TEXT_COLOR: u8 = 7;
+
 /// Which optional overlay is currently drawn over the base menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Overlay {
@@ -364,7 +388,11 @@ impl StartMenuScreen {
     /// Emits commands for the instructions/info-box overlay.
     ///
     /// Displays VCL text entry 0 (the game instructions) in a filled overlay
-    /// rectangle. Any key press dismisses this overlay.
+    /// rectangle. The VCL payload embeds `\n` line breaks, which the text
+    /// renderer does not interpret; this method splits at `\n` and emits one
+    /// [`RenderCommand::DrawText`] per line. Lines beyond [`INFO_BOX_MAX_LINES`]
+    /// are dropped so text cannot overflow past the box. Any key press
+    /// dismisses this overlay.
     fn render_info_box(&self) -> Vec<RenderCommand> {
         let text = self
             .vcl
@@ -372,23 +400,24 @@ impl StartMenuScreen {
             .iter()
             .find(|e| e.index() == 0)
             .or_else(|| self.vcl.text_entries().first())
-            .map(|e| e.text().to_string())
-            .unwrap_or_default();
-        vec![
-            RenderCommand::FillRect {
-                x: 92,
-                y: 32,
-                width: 190,
-                height: 130,
-                color: 1,
-            },
-            RenderCommand::DrawText {
-                text,
-                x: 100,
-                y: 44,
-                color_index: 7,
-            },
-        ]
+            .map(|e| e.text())
+            .unwrap_or("");
+        let mut commands = vec![RenderCommand::FillRect {
+            x: 92,
+            y: 32,
+            width: 190,
+            height: 130,
+            color: 1,
+        }];
+        for (line_index, line) in text.split('\n').take(INFO_BOX_MAX_LINES).enumerate() {
+            commands.push(RenderCommand::DrawText {
+                text: line.to_string(),
+                x: INFO_BOX_TEXT_X,
+                y: INFO_BOX_TEXT_Y + (line_index as i32) * INFO_BOX_LINE_HEIGHT,
+                color_index: INFO_BOX_TEXT_COLOR,
+            });
+        }
+        commands
     }
 
     /// Emits commands for the load-game slot overlay.
@@ -563,6 +592,30 @@ mod tests {
         VclFile::from_bytes(vec![0u8; VCL_MIN_BYTES]).expect("zero VCL should parse")
     }
 
+    /// Builds a `VclFile` whose text entry 0 contains the supplied payload.
+    ///
+    /// The synthetic fixture writes the bytes at offset 700 (past the
+    /// offset/length tables) and seeds slot 0's offset/length table entry to
+    /// point at them, so `text_entries()` exposes one entry with `index() == 0`
+    /// and the requested text.
+    fn vcl_with_entry_zero(payload: &str) -> VclFile {
+        let bytes = payload.as_bytes();
+        let length = u16::try_from(bytes.len())
+            .expect("VCL text fixture payload must fit in u16 (declared_length field is u16le)");
+        let text_offset: usize = 700;
+        let mut buf = vec![0u8; text_offset + bytes.len()];
+
+        let offset_pos = 400_usize;
+        buf[offset_pos..offset_pos + 4].copy_from_slice(&(text_offset as u32).to_le_bytes());
+
+        let length_pos = 400_usize + 40 * 4;
+        buf[length_pos..length_pos + 2].copy_from_slice(&length.to_le_bytes());
+
+        buf[text_offset..text_offset + bytes.len()].copy_from_slice(bytes);
+
+        VclFile::from_bytes(buf).expect("VCL fixture should parse")
+    }
+
     /// Builds a minimal all-zero `CfgFile` for tests.
     fn zero_cfg() -> CfgFile {
         CfgFile::from_bytes(vec![0u8; CFG_MIN_BYTES], "JN1").expect("zero CFG should parse")
@@ -704,6 +757,126 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, RenderCommand::DrawText { .. })),
             "idle tick should emit at least one DrawText command"
+        );
+    }
+
+    /// Opens the info-box overlay on `screen` by selecting the "instructions"
+    /// item (start_menu.json item 3) and confirming it. Returns the tick
+    /// commands emitted by the confirm tick (which already include the overlay).
+    fn open_info_box_overlay(screen: &mut StartMenuScreen) -> Vec<RenderCommand> {
+        let mut down = ActiveInput::new();
+        down.insert(InputCommand::Duck);
+        for _ in 0..3 {
+            screen.tick(&down, &mut RuntimeState::new());
+        }
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+        screen.tick(&confirm, &mut RuntimeState::new()).commands
+    }
+
+    /// Collects info-box `DrawText` commands from a render command list.
+    ///
+    /// Filters by the info-box `x` column and `color_index` so unrelated
+    /// `DrawText` commands (menu title, items, high-score panel) are excluded.
+    fn info_box_lines(commands: &[RenderCommand]) -> Vec<(i32, String)> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::DrawText {
+                    text,
+                    x,
+                    y,
+                    color_index,
+                } if *x == super::INFO_BOX_TEXT_X && *color_index == super::INFO_BOX_TEXT_COLOR => {
+                    Some((*y, text.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Unit under test: `render_info_box` splits VCL entry 0 on `\n` and emits
+    /// one `DrawText` per line at stepped y-coordinates.
+    ///
+    /// Preconditions: VCL entry 0 contains three lines separated by `\n`;
+    /// instructions overlay is opened by selecting item 3 and confirming.
+    ///
+    /// Invariants asserted: three info-box `DrawText` commands are emitted, in
+    /// source order, with `y` advancing by `INFO_BOX_LINE_HEIGHT` per line and
+    /// the first line at `INFO_BOX_TEXT_Y`.
+    #[test]
+    fn info_box_splits_text_on_newlines() {
+        let vcl = vcl_with_entry_zero("LINE 1\nLINE 2\nLINE 3");
+        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg());
+
+        let commands = open_info_box_overlay(&mut screen);
+        let lines = info_box_lines(&commands);
+
+        assert_eq!(lines.len(), 3, "expected one DrawText per VCL line");
+        assert_eq!(lines[0], (super::INFO_BOX_TEXT_Y, String::from("LINE 1")));
+        assert_eq!(
+            lines[1],
+            (
+                super::INFO_BOX_TEXT_Y + super::INFO_BOX_LINE_HEIGHT,
+                String::from("LINE 2"),
+            )
+        );
+        assert_eq!(
+            lines[2],
+            (
+                super::INFO_BOX_TEXT_Y + 2 * super::INFO_BOX_LINE_HEIGHT,
+                String::from("LINE 3"),
+            )
+        );
+    }
+
+    /// Unit under test: `render_info_box` caps emitted lines at
+    /// `INFO_BOX_MAX_LINES` to avoid overflowing the box.
+    ///
+    /// Preconditions: VCL entry 0 contains 20 newline-separated lines.
+    ///
+    /// Invariants asserted: only `INFO_BOX_MAX_LINES` info-box `DrawText`
+    /// commands are emitted, and they correspond to the first
+    /// `INFO_BOX_MAX_LINES` lines of the source text.
+    #[test]
+    fn info_box_clips_lines_beyond_max() {
+        let lines_in: Vec<String> = (0..20).map(|i| format!("L{i}")).collect();
+        let vcl = vcl_with_entry_zero(&lines_in.join("\n"));
+        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg());
+
+        let commands = open_info_box_overlay(&mut screen);
+        let lines_out = info_box_lines(&commands);
+
+        assert_eq!(lines_out.len(), super::INFO_BOX_MAX_LINES);
+        for (i, (y, text)) in lines_out.iter().enumerate() {
+            assert_eq!(
+                *y,
+                super::INFO_BOX_TEXT_Y + (i as i32) * super::INFO_BOX_LINE_HEIGHT
+            );
+            assert_eq!(text, &lines_in[i]);
+        }
+    }
+
+    /// Unit under test: `render_info_box` emits a single line when VCL entry 0
+    /// has no embedded newlines, leaving existing single-line `DrawText`
+    /// behavior unchanged.
+    ///
+    /// Preconditions: VCL entry 0 contains a single line with no `\n`.
+    ///
+    /// Invariants asserted: exactly one info-box `DrawText` command is emitted
+    /// at `INFO_BOX_TEXT_Y` with the full text payload.
+    #[test]
+    fn info_box_single_line_unchanged() {
+        let vcl = vcl_with_entry_zero("ONLY LINE");
+        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg());
+
+        let commands = open_info_box_overlay(&mut screen);
+        let lines = info_box_lines(&commands);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0],
+            (super::INFO_BOX_TEXT_Y, String::from("ONLY LINE"))
         );
     }
 }
