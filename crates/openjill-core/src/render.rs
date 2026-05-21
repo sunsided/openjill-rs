@@ -26,8 +26,12 @@ impl ClipRect {
         if self.width == 0 || self.height == 0 {
             return false;
         }
-        let right = self.x.saturating_add(self.width as i32);
-        let bottom = self.y.saturating_add(self.height as i32);
+        // Use `saturating_add_unsigned` so a `u32` width or height larger
+        // than `i32::MAX` is clamped to `i32::MAX` instead of wrapping into
+        // a negative value via an `as i32` cast.  Negative bounds would
+        // make a non-empty rectangle report "contains nothing".
+        let right = self.x.saturating_add_unsigned(self.width);
+        let bottom = self.y.saturating_add_unsigned(self.height);
         px >= self.x && px < right && py >= self.y && py < bottom
     }
 }
@@ -182,6 +186,27 @@ mod tests {
         } else {
             panic!("expected Blit variant");
         }
+    }
+
+    /// Unit under test: `ClipRect::contains` clamps oversized dimensions
+    /// instead of wrapping when `width` or `height` exceeds `i32::MAX`.
+    ///
+    /// Preconditions: a clip rectangle with `width = u32::MAX`.  Casting that
+    /// width to `i32` via `as` would wrap to `-1` and make every point
+    /// "outside" the rectangle.
+    ///
+    /// Invariants asserted: a point comfortably inside the rectangle still
+    /// reports as contained, confirming the saturating addition path.
+    #[test]
+    fn clip_rect_contains_saturates_oversized_dimensions() {
+        let rect = ClipRect {
+            x: 0,
+            y: 0,
+            width: u32::MAX,
+            height: u32::MAX,
+        };
+        assert!(rect.contains(100, 100));
+        assert!(rect.contains(i32::MAX - 1, i32::MAX - 1));
     }
 
     /// Unit under test: `ClipRect::contains`.

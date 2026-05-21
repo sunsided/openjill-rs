@@ -948,11 +948,16 @@ mod tests {
         assert!(line_h > 0);
     }
 
-    /// Unit under test: the screen-level [`MessageDispatcher::send`] path used
-    /// by [`LevelScreen::checkpoint_seeds_viewport_for_matching_counter`]
-    /// integrates with [`MessageDispatcher::clear`] semantics — clearing the
-    /// dispatcher prevents queued messages from reaching a screen subscribed
-    /// after the clear.
+    /// Unit under test: `MessageDispatcher::clear` discards queued messages
+    /// before a [`LevelScreen`] subscribes.
+    ///
+    /// Preconditions: a `DieRestartLevel` message is sent into an empty
+    /// dispatcher, then `clear` is called.  A fresh `LevelScreen` then
+    /// subscribes via `LevelScreen::from_bytes`.
+    ///
+    /// Invariants asserted: the first tick after subscribing returns no
+    /// transition, confirming the cleared queue was not replayed into the
+    /// new subscriber.
     #[test]
     fn dispatcher_clear_drops_pending_before_subscribe() {
         let mut dispatcher = MessageDispatcher::new();
