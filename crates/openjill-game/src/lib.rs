@@ -154,6 +154,52 @@ impl GameApp {
             .filter_map(|key| Self::map_key_to_input_command(*key))
             .collect()
     }
+
+    /// Dispatches debug-only message-dispatcher hotkeys (debug builds only).
+    ///
+    /// Wired so a developer can exercise the level-transition pipeline
+    /// without gameplay (epic 6) having attached real checkpoint objects to
+    /// the world map yet. Single-fire on key down: edge-triggered by the
+    /// caller via `event.state == Pressed && !event.repeat`.
+    ///
+    /// | Key | Action |
+    /// |-----|--------|
+    /// | `L` | `CheckpointChangeLevel { JN1L01.JN1, 1 }` |
+    /// | `K` | `CheckpointChangeLevelPrevious` (return to map) |
+    /// | `R` | `DieRestartLevel` |
+    #[cfg(debug_assertions)]
+    fn handle_debug_hotkey(&mut self, key_code: KeyCode) {
+        let Some(orch) = self.orchestrator.as_mut() else {
+            return;
+        };
+        match key_code {
+            KeyCode::KeyL => {
+                orch.dispatcher_mut().send(
+                    openjill_core::MessageType::CheckpointChangeLevel,
+                    openjill_core::MessagePayload::ChangeLevel(openjill_core::ChangeLevelPayload {
+                        level_file: String::from("JN1L01.JN1"),
+                        level_number: 1,
+                    }),
+                );
+                eprintln!("openjill-game: debug: dispatched CheckpointChangeLevel -> JN1L01.JN1");
+            }
+            KeyCode::KeyK => {
+                orch.dispatcher_mut().send(
+                    openjill_core::MessageType::CheckpointChangeLevelPrevious,
+                    openjill_core::MessagePayload::None,
+                );
+                eprintln!("openjill-game: debug: dispatched CheckpointChangeLevelPrevious");
+            }
+            KeyCode::KeyR => {
+                orch.dispatcher_mut().send(
+                    openjill_core::MessageType::DieRestartLevel,
+                    openjill_core::MessagePayload::None,
+                );
+                eprintln!("openjill-game: debug: dispatched DieRestartLevel");
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Startup rendering assets loaded from `JILL1.SHA`.
@@ -257,6 +303,10 @@ impl ApplicationHandler for GameApp {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key_code) = event.physical_key {
                     Self::update_pressed_keys(&mut self.pressed_keys, key_code, event.state);
+                    #[cfg(debug_assertions)]
+                    if event.state == ElementState::Pressed && !event.repeat {
+                        self.handle_debug_hotkey(key_code);
+                    }
                 }
             }
             WindowEvent::Focused(false) => {
