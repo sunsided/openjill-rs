@@ -400,8 +400,8 @@ impl StartMenuScreen {
             .iter()
             .find(|e| e.index() == 0)
             .or_else(|| self.vcl.text_entries().first())
-            .map(|e| e.text().to_string())
-            .unwrap_or_default();
+            .map(|e| e.text())
+            .unwrap_or("");
         let mut commands = vec![RenderCommand::FillRect {
             x: 92,
             y: 32,
@@ -600,6 +600,8 @@ mod tests {
     /// and the requested text.
     fn vcl_with_entry_zero(payload: &str) -> VclFile {
         let bytes = payload.as_bytes();
+        let length = u16::try_from(bytes.len())
+            .expect("VCL text fixture payload must fit in u16 (declared_length field is u16le)");
         let text_offset: usize = 700;
         let mut buf = vec![0u8; text_offset + bytes.len()];
 
@@ -607,7 +609,7 @@ mod tests {
         buf[offset_pos..offset_pos + 4].copy_from_slice(&(text_offset as u32).to_le_bytes());
 
         let length_pos = 400_usize + 40 * 4;
-        buf[length_pos..length_pos + 2].copy_from_slice(&(bytes.len() as u16).to_le_bytes());
+        buf[length_pos..length_pos + 2].copy_from_slice(&length.to_le_bytes());
 
         buf[text_offset..text_offset + bytes.len()].copy_from_slice(bytes);
 
