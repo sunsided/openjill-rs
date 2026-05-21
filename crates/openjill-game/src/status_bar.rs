@@ -11,43 +11,75 @@ pub(crate) const STATUS_BAR_JSON: &str =
 /// Cached static VGA status bar commands parsed from [`STATUS_BAR_JSON`].
 static STATUS_BAR_COMMANDS: LazyLock<Vec<RenderCommand>> = LazyLock::new(parse_status_bar_commands);
 
-/// Returns the static VGA status bar as a sequence of [`RenderCommand::Blit`] commands.
+/// Returns the static VGA status bar as a sequence of render commands.
 ///
-/// Clones the cached commands parsed from the embedded `status_bar_vga.json`. Each `images`
-/// array entry is converted into a `Blit` command with `opaque: false`.
+/// Clones the cached commands parsed from the embedded `status_bar_vga.json`. The order
+/// matches the Java reference `StatusBar` initialization: all `images` blits first, then
+/// `text` labels, then `bigtext` labels, so text overlays any underlying frame tiles.
 pub fn status_bar_commands() -> Vec<RenderCommand> {
     STATUS_BAR_COMMANDS.clone()
 }
 
 /// Parses the embedded `status_bar_vga.json` into static status bar render commands.
 ///
-/// Returns an empty `Vec` if the JSON is missing or structurally invalid; malformed individual
-/// entries are silently skipped.
+/// Returns an empty `Vec` only when the top-level JSON itself fails to parse. Each of the
+/// three optional top-level arrays (`images`, `text`, `bigtext`) is consumed independently:
+/// a missing or non-array value contributes nothing rather than discarding the other
+/// arrays, and individual entries that omit required fields or carry out-of-range numeric
+/// values are silently skipped. Emits commands in the order: `images` blits, then `text`
+/// `DrawText`, then `bigtext` `DrawText`.
 fn parse_status_bar_commands() -> Vec<RenderCommand> {
     let value: serde_json::Value = match serde_json::from_str(STATUS_BAR_JSON) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
-    let Some(images) = value.get("images").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    images
-        .iter()
-        .filter_map(|img| {
-            let tileset = img.get("tileset")?.as_u64()? as u8;
-            let tile = img.get("tile")?.as_u64()? as u16;
-            let x = img.get("x")?.as_i64()? as i32;
-            let y = img.get("y")?.as_i64()? as i32;
-            Some(RenderCommand::Blit {
-                tileset,
-                tile,
-                x,
-                y,
-                opaque: false,
-                clip: None,
-            })
-        })
-        .collect()
+    let mut commands = Vec::new();
+    if let Some(images) = value.get("images").and_then(|v| v.as_array()) {
+        commands.extend(images.iter().filter_map(parse_blit_entry));
+    }
+    if let Some(text) = value.get("text").and_then(|v| v.as_array()) {
+        commands.extend(text.iter().filter_map(parse_text_entry));
+    }
+    // TODO: `bigtext` should select a larger SHA font tileset; the current renderer uses
+    // the first font tileset for every `DrawText`, so both arrays render at the same size.
+    if let Some(bigtext) = value.get("bigtext").and_then(|v| v.as_array()) {
+        commands.extend(bigtext.iter().filter_map(parse_text_entry));
+    }
+    commands
+}
+
+/// Parses one `images` array entry into a [`RenderCommand::Blit`]. Returns `None` if any
+/// required field is missing, has the wrong JSON type, or carries a numeric value that
+/// does not fit the target width (treated as malformed rather than silently truncated).
+fn parse_blit_entry(img: &serde_json::Value) -> Option<RenderCommand> {
+    let tileset = u8::try_from(img.get("tileset")?.as_u64()?).ok()?;
+    let tile = u16::try_from(img.get("tile")?.as_u64()?).ok()?;
+    let x = i32::try_from(img.get("x")?.as_i64()?).ok()?;
+    let y = i32::try_from(img.get("y")?.as_i64()?).ok()?;
+    Some(RenderCommand::Blit {
+        tileset,
+        tile,
+        x,
+        y,
+        opaque: false,
+        clip: None,
+    })
+}
+
+/// Parses one `text` or `bigtext` array entry into a [`RenderCommand::DrawText`]. Returns
+/// `None` if any required field is missing, has the wrong JSON type, or carries a numeric
+/// value that does not fit the target width.
+fn parse_text_entry(entry: &serde_json::Value) -> Option<RenderCommand> {
+    let text = entry.get("text")?.as_str()?.to_string();
+    let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
+    let x = i32::try_from(entry.get("x")?.as_i64()?).ok()?;
+    let y = i32::try_from(entry.get("y")?.as_i64()?).ok()?;
+    Some(RenderCommand::DrawText {
+        text,
+        x,
+        y,
+        color_index,
+    })
 }
 
 /// Returns a [`RenderCommand::Blit`] with coordinates offset into the game area.
@@ -97,7 +129,7 @@ mod tests {
     /// top-level `images` array.
     ///
     /// Invariants asserted: the number of `Blit` commands returned equals the number of entries
-    /// in the JSON `images` array, and every returned command is a `Blit` variant.
+    /// in the JSON `images` array.
     #[test]
     fn status_bar_commands_blit_count_matches_json_images() {
         let commands = status_bar_commands();
@@ -115,10 +147,109 @@ mod tests {
             blit_count, expected,
             "Blit count must match images array length"
         );
+    }
+
+    /// Unit under test: `status_bar_commands` `DrawText` count against `text` + `bigtext`.
+    ///
+    /// Preconditions: `STATUS_BAR_JSON` is the embedded `status_bar_vga.json` with `text` and
+    /// `bigtext` arrays at the top level.
+    ///
+    /// Invariants asserted: every entry in both arrays produces one `DrawText` command.
+    #[test]
+    fn status_bar_commands_drawtext_count_matches_text_arrays() {
+        let commands = status_bar_commands();
+        let json: serde_json::Value =
+            serde_json::from_str(STATUS_BAR_JSON).expect("STATUS_BAR_JSON must be valid JSON");
+        let text_len = json["text"]
+            .as_array()
+            .expect("text must be an array")
+            .len();
+        let bigtext_len = json["bigtext"]
+            .as_array()
+            .expect("bigtext must be an array")
+            .len();
+        let drawtext_count = commands
+            .iter()
+            .filter(|cmd| matches!(cmd, RenderCommand::DrawText { .. }))
+            .count();
         assert_eq!(
-            commands.len(),
-            expected,
-            "all commands must be Blit entries"
+            drawtext_count,
+            text_len + bigtext_len,
+            "DrawText count must equal text + bigtext lengths"
+        );
+    }
+
+    /// Unit under test: `status_bar_commands` ordering and contents — blits first, then `text`
+    /// entries, then `bigtext` entries, each preserving JSON array order with verbatim
+    /// `(text, x, y, color)` values.
+    ///
+    /// Preconditions: `STATUS_BAR_JSON` has at least one entry in `images`, `text`, and
+    /// `bigtext`.
+    ///
+    /// Invariants asserted: every `Blit` command appears before every `DrawText` command; the
+    /// emitted `DrawText` sequence is exactly the concatenation `text ++ bigtext` from the
+    /// JSON, both in length and in per-entry `(text, x, y, color)`. Deriving the expectation
+    /// from the JSON keeps the test stable if `status_bar_vga.json` gains additional labels.
+    #[test]
+    fn status_bar_commands_emit_blits_then_text_then_bigtext() {
+        let commands = status_bar_commands();
+        let last_blit = commands
+            .iter()
+            .rposition(|cmd| matches!(cmd, RenderCommand::Blit { .. }))
+            .expect("at least one Blit");
+        let first_text = commands
+            .iter()
+            .position(|cmd| matches!(cmd, RenderCommand::DrawText { .. }))
+            .expect("at least one DrawText");
+        assert!(
+            last_blit < first_text,
+            "all Blit commands must precede DrawText commands"
+        );
+
+        let json: serde_json::Value =
+            serde_json::from_str(STATUS_BAR_JSON).expect("STATUS_BAR_JSON must be valid JSON");
+        let expected: Vec<(String, i32, i32, u8)> = json["text"]
+            .as_array()
+            .expect("text must be an array")
+            .iter()
+            .chain(
+                json["bigtext"]
+                    .as_array()
+                    .expect("bigtext must be an array")
+                    .iter(),
+            )
+            .map(|entry| {
+                (
+                    entry["text"]
+                        .as_str()
+                        .expect("text field must be a string")
+                        .to_string(),
+                    i32::try_from(entry["x"].as_i64().expect("x must be integer"))
+                        .expect("x must fit i32"),
+                    i32::try_from(entry["y"].as_i64().expect("y must be integer"))
+                        .expect("y must fit i32"),
+                    u8::try_from(entry["color"].as_u64().expect("color must be integer"))
+                        .expect("color must fit u8"),
+                )
+            })
+            .collect();
+
+        let actual: Vec<(String, i32, i32, u8)> = commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                RenderCommand::DrawText {
+                    text,
+                    x,
+                    y,
+                    color_index,
+                } => Some((text.clone(), *x, *y, *color_index)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            actual, expected,
+            "DrawText sequence must equal JSON `text` followed by `bigtext`, in order"
         );
     }
 
