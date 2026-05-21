@@ -1,13 +1,10 @@
 //! Shared helper for rendering an INTRO.JN1 background viewport into the game area.
 
 use crate::status_bar::game_area_blit;
-use openjill_core::layout::{BLOCK_SIZE, GAME_AREA_H, GAME_AREA_W};
 use openjill_core::RenderCommand;
+use openjill_core::layout::{BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W};
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::JnFile;
-
-/// Tile size in pixels as a signed integer for arithmetic convenience.
-const BLOCK_SIZE_I: i32 = BLOCK_SIZE as i32;
 
 /// Renders an INTRO.JN1 background viewport into the game area.
 ///

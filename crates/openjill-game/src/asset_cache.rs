@@ -11,10 +11,10 @@ use thiserror::Error;
 /// Pre-loaded and cached game data files for one episode.
 ///
 /// Constructed once at application start via [`AssetCache::load`]. Individual
-/// screens borrow from the cache; they do not own or re-load it. The
-/// `intro_jn` field is an exception: `INTRO.JN1` is loaded here because it
-/// is shared across the start-menu and all INTRO-backed special screens and
-/// must be available immediately when the application boots.
+/// screens clone the fields they need at construction time; they do not
+/// re-load from disk. `INTRO.JN1` is loaded here (rather than per-screen)
+/// because it is shared across the start-menu and all INTRO-backed special
+/// screens and must be available immediately when the application boots.
 #[derive(Debug)]
 pub struct AssetCache {
     /// Parsed `JILL.DMA` background map-code to tileset/tile/flags lookup.
@@ -87,7 +87,13 @@ impl AssetCache {
                     })?;
             JnFile::parse(&mut reader).map_err(|source| AssetError::IntroJn { source })?
         };
-        Ok(Self { dma, sha, vcl, cfg, intro_jn })
+        Ok(Self {
+            dma,
+            sha,
+            vcl,
+            cfg,
+            intro_jn,
+        })
     }
 }
 

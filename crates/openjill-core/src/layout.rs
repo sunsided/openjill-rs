@@ -40,6 +40,9 @@ pub const MESSAGE_BAR_H: u32 = 12;
 /// Tile and block size in pixels (`JillConst.BLOCK_SIZE = 16`).
 pub const BLOCK_SIZE: u32 = 16;
 
+/// Tile and block size in pixels as a signed integer, for pixel arithmetic.
+pub const BLOCK_SIZE_I: i32 = BLOCK_SIZE as i32;
+
 /// Horizontal screen-update border in pixels; objects outside skip their update step.
 ///
 /// Equals 6 blocks (`JillConst.xUpdateScreenBorder = 96`).

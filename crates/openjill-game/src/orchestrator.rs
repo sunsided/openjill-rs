@@ -11,6 +11,16 @@ use crate::screens::intro_screens::{
 };
 use crate::screens::start_menu::StartMenuScreen;
 
+/// Constructs a fresh [`StartMenuScreen`] from the given asset cache.
+fn make_start_menu(cache: &AssetCache) -> StartMenuScreen {
+    StartMenuScreen::new(
+        cache.intro_jn.clone(),
+        cache.dma.clone(),
+        cache.vcl.clone(),
+        cache.cfg.clone(),
+    )
+}
+
 /// Owns the current screen handler and drives the game tick and transition loop.
 ///
 /// Constructed once at application start from a [`DataDirectory`]. The winit
@@ -58,12 +68,7 @@ impl GameOrchestrator {
     /// fails to parse.
     pub fn new(data_dir: DataDirectory) -> Result<Self, OrchestratorError> {
         let cache = AssetCache::load(&data_dir)?;
-        let handler: Box<dyn ScreenHandler> = Box::new(StartMenuScreen::new(
-            cache.intro_jn.clone(),
-            cache.dma.clone(),
-            cache.vcl.clone(),
-            cache.cfg.clone(),
-        ));
+        let handler: Box<dyn ScreenHandler> = Box::new(make_start_menu(&cache));
         Ok(Self {
             cache,
             state: RuntimeState::new(),
@@ -120,12 +125,7 @@ impl GameOrchestrator {
 
         match transition {
             ScreenTransition::StartMenu => {
-                self.handler = Box::new(StartMenuScreen::new(
-                    self.cache.intro_jn.clone(),
-                    self.cache.dma.clone(),
-                    self.cache.vcl.clone(),
-                    self.cache.cfg.clone(),
-                ));
+                self.handler = Box::new(make_start_menu(&self.cache));
             }
             ScreenTransition::Story => {
                 self.handler = Box::new(story_screen(
@@ -156,13 +156,10 @@ impl GameOrchestrator {
             }
             // Map and Level transitions are implemented in later child issues.
             // Until then, fall back to StartMenuScreen so the loop stays valid.
-            ScreenTransition::Map | ScreenTransition::Level { .. } | ScreenTransition::RestartLevel => {
-                self.handler = Box::new(StartMenuScreen::new(
-                    self.cache.intro_jn.clone(),
-                    self.cache.dma.clone(),
-                    self.cache.vcl.clone(),
-                    self.cache.cfg.clone(),
-                ));
+            ScreenTransition::Map
+            | ScreenTransition::Level { .. }
+            | ScreenTransition::RestartLevel => {
+                self.handler = Box::new(make_start_menu(&self.cache));
             }
         }
     }
@@ -222,9 +219,14 @@ mod tests {
         let vcl = VclFile::from_bytes(vec![0u8; VCL_MIN_BYTES]).expect("zero VCL should parse");
         let cfg =
             CfgFile::from_bytes(vec![0u8; CFG_MIN_BYTES], "JN1").expect("zero CFG should parse");
-        let intro_jn =
-            JnFile::from_bytes(vec![0u8; JN_MIN_BYTES]).expect("zero JN should parse");
-        AssetCache { dma, sha, vcl, cfg, intro_jn }
+        let intro_jn = JnFile::from_bytes(vec![0u8; JN_MIN_BYTES]).expect("zero JN should parse");
+        AssetCache {
+            dma,
+            sha,
+            vcl,
+            cfg,
+            intro_jn,
+        }
     }
 
     /// Creates a [`GameOrchestrator`] from a synthetic cache and a custom handler.

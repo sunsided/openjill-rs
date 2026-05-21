@@ -5,14 +5,14 @@
 //! the start menu after [`AUTO_ADVANCE_TICKS`] ticks or when any key is pressed.
 
 use crate::screens::intro_background::render_intro_background;
+use openjill_core::layout::LEVEL_MESSAGE_TICKS;
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{ActiveInput, ScreenHandler, ScreenTransition, TickResult};
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::JnFile;
 
-/// Number of ticks (at 18 Hz) before a static intro screen auto-returns to the
-/// start menu.  Mirrors the Java `LEVEL_MESSAGE_TICKS` = 72 constant.
-const AUTO_ADVANCE_TICKS: u32 = 72;
+/// Ticks before a static intro screen auto-returns to the start menu.
+const AUTO_ADVANCE_TICKS: u32 = LEVEL_MESSAGE_TICKS;
 
 /// A single-background, auto-advancing INTRO.JN1 screen.
 ///
@@ -52,7 +52,8 @@ impl ScreenHandler for IntroStaticScreen {
     /// after [`AUTO_ADVANCE_TICKS`] ticks.
     fn tick(&mut self, input: &ActiveInput, _state: &mut RuntimeState) -> TickResult {
         self.ticks = self.ticks.saturating_add(1);
-        let commands = render_intro_background(&self.intro, &self.dma, self.offset_x, self.offset_y);
+        let commands =
+            render_intro_background(&self.intro, &self.dma, self.offset_x, self.offset_y);
         let transition = if !input.is_empty() || self.ticks >= AUTO_ADVANCE_TICKS {
             Some(ScreenTransition::StartMenu)
         } else {
@@ -100,7 +101,7 @@ pub fn noisemaker_screen(intro: JnFile, dma: DmaFile) -> IntroStaticScreen {
 
 #[cfg(test)]
 mod tests {
-    use super::{IntroStaticScreen, AUTO_ADVANCE_TICKS};
+    use super::{AUTO_ADVANCE_TICKS, IntroStaticScreen};
     use openjill_core::runtime::RuntimeState;
     use openjill_core::{ActiveInput, InputCommand, ScreenHandler, ScreenTransition};
     use openjill_data::dma::DmaFile;
@@ -140,7 +141,10 @@ mod tests {
         // Tick up to one before the threshold; no transition expected yet.
         for _ in 0..(AUTO_ADVANCE_TICKS - 1) {
             let result = screen.tick(&input, &mut RuntimeState::new());
-            assert_eq!(result.transition, None, "must not transition before threshold");
+            assert_eq!(
+                result.transition, None,
+                "must not transition before threshold"
+            );
         }
     }
 

@@ -10,7 +10,7 @@
 
 use crate::screens::intro_background::render_intro_background;
 use openjill_core::layout::{
-    BLOCK_SIZE, CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y,
+    BLOCK_SIZE_I, CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y,
 };
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
@@ -35,9 +35,6 @@ const START_MENU_OFFSET_X: i32 = -1808;
 ///
 /// `-(53 + 1) * 16 = -864`.
 const START_MENU_OFFSET_Y: i32 = -864;
-
-/// Block size in pixels as a signed integer.
-const BLOCK_SIZE_I: i32 = BLOCK_SIZE as i32;
 
 /// Which optional overlay is currently drawn over the base menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -157,8 +154,15 @@ impl ScreenHandler for StartMenuScreen {
 impl StartMenuScreen {
     /// Processes the active input set and updates overlay/selection/transition.
     fn process_input(&mut self, input: &ActiveInput) -> Option<ScreenTransition> {
-        // Escape / Pause always quits from the start menu (or dismisses a load
-        // overlay first, matching the Java behaviour).
+        // Any key dismisses the info-box overlay without further action,
+        // including Escape — checked before the Quit path so Escape does not
+        // exit the game while the overlay is visible.
+        if self.overlay == Overlay::InfoBox && !input.is_empty() {
+            self.overlay = Overlay::None;
+            return None;
+        }
+
+        // Escape / Pause dismisses the load-game overlay, or quits the game.
         if input.contains(&InputCommand::Pause) {
             if self.overlay == Overlay::LoadGame {
                 self.overlay = Overlay::None;
@@ -172,13 +176,15 @@ impl StartMenuScreen {
             return Some(ScreenTransition::Quit);
         }
 
-        // Any key dismisses the info-box overlay without further action.
-        if self.overlay == Overlay::InfoBox && !input.is_empty() {
-            self.overlay = Overlay::None;
+        // Load-game overlay is modal: no navigation or confirm while it is open.
+        if self.overlay == Overlay::LoadGame {
             return None;
         }
 
         let layout = &*MENU_LAYOUT;
+        if layout.items.is_empty() {
+            return None;
+        }
 
         // Navigate down: Duck (ArrowDown) or NextInventory (Tab).
         if input.contains(&InputCommand::Duck) || input.contains(&InputCommand::NextInventory) {
@@ -227,8 +233,12 @@ impl StartMenuScreen {
     /// Renders all layers for one frame: background → menu box → text →
     /// high-score panel → active overlay.
     fn render_frame(&self) -> Vec<RenderCommand> {
-        let mut commands =
-            render_intro_background(&self.intro, &self.dma, START_MENU_OFFSET_X, START_MENU_OFFSET_Y);
+        let mut commands = render_intro_background(
+            &self.intro,
+            &self.dma,
+            START_MENU_OFFSET_X,
+            START_MENU_OFFSET_Y,
+        );
         commands.extend(self.render_menu_box());
         commands.extend(self.render_menu_text());
         commands.extend(self.render_high_score_panel());
@@ -250,7 +260,7 @@ impl StartMenuScreen {
         let ts = layout.frame_tileset;
         let left = layout.x;
         let top = layout.y;
-        // Width: 9 columns of fill + 2 border columns = 11 tiles (10 inner).
+        // Width: 9 inner fill columns + 2 border columns = 11 tiles total.
         let inner_cols = 9_i32;
         // Height: 1 title row + items count + 1 padding row.
         let inner_rows = layout.items.len() as i32 + 2;
@@ -429,8 +439,8 @@ fn blit(tileset: u8, tile: u16, game_x: i32, game_y: i32) -> RenderCommand {
 /// Panics if the embedded JSON is structurally invalid, because this is an
 /// unrecoverable programming error (the JSON is compile-time embedded).
 fn parse_menu_layout() -> MenuLayout {
-    let value: serde_json::Value = serde_json::from_str(START_MENU_JSON)
-        .expect("embedded start_menu.json must be valid JSON");
+    let value: serde_json::Value =
+        serde_json::from_str(START_MENU_JSON).expect("embedded start_menu.json must be valid JSON");
 
     let get_i = |obj: &serde_json::Value, key: &str, default: i64| -> i32 {
         obj.get(key).and_then(|v| v.as_i64()).unwrap_or(default) as i32
@@ -464,7 +474,10 @@ fn parse_menu_layout() -> MenuLayout {
     let text_row_px = get_i(&value, "textY", 0);
     let nb_space_before = get_i(&value, "nbSpaceBefore", 0).max(0) as usize;
 
-    let title_obj = value.get("title").cloned().unwrap_or(serde_json::Value::Null);
+    let title_obj = value
+        .get("title")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let title_color = get_u(&title_obj, "color", 7);
     let title_text = get_str(&title_obj, "text", "pick a choice :");
 
@@ -522,7 +535,9 @@ fn parse_menu_layout() -> MenuLayout {
 mod tests {
     use super::StartMenuScreen;
     use openjill_core::runtime::RuntimeState;
-    use openjill_core::{ActiveInput, InputCommand, RenderCommand, ScreenHandler, ScreenTransition};
+    use openjill_core::{
+        ActiveInput, InputCommand, RenderCommand, ScreenHandler, ScreenTransition,
+    };
     use openjill_data::cfg::CfgFile;
     use openjill_data::dma::DmaFile;
     use openjill_data::jn::JnFile;
@@ -608,13 +623,19 @@ mod tests {
         let mut confirm = ActiveInput::new();
         confirm.insert(InputCommand::ThrowItem);
         let open = screen.tick(&confirm, &mut RuntimeState::new());
-        assert_eq!(open.transition, None, "opening load-game overlay must not transition");
+        assert_eq!(
+            open.transition, None,
+            "opening load-game overlay must not transition"
+        );
 
         // First Escape dismisses the overlay.
         let mut esc = ActiveInput::new();
         esc.insert(InputCommand::Pause);
         let dismiss = screen.tick(&esc, &mut RuntimeState::new());
-        assert_eq!(dismiss.transition, None, "first escape must dismiss overlay");
+        assert_eq!(
+            dismiss.transition, None,
+            "first escape must dismiss overlay"
+        );
 
         // Second Escape quits.
         let quit = screen.tick(&esc, &mut RuntimeState::new());

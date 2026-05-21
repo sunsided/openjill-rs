@@ -1842,9 +1842,9 @@ mod tests {
         let (atlas_width, atlas_height, atlas_pixels) = read_grayscale_png(&atlas_path);
         check!(atlas_width == 5);
         check!(atlas_height == 6);
-        check!(atlas_pixels[0] == 1);
-        check!(atlas_pixels[1] == 2);
-        check!(atlas_pixels[5] == 3);
+        check!(atlas_pixels[0] == 6); // raw pixel 1 → vga index 6
+        check!(atlas_pixels[1] == 10); // raw pixel 2 → vga index 10
+        check!(atlas_pixels[5] == 14); // raw pixel 3 → vga index 14
         check!(atlas_pixels[6] == 4);
         check!(atlas_pixels[3] == 5);
         check!(atlas_pixels[4] == 6);

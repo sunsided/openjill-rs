@@ -16,7 +16,8 @@ const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 /// Resolves the data directory from `OPENJILL_DATA_DIR` or the workspace-relative fallback.
 fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     if let Some(path) = env_override {
-        return Some(PathBuf::from(path));
+        let buf = PathBuf::from(path);
+        return Some(buf).filter(|p| p.is_dir());
     }
     let default = Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1");
     Some(default).filter(|p| p.is_dir())
@@ -67,11 +68,17 @@ fn start_menu_constructs_and_renders_with_original_data() {
     let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
     check!(result.transition.is_none(), "idle tick must not transition");
     check!(
-        result.commands.iter().any(|c| matches!(c, RenderCommand::DrawText { .. })),
+        result
+            .commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::DrawText { .. })),
         "idle tick must emit at least one DrawText command for the menu"
     );
     check!(
-        result.commands.iter().any(|c| matches!(c, RenderCommand::Blit { .. })),
+        result
+            .commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::Blit { .. })),
         "idle tick must emit at least one Blit command for the background"
     );
 
@@ -82,5 +89,20 @@ fn start_menu_constructs_and_renders_with_original_data() {
     check!(
         confirm_result.transition == Some(ScreenTransition::Map),
         "confirming 'play' must return ScreenTransition::Map"
+    );
+
+    // Escape (Pause) from the base menu quits the game.
+    let mut screen2 = StartMenuScreen::new(
+        cache.intro_jn.clone(),
+        cache.dma.clone(),
+        cache.vcl.clone(),
+        cache.cfg.clone(),
+    );
+    let mut esc = ActiveInput::new();
+    esc.insert(InputCommand::Pause);
+    let quit_result = screen2.tick(&esc, &mut RuntimeState::new());
+    check!(
+        quit_result.transition == Some(ScreenTransition::Quit),
+        "Escape from base menu must return ScreenTransition::Quit"
     );
 }
