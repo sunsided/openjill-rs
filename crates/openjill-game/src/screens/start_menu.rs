@@ -9,9 +9,7 @@
 //! commands.
 
 use crate::screens::intro_background::render_intro_background;
-use openjill_core::layout::{
-    CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y, INVENTORY_AREA_X, INVENTORY_AREA_Y,
-};
+use openjill_core::layout::{CONTROL_AREA_X, CONTROL_AREA_Y, INVENTORY_AREA_X, INVENTORY_AREA_Y};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
     ActiveInput, FontSize, InputCommand, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
@@ -84,9 +82,9 @@ struct MenuItem {
 
 /// Parsed `start_menu.json` layout used by `StartMenuScreen`.
 struct MenuLayout {
-    /// Menu box top-left X in game-area pixel coordinates.
+    /// Menu box top-left X in framebuffer pixel coordinates.
     x: i32,
-    /// Menu box top-left Y in game-area pixel coordinates.
+    /// Menu box top-left Y in framebuffer pixel coordinates.
     y: i32,
     /// Pixel columns per text character (from `textX` * BLOCK_SIZE in practice,
     /// but treated here as absolute pixel position of the first text column).
@@ -294,7 +292,7 @@ impl StartMenuScreen {
     /// Emits `Blit` commands for the tileset-7 menu box frame.
     ///
     /// The box occupies `(items.len() + 2)` tile rows (title + items + padding)
-    /// and 10 tile columns, positioned at `(layout.x, layout.y)` in game-area
+    /// and 10 tile columns, positioned at `(layout.x, layout.y)` in framebuffer
     /// space.
     fn render_menu_box(&self) -> Vec<RenderCommand> {
         let layout = &*MENU_LAYOUT;
@@ -351,8 +349,8 @@ impl StartMenuScreen {
 
         let mut commands = vec![RenderCommand::DrawText {
             text: layout.title_text.clone(),
-            x: GAME_AREA_X + base_x,
-            y: GAME_AREA_Y + base_y,
+            x: base_x,
+            y: base_y,
             color_index: layout.title_color,
             font: FontSize::Small,
         }];
@@ -368,8 +366,8 @@ impl StartMenuScreen {
             let text = format!("{prefix}{spaces}{}", item.text);
             commands.push(RenderCommand::DrawText {
                 text,
-                x: GAME_AREA_X + base_x,
-                y: GAME_AREA_Y + y,
+                x: base_x,
+                y,
                 color_index: item.color,
                 font: FontSize::Small,
             });
@@ -499,7 +497,6 @@ impl StartMenuScreen {
     }
 }
 
-/// Builds a game-area-relative `Blit` command.
 /// Tileset entry index that carries the Jill face portrait tiles in
 /// `JILL1.SHA`.
 const PORTRAIT_TILESET: u8 = 24;
@@ -558,12 +555,19 @@ fn render_jill_portrait() -> Vec<RenderCommand> {
         .collect()
 }
 
-fn blit(tileset: u8, tile: u16, game_x: i32, game_y: i32) -> RenderCommand {
+/// Builds a framebuffer-absolute `Blit` command for the menu frame.
+///
+/// `start_menu.json` `x`/`y` are screen-absolute in the Java reference port:
+/// `ClassicMenu` builds its picture into an off-screen buffer, and
+/// `AbstractMenuJillLevel.paint()` draws that buffer with
+/// `g.drawImage(menuPicture, menu.getX(), menu.getY())` directly into the
+/// 320x200 framebuffer.  Do not offset by the game-area origin here.
+fn blit(tileset: u8, tile: u16, x: i32, y: i32) -> RenderCommand {
     RenderCommand::Blit {
         tileset,
         tile,
-        x: GAME_AREA_X + game_x,
-        y: GAME_AREA_Y + game_y,
+        x,
+        y,
         opaque: false,
         clip: None,
     }
