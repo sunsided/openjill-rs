@@ -9,7 +9,9 @@
 //! commands.
 
 use crate::screens::intro_background::render_intro_background;
-use openjill_core::layout::{CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y};
+use openjill_core::layout::{
+    CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y, INVENTORY_AREA_X, INVENTORY_AREA_Y,
+};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
     ActiveInput, FontSize, InputCommand, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
@@ -280,6 +282,7 @@ impl StartMenuScreen {
         commands.extend(self.render_menu_box());
         commands.extend(self.render_menu_text());
         commands.extend(self.render_high_score_panel());
+        commands.extend(render_jill_portrait());
         match self.overlay {
             Overlay::InfoBox => commands.extend(self.render_info_box()),
             Overlay::LoadGame => commands.extend(self.render_load_game()),
@@ -491,6 +494,55 @@ impl StartMenuScreen {
 }
 
 /// Builds a game-area-relative `Blit` command.
+/// Tileset entry index that carries the Jill face portrait tiles in
+/// `JILL1.SHA`.
+const PORTRAIT_TILESET: u8 = 24;
+
+/// Tile placement of the Jill face portrait inside the inventory area.
+///
+/// Mirrors the `imagesInvenroy` array in `status_bar_vga.json`: 16 tiles
+/// arranged as a 4x4 grid covering 64 pixels horizontally by approximately
+/// 64-68 pixels vertically (the bottom row is slightly taller per
+/// tileset 24).  The third entry in each tuple is the source tile index
+/// inside `PORTRAIT_TILESET`.
+const PORTRAIT_TILES: [(i32, i32, u16); 16] = [
+    (0, 0, 0),
+    (16, 0, 1),
+    (32, 0, 2),
+    (48, 0, 3),
+    (0, 16, 4),
+    (16, 16, 5),
+    (32, 16, 6),
+    (46, 16, 7),
+    (0, 32, 8),
+    (16, 32, 9),
+    (32, 32, 10),
+    (48, 32, 11),
+    (0, 48, 12),
+    (16, 48, 13),
+    (32, 48, 14),
+    (48, 48, 15),
+];
+
+/// Emits the 16 portrait blits for the inventory area.
+///
+/// The status-bar JSON places the tiles at inventory-area-relative
+/// positions; this helper translates each into framebuffer coordinates
+/// via [`INVENTORY_AREA_X`] / [`INVENTORY_AREA_Y`].
+fn render_jill_portrait() -> Vec<RenderCommand> {
+    PORTRAIT_TILES
+        .iter()
+        .map(|(dx, dy, tile)| RenderCommand::Blit {
+            tileset: PORTRAIT_TILESET,
+            tile: *tile,
+            x: INVENTORY_AREA_X + dx,
+            y: INVENTORY_AREA_Y + dy,
+            opaque: false,
+            clip: None,
+        })
+        .collect()
+}
+
 fn blit(tileset: u8, tile: u16, game_x: i32, game_y: i32) -> RenderCommand {
     RenderCommand::Blit {
         tileset,
