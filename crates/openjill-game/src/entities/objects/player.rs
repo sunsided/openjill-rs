@@ -428,7 +428,10 @@ impl PlayerEntity {
             if is_on_climbable(backgrounds, self.x, self.y, self.w, self.h)
                 && input.contains(&InputCommand::Up)
             {
-                self.enter_climb_from_stand();
+                // Falling onto a vine is an airborne-to-climb transition, so
+                // use the jump-flavored entry (no `CLIMB_UP_STEPS[3]` nudge)
+                // to match the rest of the jump→climb path.
+                self.enter_climb_from_jump();
                 self.state_count = self.state_count.saturating_add(1);
                 return;
             }
@@ -482,6 +485,10 @@ impl PlayerEntity {
             self.sub_state = 0;
             self.state_count = 0;
             self.y_speed = 0;
+            // Drop horizontal influence on landing so the stand-frame
+            // selector does not render a one-tick run sprite when no
+            // direction key is held this tick.
+            self.x_speed = 0;
         }
 
         // Horizontal influence is only sampled once the rising animation has
@@ -622,12 +629,14 @@ impl PlayerEntity {
 
     /// Per-tick handler for the `Die` state.
     ///
-    /// Increments the die counter and dispatches `DieRestartLevel` once the
-    /// counter reaches [`STATECOUNT_MAX_TO_RESTART_GAME`].
+    /// Increments the die counter and dispatches `DieRestartLevel` exactly
+    /// once when the counter reaches [`STATECOUNT_MAX_TO_RESTART_GAME`].  The
+    /// counter advances on every tick (including the dispatching tick) so the
+    /// strict equality guard fires a single message even if `LevelScreen`
+    /// keeps ticking the entity during the 72-tick message-box hold.
     fn tick_die(&mut self, dispatcher: &mut MessageDispatcher) {
-        if self.state_count >= STATECOUNT_MAX_TO_RESTART_GAME {
+        if self.state_count == STATECOUNT_MAX_TO_RESTART_GAME {
             dispatcher.send(MessageType::DieRestartLevel, MessagePayload::None);
-            return;
         }
         self.state_count = self.state_count.saturating_add(1);
     }
@@ -802,7 +811,15 @@ impl PlayerEntity {
             return TILE_FALL;
         }
         let frame = self.sub_state.clamp(0, 2) as u16;
-        match self.x_speed {
+        // Fall back to `info1` (last facing) when `x_speed` is zero so the
+        // jump sprite preserves facing even when no horizontal key is held
+        // this tick.  Mirrors the stand-frame selector's facing fallback.
+        let facing = if self.x_speed != 0 {
+            self.x_speed
+        } else {
+            self.info1
+        };
+        match facing {
             d if d < 0 => TILE_JUMP_LEFT_BASE + frame,
             d if d > 0 => TILE_JUMP_RIGHT_BASE + frame,
             _ => TILE_JUMP_MIDDLE_BASE + frame,
@@ -865,9 +882,10 @@ fn is_on_climbable(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> boo
 /// Returns `true` when the rectangle `[x, x+w) x [y, y+h)` overlaps any cell
 /// that is not passable.
 ///
-/// `is_stair` cells count as solid for the bounding-box collision check, so
-/// the player cannot tunnel through a step diagonally even though the floor
-/// probe ignores them through the same flag.
+/// `is_stair` cells count as solid for the bounding-box collision test so the
+/// player cannot tunnel through a step diagonally, mirroring the Java
+/// reference's `UtilityObjectEntity.moveObject*` helpers which treat stair
+/// cells as blocking surfaces (`has_floor_below` applies the same rule).
 fn collides_solid(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
     let cx_l = x.div_euclid(BLOCK_SIZE_I);
     let cx_r = (x + w - 1).div_euclid(BLOCK_SIZE_I);
@@ -886,7 +904,7 @@ fn collides_solid(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool
                 continue;
             }
             if let Some(cell) = grid.get(cx, cy)
-                && !cell.is_passthrough()
+                && (!cell.is_passthrough() || cell.is_stair())
             {
                 return true;
             }
