@@ -9,12 +9,10 @@
 //! commands.
 
 use crate::screens::intro_background::render_intro_background;
-use openjill_core::layout::{
-    BLOCK_SIZE_I, CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y,
-};
+use openjill_core::layout::{CONTROL_AREA_X, CONTROL_AREA_Y, INVENTORY_AREA_X, INVENTORY_AREA_Y};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
-    ActiveInput, InputCommand, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
+    ActiveInput, FontSize, InputCommand, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
 };
 use openjill_data::cfg::CfgFile;
 use openjill_data::dma::DmaFile;
@@ -84,9 +82,9 @@ struct MenuItem {
 
 /// Parsed `start_menu.json` layout used by `StartMenuScreen`.
 struct MenuLayout {
-    /// Menu box top-left X in game-area pixel coordinates.
+    /// Menu box top-left X in framebuffer pixel coordinates.
     x: i32,
-    /// Menu box top-left Y in game-area pixel coordinates.
+    /// Menu box top-left Y in framebuffer pixel coordinates.
     y: i32,
     /// Pixel columns per text character (from `textX` * BLOCK_SIZE in practice,
     /// but treated here as absolute pixel position of the first text column).
@@ -124,6 +122,28 @@ struct MenuLayout {
     back_image: u16,
 }
 
+/// Number of animation frames in the menu cursor.
+///
+/// Mirrors `AbstractMenu.NB_CURSOR_IMAGE` from the Java reference: the
+/// small SHA font carries an eight-frame diamond/spinner animation at
+/// codepoints `\u{0001}..=\u{0008}` that the cursor cycles through.
+const MENU_CURSOR_FRAMES: u8 = 8;
+
+/// Palette index used for the menu cursor.
+///
+/// Matches `TextManager.COLOR_WHITE` in the Java reference: the cursor is
+/// always drawn white regardless of the highlighted row's text color.
+const MENU_CURSOR_COLOR: u8 = 7;
+
+/// Pixel size of one menu box frame tile.
+///
+/// The shipped `start_menu.json` references tiles from `JILL1.SHA` tileset
+/// 7, whose corner / bar / fill tiles are all 8x8.  The previous menu box
+/// renderer stepped through positions at the 16-pixel block size and left
+/// 8-pixel gaps between every tile; the original DOS layout draws them
+/// adjacent at 8-pixel stride.
+const MENU_FRAME_TILE_SIZE: i32 = 8;
+
 /// Lazily parsed `start_menu.json` layout, loaded once on first access.
 static MENU_LAYOUT: LazyLock<MenuLayout> = LazyLock::new(parse_menu_layout);
 
@@ -146,6 +166,11 @@ pub struct StartMenuScreen {
     selected: usize,
     /// Active overlay rendered above the base menu.
     overlay: Overlay,
+    /// Current frame in the menu cursor animation (`0..MENU_CURSOR_FRAMES`).
+    ///
+    /// Advanced once per tick to match `AbstractMenu.drawCursor`'s
+    /// `cursorIndex++` increment in the Java reference.
+    cursor_index: u8,
 }
 
 impl StartMenuScreen {
@@ -158,6 +183,7 @@ impl StartMenuScreen {
             cfg,
             selected: 0,
             overlay: Overlay::None,
+            cursor_index: 0,
         }
     }
 }
@@ -167,6 +193,7 @@ impl ScreenHandler for StartMenuScreen {
     fn tick(&mut self, input: &ActiveInput, _state: &mut RuntimeState) -> TickResult {
         let transition = self.process_input(input);
         let commands = self.render_frame();
+        self.cursor_index = (self.cursor_index + 1) % MENU_CURSOR_FRAMES;
         TickResult {
             commands,
             transition,
@@ -266,6 +293,7 @@ impl StartMenuScreen {
         commands.extend(self.render_menu_box());
         commands.extend(self.render_menu_text());
         commands.extend(self.render_high_score_panel());
+        commands.extend(render_jill_portrait());
         match self.overlay {
             Overlay::InfoBox => commands.extend(self.render_info_box()),
             Overlay::LoadGame => commands.extend(self.render_load_game()),
@@ -276,20 +304,33 @@ impl StartMenuScreen {
 
     /// Emits `Blit` commands for the tileset-7 menu box frame.
     ///
-    /// The box occupies `(items.len() + 2)` tile rows (title + items + padding)
-    /// and 10 tile columns, positioned at `(layout.x, layout.y)` in game-area
-    /// space.
+    /// Mirrors `AbstractStdMenu.drawPicture` from the Java reference: the box
+    /// holds `items.len() + 5` total cell rows (`NB_BORDER` + items) and
+    /// `max(title, longest item + nbSpaceBefore) + 1` total cell columns, with
+    /// the outer cells reserved for the corner / bar frame tiles.  Positioned
+    /// at `(layout.x, layout.y)` in framebuffer space.
     fn render_menu_box(&self) -> Vec<RenderCommand> {
         let layout = &*MENU_LAYOUT;
         let ts = layout.frame_tileset;
+        let step = MENU_FRAME_TILE_SIZE;
         let left = layout.x;
         let top = layout.y;
-        // Width: 9 inner fill columns + 2 border columns = 11 tiles total.
-        let inner_cols = 9_i32;
-        // Height: 1 title row + items count + 1 padding row.
-        let inner_rows = layout.items.len() as i32 + 2;
-        let right = left + (inner_cols + 1) * BLOCK_SIZE_I;
-        let bottom = top + inner_rows * BLOCK_SIZE_I;
+        // Match Java's `calculateWidthMinimum() + 1` and
+        // `NB_BORDER + items.size()` so the frame sits exactly where the small
+        // body font lays out the title + items, with the cursor and the four
+        // leading spaces accounted for.
+        let title_chars = layout.title_text.chars().count();
+        let max_item_chars = layout
+            .items
+            .iter()
+            .map(|it| it.text.chars().count() + layout.nb_space_before)
+            .max()
+            .unwrap_or(0);
+        let max_chars = title_chars.max(max_item_chars) as i32;
+        let inner_cols = (max_chars - 1).max(1);
+        let inner_rows = layout.items.len() as i32 + 3;
+        let right = left + (inner_cols + 1) * step;
+        let bottom = top + (inner_rows + 1) * step;
 
         let mut commands = vec![
             blit(ts, layout.left_upper, left, top),
@@ -300,18 +341,18 @@ impl StartMenuScreen {
 
         // Top and bottom edge bars.
         for col in 1..=inner_cols {
-            let x = left + col * BLOCK_SIZE_I;
+            let x = left + col * step;
             commands.push(blit(ts, layout.upper_bar, x, top));
             commands.push(blit(ts, layout.lower_bar, x, bottom));
         }
 
         // Left and right edge bars, and interior fill.
-        for row in 1..inner_rows {
-            let y = top + row * BLOCK_SIZE_I;
+        for row in 1..=inner_rows {
+            let y = top + row * step;
             commands.push(blit(ts, layout.left_bar, left, y));
             commands.push(blit(ts, layout.right_bar, right, y));
             for col in 1..=inner_cols {
-                commands.push(blit(ts, layout.back_image, left + col * BLOCK_SIZE_I, y));
+                commands.push(blit(ts, layout.back_image, left + col * step, y));
             }
         }
 
@@ -320,7 +361,17 @@ impl StartMenuScreen {
 
     /// Emits `DrawText` commands for the menu title and item list.
     ///
-    /// The selected item is highlighted by drawing an arrow (`">"`) before it.
+    /// Mirrors `AbstractStdMenu.drawPicture` + `AbstractMenu.drawCursor` from
+    /// the Java reference:
+    ///
+    /// * Body text for every item is drawn at `(textX + nbSpaceBefore * 6,
+    ///   textY + (i + 1) * 8)` in its configured palette color, with the four
+    ///   leading spaces baked into the string so the renderer's per-glyph
+    ///   `cursor_x` advance lands the text at the same column the original
+    ///   used.
+    /// * The cursor for the selected row is drawn as a separate, always-white
+    ///   glyph at one space-width past the body's left edge, cycling through
+    ///   the eight-frame animation at codepoints `0x01..=0x08`.
     fn render_menu_text(&self) -> Vec<RenderCommand> {
         let layout = &*MENU_LAYOUT;
         let base_x = layout.x + layout.text_col_px;
@@ -329,22 +380,37 @@ impl StartMenuScreen {
 
         let mut commands = vec![RenderCommand::DrawText {
             text: layout.title_text.clone(),
-            x: GAME_AREA_X + base_x,
-            y: GAME_AREA_Y + base_y,
+            x: base_x,
+            y: base_y,
             color_index: layout.title_color,
+            font: FontSize::Small,
         }];
 
         let spaces = " ".repeat(layout.nb_space_before);
+        let cursor_char =
+            char::from_u32(u32::from(self.cursor_index % MENU_CURSOR_FRAMES) + 1).unwrap_or(' ');
         for (index, item) in layout.items.iter().enumerate() {
             let y = base_y + line_h + index as i32 * line_h;
-            let prefix = if index == self.selected { ">" } else { " " };
-            let text = format!("{prefix}{spaces}{}", item.text);
             commands.push(RenderCommand::DrawText {
-                text,
-                x: GAME_AREA_X + base_x,
-                y: GAME_AREA_Y + y,
+                text: format!("{spaces}{}", item.text),
+                x: base_x,
+                y,
                 color_index: item.color,
+                font: FontSize::Small,
             });
+            if index == self.selected {
+                // Leading space pushes the cursor glyph one column past
+                // `base_x`, matching `posCursorX = textX + fontSize` in
+                // the Java reference without exposing per-glyph pixel
+                // widths to this caller.
+                commands.push(RenderCommand::DrawText {
+                    text: format!(" {cursor_char}"),
+                    x: base_x,
+                    y,
+                    color_index: MENU_CURSOR_COLOR,
+                    font: FontSize::Small,
+                });
+            }
         }
 
         commands
@@ -364,21 +430,39 @@ impl StartMenuScreen {
             x: CONTROL_AREA_X + 5,
             y: CONTROL_AREA_Y + 2,
             color_index: 4,
+            font: FontSize::Small,
+        });
+        // Thin separator line under the HI SCORES header, mirroring the
+        // dark red rule in the reference screenshot.
+        commands.push(RenderCommand::FillRect {
+            x: CONTROL_AREA_X + 2,
+            y: CONTROL_AREA_Y + 9,
+            width: 60,
+            height: 1,
+            color: 4,
         });
 
-        for (index, entry) in self.cfg.high_scores().iter().take(5).enumerate() {
-            let y = CONTROL_AREA_Y + 16 + index as i32 * 12;
-            commands.push(RenderCommand::DrawText {
-                text: format!("{:>7}", entry.score()),
-                x: CONTROL_AREA_X + 2,
-                y,
-                color_index: 6,
-            });
+        // Layout: name column on the left (greenish color 2), score
+        // column on the right (orange-ish color 6).  `JILL1.CFG` carries
+        // 10 slots; render up to the panel's vertical capacity at a
+        // 6-pixel row pitch (the small-font row height).
+        const ROW_HEIGHT: i32 = 6;
+        const MAX_ROWS: usize = 8;
+        for (index, entry) in self.cfg.high_scores().iter().take(MAX_ROWS).enumerate() {
+            let y = CONTROL_AREA_Y + 12 + index as i32 * ROW_HEIGHT;
             commands.push(RenderCommand::DrawText {
                 text: entry.name().to_string(),
-                x: CONTROL_AREA_X + 30,
+                x: CONTROL_AREA_X + 2,
                 y,
                 color_index: 2,
+                font: FontSize::Small,
+            });
+            commands.push(RenderCommand::DrawText {
+                text: format!("{}", entry.score()),
+                x: CONTROL_AREA_X + 40,
+                y,
+                color_index: 6,
+                font: FontSize::Small,
             });
         }
 
@@ -415,6 +499,7 @@ impl StartMenuScreen {
                 x: INFO_BOX_TEXT_X,
                 y: INFO_BOX_TEXT_Y + (line_index as i32) * INFO_BOX_LINE_HEIGHT,
                 color_index: INFO_BOX_TEXT_COLOR,
+                font: FontSize::Small,
             });
         }
         commands
@@ -437,6 +522,7 @@ impl StartMenuScreen {
             x: 136,
             y: 40,
             color_index: 2,
+            font: FontSize::Big,
         });
         for (index, slot) in self.cfg.save_slots().iter().enumerate() {
             commands.push(RenderCommand::DrawText {
@@ -444,19 +530,84 @@ impl StartMenuScreen {
                 x: 132,
                 y: 56 + index as i32 * 12,
                 color_index: 3,
+                font: FontSize::Small,
             });
         }
         commands
     }
 }
 
-/// Builds a game-area-relative `Blit` command.
-fn blit(tileset: u8, tile: u16, game_x: i32, game_y: i32) -> RenderCommand {
+/// Tileset entry index that carries the Jill face portrait tiles in
+/// `JILL1.SHA`.
+const PORTRAIT_TILESET: u8 = 24;
+
+/// Tile placement of the Jill face portrait inside the inventory area.
+///
+/// Mirrors the `imagesInvenroy` array in `status_bar_vga.json`: 16 tiles
+/// arranged as a 4x4 grid covering 64 pixels horizontally by ~68 pixels
+/// vertically.  The third entry in each tuple is the source tile index
+/// inside [`PORTRAIT_TILESET`].
+///
+/// The shipped JSON places every row 3 entry at `y = 48`, which only
+/// works when all bottom-row tiles share the same height.  Tileset 24
+/// row 3 actually carries three 22-pixel tall tiles (12, 13, 14) and one
+/// 20-pixel tall tile (15), so a uniform `dy = 48` leaves tiles 12/13/14
+/// bleeding one pixel into the lower status-bar frame and tile 15 one
+/// pixel short of the inventory area's bottom edge.  This table uses
+/// per-tile `dy` values (47 for the 22-tall tiles, 49 for the 20-tall
+/// tile 15) so every bottom-row tile bottom lines up at framebuffer
+/// y = 175, immediately above the lower frame bar at y = 176.
+const PORTRAIT_TILES: [(i32, i32, u16); 16] = [
+    (0, 0, 0),
+    (16, 0, 1),
+    (32, 0, 2),
+    (48, 0, 3),
+    (0, 16, 4),
+    (16, 16, 5),
+    (32, 16, 6),
+    (46, 16, 7),
+    (0, 32, 8),
+    (16, 32, 9),
+    (32, 32, 10),
+    (48, 32, 11),
+    (0, 47, 12),
+    (16, 47, 13),
+    (32, 47, 14),
+    (48, 49, 15),
+];
+
+/// Emits the 16 portrait blits for the inventory area.
+///
+/// The status-bar JSON places the tiles at inventory-area-relative
+/// positions; this helper translates each into framebuffer coordinates
+/// via [`INVENTORY_AREA_X`] / [`INVENTORY_AREA_Y`].
+fn render_jill_portrait() -> Vec<RenderCommand> {
+    PORTRAIT_TILES
+        .iter()
+        .map(|(dx, dy, tile)| RenderCommand::Blit {
+            tileset: PORTRAIT_TILESET,
+            tile: *tile,
+            x: INVENTORY_AREA_X + dx,
+            y: INVENTORY_AREA_Y + dy,
+            opaque: false,
+            clip: None,
+        })
+        .collect()
+}
+
+/// Builds a framebuffer-absolute `Blit` command for the menu frame.
+///
+/// `start_menu.json` `x`/`y` are screen-absolute in the Java reference port:
+/// `ClassicMenu` builds its picture into an off-screen buffer, and
+/// `AbstractMenuJillLevel.paint()` draws that buffer with
+/// `g.drawImage(menuPicture, menu.getX(), menu.getY())` directly into the
+/// 320x200 framebuffer.  Do not offset by the game-area origin here.
+fn blit(tileset: u8, tile: u16, x: i32, y: i32) -> RenderCommand {
     RenderCommand::Blit {
         tileset,
         tile,
-        x: GAME_AREA_X + game_x,
-        y: GAME_AREA_Y + game_y,
+        x,
+        y,
         opaque: false,
         clip: None,
     }
@@ -525,14 +676,25 @@ fn parse_menu_layout() -> MenuLayout {
         })
         .unwrap_or_default();
 
-    let (frame_tileset, right_upper) = tile_ref("rightUpperCorner");
-    let (_, left_upper) = tile_ref("leftUpperCorner");
-    let (_, right_lower) = tile_ref("rightLowerCorner");
-    let (_, left_lower) = tile_ref("leftLowerCorner");
+    // The shipped `start_menu.json` labels the left and right corner /
+    // side-bar tiles with the wrong handedness compared to how the SHA
+    // pixels actually render: `leftUpperCorner` carries the tile that
+    // visually paints the top-RIGHT corner, `leftBar` carries the
+    // right-side vertical bar, and so on.  Verified by inspecting the
+    // pixel highlights on tileset 7 tiles 1-9 in the indexed atlas:
+    // tile 1 has its lit edges on the top + left (top-left corner),
+    // tile 3 on the top + right (top-right corner), tile 4's lit edge
+    // is the left column (left vertical bar), tile 5's the right
+    // column.  Pre-swap the assignments so the renderer can keep using
+    // semantic field names.
+    let (frame_tileset, left_upper) = tile_ref("rightUpperCorner");
+    let (_, right_upper) = tile_ref("leftUpperCorner");
+    let (_, left_lower) = tile_ref("rightLowerCorner");
+    let (_, right_lower) = tile_ref("leftLowerCorner");
     let (_, upper_bar) = tile_ref("upperBar");
     let (_, lower_bar) = tile_ref("lowerBar");
-    let (_, right_bar) = tile_ref("rightBar");
-    let (_, left_bar) = tile_ref("leftBar");
+    let (_, left_bar) = tile_ref("rightBar");
+    let (_, right_bar) = tile_ref("leftBar");
     let back_image = value
         .get("backImage")
         .and_then(|o| o.get("tile"))
@@ -788,6 +950,7 @@ mod tests {
                     x,
                     y,
                     color_index,
+                    ..
                 } if *x == super::INFO_BOX_TEXT_X && *color_index == super::INFO_BOX_TEXT_COLOR => {
                     Some((*y, text.clone()))
                 }
