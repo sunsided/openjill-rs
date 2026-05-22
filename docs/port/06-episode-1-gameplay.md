@@ -435,7 +435,7 @@ expected for this epic.
 ## Per-level sky / game-area background color
 
 The Java reference port (`AbstractBackgroundJillLevel.loadLevel` and
-`createBackgound`) takes the VGA color map shipped in
+`createBackground`) takes the VGA color map shipped in
 `sha-file/src/main/resources/jill_color_map.properties` and assigns
 `defaultBackgroundColor = colorMap[0]`.  Palette index 0 in that table is
 the `!000000` transparent sentinel, so the Java port composites the level
