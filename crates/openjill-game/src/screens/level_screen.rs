@@ -286,32 +286,32 @@ impl LevelScreen {
         self.pending = Some(next);
     }
 
-    /// Renders the base frame: the framebuffer-clear baseline, the per-level
-    /// sky fill over the game area, and the static level background.
+    /// Renders the base frame: the per-level sky fill over the game area
+    /// and the static level background.
     ///
-    /// The presenter already clears the framebuffer to palette index 0 every
-    /// frame, so the leading [`RenderCommand::Clear`] here is redundant with
-    /// it; it is retained as an explicit baseline so a downstream caller that
-    /// executes the screen's commands against a buffer it did not clear still
-    /// sees a deterministic starting state.  The [`RenderCommand::FillRect`]
-    /// that follows fills only the game-area sub-region with [`self.sky_color`]
-    /// so transparent map cells (map code 0) reveal the per-episode sky
-    /// instead of the framebuffer's palette-index-0 clear.
+    /// The presenter already clears the indexed framebuffer to palette
+    /// index 0 at the top of every `execute_and_present` call, and the
+    /// orchestrator prepends the static status-bar tile mosaic to the
+    /// frame's command list before the level handler's commands; emitting
+    /// a `RenderCommand::Clear` here would run *after* the status-bar tiles
+    /// were laid down and overwrite them with the clear color, leaving the
+    /// inventory / control / message-bar regions black.  The
+    /// [`RenderCommand::FillRect`] that follows fills only the game-area
+    /// sub-region with [`self.sky_color`] so transparent map cells (map
+    /// code 0) reveal the per-episode sky instead of the framebuffer's
+    /// palette-index-0 clear.
     ///
     /// The message-box overlay is intentionally not included here; the tick
     /// loop appends it after the per-entity draw commands so the box paints
     /// on top of the level and any objects in front of it.
     fn render_base_frame(&self) -> Vec<RenderCommand> {
-        let mut commands = vec![
-            RenderCommand::Clear { color: 0 },
-            RenderCommand::FillRect {
-                x: GAME_AREA_X,
-                y: GAME_AREA_Y,
-                width: GAME_AREA_W,
-                height: GAME_AREA_H,
-                color: self.sky_color,
-            },
-        ];
+        let mut commands = vec![RenderCommand::FillRect {
+            x: GAME_AREA_X,
+            y: GAME_AREA_Y,
+            width: GAME_AREA_W,
+            height: GAME_AREA_H,
+            color: self.sky_color,
+        }];
         commands.extend(render_map_background(
             &self.jn,
             &self.dma,
@@ -1494,7 +1494,8 @@ mod tests {
     }
 
     /// Unit under test: `LevelScreen::tick` with no objects and an all-zero
-    /// background layer still emits at least one `RenderCommand::Clear`.
+    /// background layer still emits the per-level sky `FillRect` over the
+    /// game area.
     ///
     /// Preconditions: a synthetic JN buffer with zero objects and all-zero
     /// background map codes; the synthetic `AssetCache` carries an empty
@@ -1502,50 +1503,76 @@ mod tests {
     /// `StdBackgroundEntity` placeholder that emits no draw output.
     ///
     /// Invariants asserted: the tick completes without panic, and the
-    /// resulting command list contains at least one `RenderCommand::Clear`
-    /// so the renderer always has a baseline fill to execute even when both
-    /// the object and background entity iterations contribute nothing.
+    /// resulting command list contains the sky `FillRect` over the game
+    /// area so the renderer always has a baseline fill to execute even
+    /// when both the object and background entity iterations contribute
+    /// nothing.  No explicit `RenderCommand::Clear` is emitted because the
+    /// presenter clears the framebuffer on its own and an extra clear
+    /// would overwrite the orchestrator-prepended status bar tiles.
     #[test]
-    fn tick_with_no_objects_and_empty_backgrounds_emits_clear() {
+    fn tick_with_no_objects_and_empty_backgrounds_emits_sky_fill() {
+        use openjill_core::layout::{GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
         let bytes = jn_bytes_with_objects(&[]);
         let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
         let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
         assert!(
-            result
+            result.commands.iter().any(|cmd| matches!(
+                cmd,
+                RenderCommand::FillRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    color,
+                } if *x == GAME_AREA_X
+                    && *y == GAME_AREA_Y
+                    && *width == GAME_AREA_W
+                    && *height == GAME_AREA_H
+                    && *color == EPISODE_1_SKY_COLOR
+            )),
+            "tick must emit a sky FillRect baseline command; got {:?}",
+            result.commands
+        );
+        assert!(
+            !result
                 .commands
                 .iter()
                 .any(|cmd| matches!(cmd, RenderCommand::Clear { .. })),
-            "tick must emit a Clear baseline command; got {:?}",
-            result.commands
+            "tick must not emit a Clear; it would overwrite the prepended status bar"
         );
     }
 
     /// Unit under test: `LevelScreen::tick` emits a sky `FillRect` over the
-    /// game area immediately after the baseline `Clear` and before any
-    /// background tile blits.
+    /// game area before any background tile blits, and does not emit a
+    /// `RenderCommand::Clear` (which would overwrite the prepended status
+    /// bar tiles).
     ///
     /// Preconditions: synthetic level 1 screen built with
     /// [`EPISODE_1_SKY_COLOR`]; no objects and an empty background grid so
     /// no per-entity draws appear before the level base layer.
     ///
     /// Invariants asserted: a `FillRect` whose rectangle equals the
-    /// `(GAME_AREA_X, GAME_AREA_Y, GAME_AREA_W, GAME_AREA_H)` window and whose
-    /// `color` matches `EPISODE_1_SKY_COLOR` is emitted exactly once; its
-    /// position in the command list is greater than the `Clear` baseline
-    /// (so the sky paints over the clear) and less than any background
-    /// `Blit` (so blits paint over the sky).
+    /// `(GAME_AREA_X, GAME_AREA_Y, GAME_AREA_W, GAME_AREA_H)` window and
+    /// whose `color` matches `EPISODE_1_SKY_COLOR` is emitted, and its
+    /// position in the command list precedes the first background `Blit`
+    /// so blits paint over the sky.  The tick must also not emit a
+    /// `RenderCommand::Clear` because the presenter clears the framebuffer
+    /// on its own and an extra clear would erase the static status bar.
     #[test]
-    fn tick_emits_sky_fill_rect_after_clear_and_before_blits() {
+    fn tick_emits_sky_fill_rect_before_blits_and_no_clear() {
         use openjill_core::layout::{GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
         let bytes = jn_bytes_with_objects(&[]);
         let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
         let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
 
-        let clear_index = result
-            .commands
-            .iter()
-            .position(|cmd| matches!(cmd, RenderCommand::Clear { .. }))
-            .expect("tick must emit a Clear baseline command");
+        assert!(
+            !result
+                .commands
+                .iter()
+                .any(|cmd| matches!(cmd, RenderCommand::Clear { .. })),
+            "tick must not emit a Clear; it would overwrite the prepended status bar"
+        );
+
         let sky_index = result
             .commands
             .iter()
@@ -1566,12 +1593,6 @@ mod tests {
                 )
             })
             .expect("tick must emit a sky FillRect covering the game area");
-
-        assert!(
-            sky_index > clear_index,
-            "sky FillRect must follow the baseline Clear; commands: {:?}",
-            result.commands
-        );
 
         if let Some(blit_index) = result
             .commands
@@ -1613,11 +1634,12 @@ mod tests {
     /// dispatched before the first tick to start the message-box countdown.
     ///
     /// Invariants asserted: the message-box frame blits (tileset 24 / 3)
-    /// land at a higher index in the command list than the baseline
-    /// `Clear` command, so a renderer executing in order paints the
-    /// message box on top.
+    /// land at a higher index in the command list than the sky `FillRect`
+    /// baseline, so a renderer executing in order paints the message box
+    /// on top of the level background.
     #[test]
     fn tick_message_box_renders_after_base_frame() {
+        use openjill_core::layout::{GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
         let bytes = jn_bytes_with_objects(&[]);
         let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
         dispatcher.send(
@@ -1630,10 +1652,25 @@ mod tests {
         let commands = screen
             .tick(&ActiveInput::new(), &mut RuntimeState::new())
             .commands;
-        let clear_index = commands
+        let sky_index = commands
             .iter()
-            .position(|cmd| matches!(cmd, RenderCommand::Clear { .. }))
-            .expect("tick must emit a Clear baseline command");
+            .position(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::FillRect {
+                        x,
+                        y,
+                        width,
+                        height,
+                        color,
+                    } if *x == GAME_AREA_X
+                        && *y == GAME_AREA_Y
+                        && *width == GAME_AREA_W
+                        && *height == GAME_AREA_H
+                        && *color == EPISODE_1_SKY_COLOR
+                )
+            })
+            .expect("tick must emit a sky FillRect baseline command");
         let last_messagebox_blit = commands
             .iter()
             .rposition(|cmd| {
@@ -1645,8 +1682,8 @@ mod tests {
             })
             .expect("tick must emit message-box frame blits while a transition is pending");
         assert!(
-            last_messagebox_blit > clear_index,
-            "message-box overlay must follow the baseline Clear in the command list"
+            last_messagebox_blit > sky_index,
+            "message-box overlay must follow the sky FillRect baseline in the command list"
         );
     }
 
