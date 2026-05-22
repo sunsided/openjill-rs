@@ -7,7 +7,7 @@ use openjill_core::runtime::RuntimeState;
 use openjill_core::{ActiveInput, MessageDispatcher, ScreenHandler};
 use openjill_data::DataDirectory;
 use openjill_game::asset_cache::AssetCache;
-use openjill_game::screens::level_screen::LevelScreen;
+use openjill_game::screens::level_screen::{EPISODE_1_SKY_COLOR, LevelScreen};
 use std::path::{Path, PathBuf};
 
 /// Environment variable for overriding the data directory.
@@ -63,6 +63,10 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> DataDirOutcome {
 /// - `AssetCache::load` and `LevelScreen::from_bytes` succeed.
 /// - An idle tick produces at least one `RenderCommand::Blit` (the real
 ///   level has many non-zero, non-transparent background cells).
+/// - The idle tick emits a [`RenderCommand::FillRect`] covering the game
+///   area at the configured sky color, and that fill precedes the first
+///   background `Blit` in the command list so transparent map cells reveal
+///   the sky instead of the framebuffer clear.
 /// - The idle tick produces no `ScreenTransition`.
 /// - `LevelScreen::level_jn_bytes` round-trips the source file bytes.
 #[test]
@@ -105,18 +109,53 @@ fn level_screen_constructs_and_renders_with_original_data() {
         std::fs::read(&level_path).unwrap_or_else(|err| panic!("{LEVEL_FILE} should read: {err}"));
 
     let mut dispatcher = MessageDispatcher::new();
-    let mut screen = LevelScreen::from_bytes(level_bytes.clone(), &cache, 1, &mut dispatcher)
-        .unwrap_or_else(|err| panic!("{LEVEL_FILE} should parse: {err}"));
+    let mut screen = LevelScreen::from_bytes(
+        level_bytes.clone(),
+        &cache,
+        1,
+        &mut dispatcher,
+        EPISODE_1_SKY_COLOR,
+    )
+    .unwrap_or_else(|err| panic!("{LEVEL_FILE} should parse: {err}"));
 
     let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
     check!(result.transition.is_none(), "idle tick must not transition");
+
+    let sky_fill_index = result.commands.iter().position(|c| {
+        matches!(
+            c,
+            RenderCommand::FillRect {
+                x,
+                y,
+                width,
+                height,
+                color,
+            } if *x == openjill_core::layout::GAME_AREA_X
+                && *y == openjill_core::layout::GAME_AREA_Y
+                && *width == openjill_core::layout::GAME_AREA_W
+                && *height == openjill_core::layout::GAME_AREA_H
+                && *color == EPISODE_1_SKY_COLOR
+        )
+    });
     check!(
-        result
-            .commands
-            .iter()
-            .any(|c| matches!(c, RenderCommand::Blit { .. })),
+        sky_fill_index.is_some(),
+        "idle tick must emit a sky FillRect covering the game area"
+    );
+
+    let first_blit_index = result
+        .commands
+        .iter()
+        .position(|c| matches!(c, RenderCommand::Blit { .. }));
+    check!(
+        first_blit_index.is_some(),
         "idle tick must emit at least one Blit for background tiles"
     );
+    if let (Some(fill_at), Some(blit_at)) = (sky_fill_index, first_blit_index) {
+        check!(
+            fill_at < blit_at,
+            "sky FillRect must precede the first background Blit"
+        );
+    }
 
     check!(
         screen.level_jn_bytes() == Some(level_bytes),

@@ -42,6 +42,24 @@ const LEVEL_MESSAGEBOX_JSON: &str =
 /// are not yet exercised.
 const EPISODE_SAVE_PREFIX: &str = "JN1";
 
+/// Sky / game-area background color for episode 1 levels, as a VGA palette
+/// index.
+///
+/// The Java reference port (`AbstractBackgroundJillLevel`) fills the
+/// off-screen background buffer with `colorMap[0]`, which in the shipped
+/// `jill_color_map.properties` is the transparent sentinel (`!000000`). That
+/// produces a black sky once composited over the cleared framebuffer, which
+/// does not match the saturated dark blue sky the original DOS executable
+/// renders for episode 1.  No JN field, `JillLevelConfiguration` member, or
+/// per-level DMA palette carries this color either; the original engine
+/// effectively hard-codes the sky per episode.  Episode 1 uses palette
+/// index 1 (`0x0000A2`).
+///
+/// When JN2 / JN3 episode support lands this constant should be replaced
+/// with an episode-aware lookup; see
+/// `docs/port/06-episode-1-gameplay.md`.
+pub const EPISODE_1_SKY_COLOR: u8 = 1;
+
 /// Cached level message-box layout parsed from [`LEVEL_MESSAGEBOX_JSON`].
 static MESSAGE_BOX: LazyLock<MessageBoxLayout> = LazyLock::new(parse_message_box_layout);
 
@@ -131,6 +149,12 @@ pub struct LevelScreen {
     /// [`InboxHandler`].  Cleared after each tick because no inter-entity
     /// subscribers exist yet; child issues attach real subscribers here.
     entity_dispatcher: MessageDispatcher,
+    /// VGA palette index used to fill the game area before any tile blits.
+    ///
+    /// See [`EPISODE_1_SKY_COLOR`] for the sourcing rationale; supplied by the
+    /// caller at construction so future episode support can vary the value
+    /// without changing this screen.
+    sky_color: u8,
 }
 
 impl LevelScreen {
@@ -142,12 +166,17 @@ impl LevelScreen {
     /// used by the object and background entity factories.  The cache's DMA
     /// is cloned into the screen for the legacy `render_map_background` path
     /// so the screen can render without further cache access.
+    ///
+    /// `sky_color` is the VGA palette index used to fill the game area before
+    /// any background tile blits each tick.  Callers loading an episode 1
+    /// level should pass [`EPISODE_1_SKY_COLOR`].
     pub fn new(
         jn: JnFile,
         jn_bytes: Vec<u8>,
         cache: &AssetCache,
         level_number: i32,
         dispatcher: &mut MessageDispatcher,
+        sky_color: u8,
     ) -> Self {
         let inbox: Inbox = Arc::new(Mutex::new(Vec::new()));
         dispatcher.subscribe(
@@ -188,20 +217,32 @@ impl LevelScreen {
             objects,
             backgrounds,
             entity_dispatcher: MessageDispatcher::new(),
+            sky_color,
         }
     }
 
     /// Parses `bytes` as a level JN file and wraps it in a [`LevelScreen`].
     ///
     /// Returns the underlying [`JnReadError`] when parsing fails.
+    ///
+    /// `sky_color` is forwarded to [`LevelScreen::new`]; episode 1 callers
+    /// should pass [`EPISODE_1_SKY_COLOR`].
     pub fn from_bytes(
         bytes: Vec<u8>,
         cache: &AssetCache,
         level_number: i32,
         dispatcher: &mut MessageDispatcher,
+        sky_color: u8,
     ) -> Result<Self, JnReadError> {
         let jn = JnFile::from_bytes(bytes.clone())?;
-        Ok(Self::new(jn, bytes, cache, level_number, dispatcher))
+        Ok(Self::new(
+            jn,
+            bytes,
+            cache,
+            level_number,
+            dispatcher,
+            sky_color,
+        ))
     }
 
     /// Returns the current viewport `(x, y)` offset in pixels.
@@ -244,14 +285,32 @@ impl LevelScreen {
         self.pending = Some(next);
     }
 
-    /// Renders the base frame: the framebuffer-clear baseline plus the
-    /// static level background.
+    /// Renders the base frame: the framebuffer-clear baseline, the per-level
+    /// sky fill over the game area, and the static level background.
+    ///
+    /// The presenter already clears the framebuffer to palette index 0 every
+    /// frame, so the leading [`RenderCommand::Clear`] here is redundant with
+    /// it; it is retained as an explicit baseline so a downstream caller that
+    /// executes the screen's commands against a buffer it did not clear still
+    /// sees a deterministic starting state.  The [`RenderCommand::FillRect`]
+    /// that follows fills only the game-area sub-region with [`self.sky_color`]
+    /// so transparent map cells (map code 0) reveal the per-episode sky
+    /// instead of the framebuffer's palette-index-0 clear.
     ///
     /// The message-box overlay is intentionally not included here; the tick
     /// loop appends it after the per-entity draw commands so the box paints
     /// on top of the level and any objects in front of it.
     fn render_base_frame(&self) -> Vec<RenderCommand> {
-        let mut commands = vec![RenderCommand::Clear { color: 0 }];
+        let mut commands = vec![
+            RenderCommand::Clear { color: 0 },
+            RenderCommand::FillRect {
+                x: GAME_AREA_X,
+                y: GAME_AREA_Y,
+                width: GAME_AREA_W,
+                height: GAME_AREA_H,
+                color: self.sky_color,
+            },
+        ];
         commands.extend(render_map_background(
             &self.jn,
             &self.dma,
@@ -833,8 +892,9 @@ fn parse_message_box_layout() -> MessageBoxLayout {
 #[cfg(test)]
 mod tests {
     use super::{
-        LEVEL_MESSAGEBOX_JSON, LevelScreen, MESSAGE_LINE_HEIGHT, MESSAGE_MAX_LINES,
-        checkpoint_viewport, find_checkpoint, lookup_message_text, render_message_box,
+        EPISODE_1_SKY_COLOR, LEVEL_MESSAGEBOX_JSON, LevelScreen, MESSAGE_LINE_HEIGHT,
+        MESSAGE_MAX_LINES, checkpoint_viewport, find_checkpoint, lookup_message_text,
+        render_message_box,
     };
     use openjill_core::layout::LEVEL_MESSAGE_TICKS;
     use openjill_core::runtime::RuntimeState;
@@ -895,8 +955,14 @@ mod tests {
     ) -> (LevelScreen, MessageDispatcher) {
         let mut dispatcher = MessageDispatcher::new();
         let cache = synthetic_cache();
-        let screen = LevelScreen::from_bytes(bytes, &cache, level_number, &mut dispatcher)
-            .expect("synthetic level JN should parse");
+        let screen = LevelScreen::from_bytes(
+            bytes,
+            &cache,
+            level_number,
+            &mut dispatcher,
+            EPISODE_1_SKY_COLOR,
+        )
+        .expect("synthetic level JN should parse");
         (screen, dispatcher)
     }
 
@@ -1295,8 +1361,9 @@ mod tests {
         dispatcher.clear();
         let bytes = jn_bytes_with_objects(&[]);
         let cache = synthetic_cache();
-        let mut screen = LevelScreen::from_bytes(bytes, &cache, 1, &mut dispatcher)
-            .expect("synthetic level JN should parse");
+        let mut screen =
+            LevelScreen::from_bytes(bytes, &cache, 1, &mut dispatcher, EPISODE_1_SKY_COLOR)
+                .expect("synthetic level JN should parse");
         let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
         assert!(
             result.transition.is_none(),
@@ -1328,6 +1395,91 @@ mod tests {
                 .any(|cmd| matches!(cmd, RenderCommand::Clear { .. })),
             "tick must emit a Clear baseline command; got {:?}",
             result.commands
+        );
+    }
+
+    /// Unit under test: `LevelScreen::tick` emits a sky `FillRect` over the
+    /// game area immediately after the baseline `Clear` and before any
+    /// background tile blits.
+    ///
+    /// Preconditions: synthetic level 1 screen built with
+    /// [`EPISODE_1_SKY_COLOR`]; no objects and an empty background grid so
+    /// no per-entity draws appear before the level base layer.
+    ///
+    /// Invariants asserted: a `FillRect` whose rectangle equals the
+    /// `(GAME_AREA_X, GAME_AREA_Y, GAME_AREA_W, GAME_AREA_H)` window and whose
+    /// `color` matches `EPISODE_1_SKY_COLOR` is emitted exactly once; its
+    /// position in the command list is greater than the `Clear` baseline
+    /// (so the sky paints over the clear) and less than any background
+    /// `Blit` (so blits paint over the sky).
+    #[test]
+    fn tick_emits_sky_fill_rect_after_clear_and_before_blits() {
+        use openjill_core::layout::{GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
+
+        let clear_index = result
+            .commands
+            .iter()
+            .position(|cmd| matches!(cmd, RenderCommand::Clear { .. }))
+            .expect("tick must emit a Clear baseline command");
+        let sky_index = result
+            .commands
+            .iter()
+            .position(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::FillRect {
+                        x,
+                        y,
+                        width,
+                        height,
+                        color,
+                    } if *x == GAME_AREA_X
+                        && *y == GAME_AREA_Y
+                        && *width == GAME_AREA_W
+                        && *height == GAME_AREA_H
+                        && *color == EPISODE_1_SKY_COLOR
+                )
+            })
+            .expect("tick must emit a sky FillRect covering the game area");
+
+        assert!(
+            sky_index > clear_index,
+            "sky FillRect must follow the baseline Clear; commands: {:?}",
+            result.commands
+        );
+
+        if let Some(blit_index) = result
+            .commands
+            .iter()
+            .position(|cmd| matches!(cmd, RenderCommand::Blit { .. }))
+        {
+            assert!(
+                sky_index < blit_index,
+                "sky FillRect must precede the first Blit; commands: {:?}",
+                result.commands
+            );
+        }
+    }
+
+    /// Unit under test: [`EPISODE_1_SKY_COLOR`] resolves to the dark blue
+    /// VGA palette entry the original DOS episode 1 sky uses.
+    ///
+    /// Invariants asserted: the constant equals palette index 1, and that
+    /// palette index in the embedded VGA palette is `(0x00, 0x00, 0xA2)`.
+    #[test]
+    fn episode_1_sky_color_is_palette_index_one_dark_blue() {
+        assert_eq!(
+            EPISODE_1_SKY_COLOR, 1,
+            "episode 1 sky color must be VGA palette index 1"
+        );
+        let palette = openjill_core::JILL_VGA_PALETTE;
+        assert_eq!(
+            palette[EPISODE_1_SKY_COLOR as usize],
+            [0x00, 0x00, 0xA2],
+            "VGA palette index 1 must be the saturated dark blue used by JN1 sky"
         );
     }
 
@@ -1417,8 +1569,9 @@ mod tests {
         bytes[cell_off..cell_off + 2].copy_from_slice(&1u16.to_le_bytes());
 
         let mut dispatcher = MessageDispatcher::new();
-        let mut screen = LevelScreen::from_bytes(bytes, &cache, 1, &mut dispatcher)
-            .expect("synthetic level JN should parse");
+        let mut screen =
+            LevelScreen::from_bytes(bytes, &cache, 1, &mut dispatcher, EPISODE_1_SKY_COLOR)
+                .expect("synthetic level JN should parse");
 
         // Force the viewport to a known non-zero offset so the screen-pos
         // sign convention is exercised: viewport_x = -16 means the world

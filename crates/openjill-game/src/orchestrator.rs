@@ -13,7 +13,7 @@ use crate::asset_cache::{AssetCache, AssetError};
 use crate::screens::intro_screens::{
     credits_screen, noisemaker_screen, ordering_info_screen, story_screen,
 };
-use crate::screens::level_screen::LevelScreen;
+use crate::screens::level_screen::{EPISODE_1_SKY_COLOR, LevelScreen};
 use crate::screens::map_screen::MapScreen;
 use crate::screens::start_menu::StartMenuScreen;
 
@@ -57,7 +57,8 @@ fn load_level_screen(
         .resolve_path_case_insensitive(file)
         .map_err(LevelLoadError::Resolve)?;
     let bytes = std::fs::read(&path).map_err(LevelLoadError::Read)?;
-    LevelScreen::from_bytes(bytes, cache, level_number, dispatcher).map_err(LevelLoadError::Parse)
+    LevelScreen::from_bytes(bytes, cache, level_number, dispatcher, EPISODE_1_SKY_COLOR)
+        .map_err(LevelLoadError::Parse)
 }
 
 /// Owns the current screen handler and drives the game tick and transition loop.
@@ -288,10 +289,14 @@ impl GameOrchestrator {
                     .filter(|(_, cached_file)| cached_file.eq_ignore_ascii_case(file.as_str()))
                     .map(|(bytes, _)| bytes.clone());
                 let level_result = match cached {
-                    Some(bytes) => {
-                        LevelScreen::from_bytes(bytes, &self.cache, number, &mut self.dispatcher)
-                            .map_err(LevelLoadError::Parse)
-                    }
+                    Some(bytes) => LevelScreen::from_bytes(
+                        bytes,
+                        &self.cache,
+                        number,
+                        &mut self.dispatcher,
+                        EPISODE_1_SKY_COLOR,
+                    )
+                    .map_err(LevelLoadError::Parse),
                     None => load_level_screen(
                         &self.data_dir,
                         &self.cache,
@@ -330,6 +335,7 @@ impl GameOrchestrator {
                     &self.cache,
                     level_number,
                     &mut self.dispatcher,
+                    EPISODE_1_SKY_COLOR,
                 ) {
                     Ok(screen) => {
                         self.handler = Box::new(screen);
