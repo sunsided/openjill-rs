@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use openjill_core::{ClipRect, Palette, RenderCommand};
+use openjill_core::{ClipRect, FontSize, Palette, RenderCommand};
 use openjill_data::sha::{ShaFile, ShaTile, ShaTileSet};
 use thiserror::Error;
 use wgpu::{
@@ -31,13 +31,45 @@ const RGBA_BUFFER_BYTES: usize = FRAMEBUFFER_PIXELS * 4;
 /// Native game aspect ratio used for letterbox and pillarbox scaling.
 const GAME_ASPECT_RATIO: f32 = FRAMEBUFFER_WIDTH as f32 / FRAMEBUFFER_HEIGHT as f32;
 
+/// Pixel value emitted by [`DecodedGlyphTile::from_sha_tile`] for transparent
+/// background pixels.
+///
+/// SHA font tilesets store glyph pixels at the tileset's `bit_depth` (typically
+/// 2 bits per pixel for Jill's `JILL1.SHA` fonts), with the maximum-value
+/// pixel acting as the transparent background and the lower values (`1`, `2`
+/// for `bit_depth == 2`) acting as solid / anti-aliased foreground.  To keep
+/// the [`draw_text_indexed`] / [`draw_text_colorized_indexed`] hot loops
+/// simple, the decoder normalises every glyph's background pixels to this
+/// sentinel.  Any non-sentinel pixel writes the requested color index.
+const FONT_GLYPH_TRANSPARENT_PIXEL: u8 = 0;
+
+/// Palette index offset added to the caller's logical EGA color when
+/// rendering [`RenderCommand::DrawText`].
+///
+/// Mirrors `TextManager.BACK_COLOR_SHIFT = 8` in the Java reference, which
+/// promotes the dark EGA indices `0..=7` to their bright EGA counterparts
+/// `8..=15` for all text rendering paths
+/// (`drawSmallText` / `drawBigText` / `grapSmallLetter`).
+const TEXT_COLOR_BRIGHT_SHIFT: u8 = 8;
+
+/// Highest palette index reachable through the bright-EGA text shift,
+/// matching `TextManager.BACKGROUND_COLOR_WHITE` in the Java reference
+/// (`COLOR_WHITE + BACK_COLOR_SHIFT = 15`).
+const BRIGHT_EGA_MAX: u8 = 15;
+
 /// Decoded SHA font glyph tiles used by [`Presenter::draw_text`].
 ///
 /// Construct this wrapper with [`ShaFontTiles::from_tileset`] after loading a
 /// font tileset from `JILL1.SHA`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShaFontTiles {
-    /// Glyph tiles in printable-ASCII order (`index = codepoint - 32`).
+    /// Glyph tiles indexed by raw ASCII codepoint (`index = c as u8`).
+    ///
+    /// `JILL1.SHA` font tilesets carry 128 entries whose glyph at index `c`
+    /// corresponds to ASCII codepoint `c`.  Empirically tile `65` renders the
+    /// letter `A`, tile `33` renders `!`, and so on — the layout matches the
+    /// raw codepoint rather than the printable-ASCII offset `c - 32` used by
+    /// some other DOS fonts.
     glyphs: Vec<DecodedGlyphTile>,
 }
 
@@ -49,21 +81,38 @@ impl ShaFontTiles {
                 tileset_index: tileset.entry_index(),
             });
         }
+        let bit_depth = tileset.bit_depth();
         let mut glyphs = Vec::with_capacity(tileset.tiles().len());
         for tile in tileset.tiles() {
-            glyphs.push(DecodedGlyphTile::from_sha_tile(tile)?);
+            glyphs.push(DecodedGlyphTile::from_sha_tile(tile, bit_depth)?);
         }
         Ok(Self { glyphs })
     }
 
-    /// Returns the glyph tile for `character`, replacing unsupported values with space.
+    /// Returns the glyph tile for `character`, replacing characters that
+    /// are not printable ASCII or space with the space glyph at the
+    /// codepoint position `0x20`.
+    ///
+    /// Printable ASCII (`0x21..=0x7E`) and space (`0x20`) look up their
+    /// raw codepoint; everything else (control codes, non-ASCII) falls
+    /// back to space rather than rendering a stray printable glyph at the
+    /// truncated `c as u8` position.  ASCII codepoints `0x01..=0x08` are
+    /// explicitly allowed through because the bundled font tilesets carry
+    /// the eight-frame menu cursor animation at those positions and
+    /// callers (the start menu cursor) need to draw it.
     fn glyph_for_character(&self, character: char) -> Option<&DecodedGlyphTile> {
-        let glyph_index = if character.is_ascii_graphic() || character == ' ' {
-            usize::from(character as u8 - b' ')
+        let glyph_index = if character.is_ascii_graphic()
+            || character == ' '
+            || matches!(character as u32, 0x01..=0x08)
+        {
+            usize::from(character as u8)
         } else {
-            0
+            usize::from(b' ')
         };
-        self.glyphs.get(glyph_index).or_else(|| self.glyphs.first())
+        self.glyphs
+            .get(glyph_index)
+            .or_else(|| self.glyphs.get(usize::from(b' ')))
+            .or_else(|| self.glyphs.first())
     }
 }
 
@@ -82,8 +131,20 @@ struct DecodedGlyphTile {
 }
 
 impl DecodedGlyphTile {
-    /// Decodes one SHA tile record into a glyph tile.
-    fn from_sha_tile(tile: &ShaTile) -> Result<Self, TileDecodeError> {
+    /// Decodes one SHA tile record into a glyph tile, normalising the
+    /// tileset's transparent-pixel value to [`FONT_GLYPH_TRANSPARENT_PIXEL`].
+    ///
+    /// SHA font tilesets store every pixel as a 1-byte value in the range
+    /// `0 .. (1 << bit_depth)`, with the largest value (e.g. `3` for
+    /// `bit_depth == 2`) reserved for the transparent background and the
+    /// lower values acting as foreground / anti-aliased intensities.  The
+    /// renderer's blit and colorise-and-blit paths use a single sentinel
+    /// pixel value to drop transparent pixels, so this constructor remaps
+    /// every `transparent_value` it sees to [`FONT_GLYPH_TRANSPARENT_PIXEL`]
+    /// up-front.  Glyphs whose tileset reports `bit_depth >= 8` retain their
+    /// raw pixel values because no per-tileset transparent sentinel exists
+    /// at that depth.
+    fn from_sha_tile(tile: &ShaTile, bit_depth: u8) -> Result<Self, TileDecodeError> {
         if tile.data_format() != 0 {
             return Err(TileDecodeError::UnknownType {
                 tileset_index: tile.tileset_index(),
@@ -91,8 +152,23 @@ impl DecodedGlyphTile {
                 data_format: tile.data_format(),
             });
         }
+        let pixels = if bit_depth < 8 {
+            let transparent = (1_u8 << bit_depth).wrapping_sub(1);
+            tile.indexed_pixels()
+                .iter()
+                .map(|&pixel| {
+                    if pixel == transparent {
+                        FONT_GLYPH_TRANSPARENT_PIXEL
+                    } else {
+                        pixel
+                    }
+                })
+                .collect()
+        } else {
+            tile.indexed_pixels().to_vec()
+        };
         Ok(Self {
-            pixels: tile.indexed_pixels().to_vec(),
+            pixels,
             width: tile.width(),
             height: tile.height(),
         })
@@ -655,20 +731,27 @@ fn fill_rect_indexed(framebuffer: &mut [u8], x: i32, y: i32, width: u32, height:
 
 /// Dispatches a slice of render commands onto a 320×200 indexed framebuffer.
 ///
-/// Resolves [`RenderCommand::Blit`] tile data from `sha` by matching the command's `tileset`
-/// value against each [`ShaTileSet::entry_index`]. The first font tileset in `sha` is decoded
-/// once and reused for all [`RenderCommand::DrawText`] commands; glyph masks are filled with
-/// each command's `color_index`. `DrawText` commands are skipped silently when no font tileset
-/// is present or decoding fails.
+/// Resolves [`RenderCommand::Blit`] tile data from `sha` by matching the
+/// command's `tileset` value against each [`ShaTileSet::entry_index`].  Two
+/// font tilesets are decoded once per call and selected per
+/// [`RenderCommand::DrawText`] via the command's [`FontSize`] field:
+/// [`FontSize::Small`] uses the second font tileset found in `sha` (the
+/// 6x6 body-text font in the shipped `JILL1.SHA`), and [`FontSize::Big`]
+/// uses the first font tileset (the 8x8 `bigtext` font).  When the
+/// requested font is not present in `sha` the renderer falls back to
+/// whichever font is available so partial fonts still render text; if
+/// neither font is present the `DrawText` is skipped silently.
 fn execute_commands_on_framebuffer(
     framebuffer: &mut [u8],
     commands: &[RenderCommand],
     sha: &ShaFile,
 ) {
-    let font = sha
-        .tilesets()
-        .iter()
-        .find(|ts| ts.is_font())
+    let mut font_tilesets = sha.tilesets().iter().filter(|ts| ts.is_font());
+    let big_font = font_tilesets
+        .next()
+        .and_then(|ts| ShaFontTiles::from_tileset(ts).ok());
+    let small_font = font_tilesets
+        .next()
         .and_then(|ts| ShaFontTiles::from_tileset(ts).ok());
 
     for command in commands {
@@ -709,9 +792,23 @@ fn execute_commands_on_framebuffer(
                 x,
                 y,
                 color_index,
+                font,
             } => {
-                if let Some(ref f) = font {
-                    draw_text_colorized_indexed(framebuffer, text, *x, *y, f, *color_index);
+                let selected = match font {
+                    FontSize::Small => small_font.as_ref().or(big_font.as_ref()),
+                    FontSize::Big => big_font.as_ref().or(small_font.as_ref()),
+                };
+                if let Some(f) = selected {
+                    // Promote the caller's logical EGA color to the matching
+                    // bright-EGA index, matching `BACK_COLOR_SHIFT = 8` and
+                    // the `BACKGROUND_COLOR_WHITE` clamp in
+                    // `TextManagerImpl.initColorTextMap`.  Without this shift
+                    // text renders at the dark half of the EGA palette and
+                    // looks noticeably dimmer than the Java reference.
+                    let bright = color_index
+                        .saturating_add(TEXT_COLOR_BRIGHT_SHIFT)
+                        .min(BRIGHT_EGA_MAX);
+                    draw_text_colorized_indexed(framebuffer, text, *x, *y, f, bright);
                 }
             }
             RenderCommand::FillRect {
@@ -811,7 +908,7 @@ mod tests {
         draw_text_colorized_indexed, draw_text_indexed, execute_commands_on_framebuffer,
         expand_indexed_framebuffer, fill_rect_indexed, select_surface_format,
     };
-    use openjill_core::{Palette, RenderCommand};
+    use openjill_core::{FontSize, Palette, RenderCommand};
     use openjill_data::sha::ShaFile;
     use wgpu::TextureFormat;
 
@@ -995,14 +1092,20 @@ mod tests {
 
     /// Unit under test: glyph placement in `draw_text_indexed`.
     ///
-    /// Preconditions: a synthetic font contains at least the space glyph and the `!` glyph; the
-    /// framebuffer starts at all zeroes and text is drawn at a known offset.
+    /// Preconditions: a synthetic font carries 128 glyphs indexed by raw
+    /// ASCII codepoint, with the `!` slot (codepoint 33) holding a 2x1
+    /// glyph and every other slot a 1x1 transparent placeholder; the
+    /// framebuffer starts at all zeroes.
     ///
-    /// Invariants asserted: drawing `"!"` writes exactly that glyph's pixels at the requested X/Y
-    /// origin, proving character-to-glyph lookup (`index = c - 32`) and blit destination math.
+    /// Invariants asserted: drawing `"!"` writes exactly that glyph's
+    /// pixels at the requested X/Y origin, proving the character-to-glyph
+    /// lookup uses the raw ASCII codepoint and the blit destination math
+    /// is correct.
     #[test]
     fn draw_text_indexed_blits_single_character_at_expected_offset() {
-        let sha = parse_synthetic_sha_with_font_tiles(&[(1, 1, 0, &[0]), (2, 1, 0, &[9, 8])]);
+        let mut tiles = ascii_indexed_glyph_table();
+        tiles[usize::from(b'!')] = (2, 1, 0, vec![9_u8, 8]);
+        let sha = parse_synthetic_sha_with_owned_font_tiles(&tiles);
         let font = ShaFontTiles::from_tileset(&sha.tilesets()[0])
             .expect("font tileset should decode successfully");
         let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
@@ -1015,14 +1118,19 @@ mod tests {
 
     /// Unit under test: unsupported-character fallback in `draw_text_indexed`.
     ///
-    /// Preconditions: a synthetic font provides a non-transparent space glyph and text contains a
-    /// newline plus an out-of-range non-ASCII character.
+    /// Preconditions: a synthetic font carries 128 glyphs indexed by raw
+    /// ASCII codepoint, with the space slot (codepoint 32) holding a single
+    /// opaque pixel and every other slot a 1x1 transparent placeholder;
+    /// text contains a newline plus an out-of-range non-ASCII character.
     ///
-    /// Invariants asserted: each unsupported character is replaced with the space glyph, so both
-    /// draws write the space glyph pixel value at the corresponding destination.
+    /// Invariants asserted: each unsupported character is replaced with
+    /// the space glyph, so both draws write the space glyph pixel value at
+    /// the corresponding destination.
     #[test]
     fn draw_text_indexed_replaces_unsupported_characters_with_space_glyph() {
-        let sha = parse_synthetic_sha_with_font_tiles(&[(1, 1, 0, &[7])]);
+        let mut tiles = ascii_indexed_glyph_table();
+        tiles[usize::from(b' ')] = (1, 1, 0, vec![7_u8]);
+        let sha = parse_synthetic_sha_with_owned_font_tiles(&tiles);
         let font = ShaFontTiles::from_tileset(&sha.tilesets()[0])
             .expect("font tileset should decode successfully");
         let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
@@ -1033,16 +1141,21 @@ mod tests {
         assert_eq!(framebuffer[4 * FRAMEBUFFER_WIDTH + 3], 7);
     }
 
-    /// Unit under test: colorized glyph mask rendering in `draw_text_colorized_indexed`.
+    /// Unit under test: colorized glyph mask rendering in
+    /// `draw_text_colorized_indexed`.
     ///
-    /// Preconditions: a synthetic font provides a `!` glyph with one non-zero pixel and one
-    /// transparent pixel; the framebuffer starts at all zeroes.
+    /// Preconditions: a synthetic font with the `!` slot carrying one
+    /// non-zero pixel and one transparent pixel; the framebuffer starts at
+    /// all zeroes.
     ///
-    /// Invariants asserted: non-zero glyph pixels are written with the requested color index,
-    /// while transparent glyph pixels remain untouched.
+    /// Invariants asserted: non-zero glyph pixels are written with the
+    /// requested color index, while transparent glyph pixels remain
+    /// untouched.
     #[test]
     fn draw_text_colorized_indexed_applies_requested_color_index() {
-        let sha = parse_synthetic_sha_with_font_tiles(&[(1, 1, 0, &[0]), (2, 1, 0, &[9, 0])]);
+        let mut tiles = ascii_indexed_glyph_table();
+        tiles[usize::from(b'!')] = (2, 1, 0, vec![9_u8, 0]);
+        let sha = parse_synthetic_sha_with_owned_font_tiles(&tiles);
         let font = ShaFontTiles::from_tileset(&sha.tilesets()[0])
             .expect("font tileset should decode successfully");
         let mut framebuffer = [0_u8; FRAMEBUFFER_PIXELS];
@@ -1051,6 +1164,25 @@ mod tests {
 
         assert_eq!(framebuffer[3 * FRAMEBUFFER_WIDTH + 10], 12);
         assert_eq!(framebuffer[3 * FRAMEBUFFER_WIDTH + 11], 0);
+    }
+
+    /// Builds a 128-entry glyph table where every codepoint defaults to a
+    /// 1x1 transparent tile so callers can overwrite individual ASCII
+    /// codepoints without filling the unused slots.
+    fn ascii_indexed_glyph_table() -> Vec<(u8, u8, u8, Vec<u8>)> {
+        // Width=1, height=1, data_format=0, pixel value 0 (transparent).
+        vec![(1_u8, 1_u8, 0_u8, vec![0_u8]); 128]
+    }
+
+    /// Builds and parses a synthetic SHA payload that carries one font
+    /// tileset whose tile records are owned by the caller (allows variable
+    /// per-entry pixel lengths).
+    fn parse_synthetic_sha_with_owned_font_tiles(tile_specs: &[(u8, u8, u8, Vec<u8>)]) -> ShaFile {
+        let borrowed: Vec<(u8, u8, u8, &[u8])> = tile_specs
+            .iter()
+            .map(|(w, h, fmt, pixels)| (*w, *h, *fmt, pixels.as_slice()))
+            .collect();
+        parse_synthetic_sha_with_font_tiles(&borrowed)
     }
 
     /// Builds and parses a minimal SHA payload containing one font tileset with caller-provided
@@ -1223,26 +1355,64 @@ mod tests {
         );
     }
 
-    /// Unit under test: `execute_commands_on_framebuffer` with `RenderCommand::DrawText`.
+    /// Unit under test: `execute_commands_on_framebuffer` with
+    /// `RenderCommand::DrawText`.
     ///
-    /// Preconditions: a synthetic SHA has a font tileset containing a `!` glyph with one
-    /// non-zero pixel; the command requests palette index 13.
+    /// Preconditions: a synthetic SHA carries 128 ASCII-indexed font
+    /// glyphs whose `!` slot (codepoint 33) holds one non-zero pixel; the
+    /// command requests logical color 5.
     ///
-    /// Invariants asserted: the rendered glyph pixel uses the command's `color_index` rather
-    /// than the source glyph's stored pixel value.
+    /// Invariants asserted: the rendered glyph pixel uses
+    /// `color_index + TEXT_COLOR_BRIGHT_SHIFT (8)`, mirroring
+    /// `TextManager.initColorTextMap` in the Java reference: a logical
+    /// foreground color is always rendered as the matching bright-EGA index.
     #[test]
-    fn execute_commands_on_framebuffer_draw_text_applies_color_index() {
-        let sha = parse_synthetic_sha_with_font_tiles(&[(1, 1, 0, &[0]), (1, 1, 0, &[9])]);
+    fn execute_commands_on_framebuffer_draw_text_applies_bright_ega_color() {
+        let mut tiles = ascii_indexed_glyph_table();
+        tiles[usize::from(b'!')] = (1, 1, 0, vec![9_u8]);
+        let sha = parse_synthetic_sha_with_owned_font_tiles(&tiles);
         let commands = [RenderCommand::DrawText {
             text: "!".to_owned(),
             x: 4,
             y: 6,
-            color_index: 13,
+            color_index: 5,
+            font: FontSize::Small,
         }];
         let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
 
         execute_commands_on_framebuffer(&mut fb, &commands, &sha);
 
-        assert_eq!(fb[6 * FRAMEBUFFER_WIDTH + 4], 13);
+        assert_eq!(
+            fb[6 * FRAMEBUFFER_WIDTH + 4],
+            5 + super::TEXT_COLOR_BRIGHT_SHIFT
+        );
+    }
+
+    /// Unit under test: `execute_commands_on_framebuffer` with
+    /// `RenderCommand::DrawText` and a logical color above 7.
+    ///
+    /// Preconditions: the command's `color_index` plus the bright-EGA shift
+    /// would exceed 15.
+    ///
+    /// Invariants asserted: the resulting pixel index saturates at
+    /// `BRIGHT_EGA_MAX (15)`, matching the
+    /// `colorIndex > BACKGROUND_COLOR_WHITE` clamp in the Java reference.
+    #[test]
+    fn execute_commands_on_framebuffer_draw_text_clamps_above_bright_white() {
+        let mut tiles = ascii_indexed_glyph_table();
+        tiles[usize::from(b'!')] = (1, 1, 0, vec![9_u8]);
+        let sha = parse_synthetic_sha_with_owned_font_tiles(&tiles);
+        let commands = [RenderCommand::DrawText {
+            text: "!".to_owned(),
+            x: 4,
+            y: 6,
+            color_index: 12,
+            font: FontSize::Small,
+        }];
+        let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
+
+        execute_commands_on_framebuffer(&mut fb, &commands, &sha);
+
+        assert_eq!(fb[6 * FRAMEBUFFER_WIDTH + 4], super::BRIGHT_EGA_MAX);
     }
 }

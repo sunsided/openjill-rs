@@ -18,7 +18,7 @@ pub use entity::{
 pub use message::{
     ChangeLevelPayload, MessageDispatcher, MessageHandler, MessagePayload, MessageType,
 };
-pub use render::{ClipRect, RenderCommand};
+pub use render::{ClipRect, FontSize, RenderCommand};
 pub use runtime::{InventoryObject, MAP_LEVEL, RuntimeState};
 pub use screen::{ScreenHandler, ScreenTransition, SoundEvent, TickResult};
 
