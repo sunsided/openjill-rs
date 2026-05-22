@@ -6,22 +6,27 @@
 //! viewport-translated game area, dispatch on the JN `object_type` id,
 //! and emit one [`RenderCommand`] per visible object.
 //!
-//! Only the object types that `INTRO.JN1` actually places inside the
-//! start-menu viewport are wired here.  The start menu's
-//! `INTRO.JN1` carries:
+//! The dispatch table is limited to the static, non-interactive object
+//! types `INTRO.JN1` uses for its title and start-menu screens:
 //!
-//! - one type 0 record (the static-pose Jill sprite in the right
-//!   half of the playfield), and
-//! - two type 20 records (the "THIS GAME IS / SHAREWARE" notice
-//!   below it).
+//! - type 0 - static-pose Jill sprite (rendered with the
+//!   forward-facing stand tile from `JILL1.SHA` tileset 8).
+//!   Used by the start menu's right-half Jill at world (1960, 944).
+//! - type 20 - small-font `TextTileManager` text.
+//!   Used by the start menu's "THIS GAME IS / SHAREWARE" notice.
+//! - type 21 - big-font `TextTileManager` text.
+//!   Used elsewhere in `INTRO.JN1` (title / credit screens).
 //!
-//! Other object types intersecting the viewport are silently
-//! skipped; the start menu does not exercise enemy AI, projectiles,
-//! or interactive pickups.
+//! Other object types intersecting the viewport are silently skipped;
+//! enemy AI, projectiles, checkpoints, doors, lifts, and other
+//! interactive object types belong to the per-screen object entity
+//! loop rather than to this static draw helper.
 
 use openjill_core::layout::{GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
 use openjill_core::{FontSize, RenderCommand};
 use openjill_data::jn::{JnFile, JnObject};
+
+use crate::status_bar::GAME_AREA_CLIP;
 
 /// JN object type for the player / static-pose Jill sprite.
 ///
@@ -126,6 +131,12 @@ pub fn render_intro_objects(jn: &JnFile, offset_x: i32, offset_y: i32) -> Vec<Re
 /// running frames are gameplay-only; this helper is intentionally
 /// fixed to a single tile so the start menu does not depend on the
 /// player state machine.
+///
+/// The returned `Blit` carries [`GAME_AREA_CLIP`] so a stand sprite
+/// straddling the game-area edge cannot bleed past it into the
+/// surrounding status-bar frame, matching the per-command clip
+/// `LevelScreen::translate_object_command` already applies on its
+/// gameplay draw path.
 fn render_player_stand(x: i32, y: i32) -> RenderCommand {
     RenderCommand::Blit {
         tileset: PLAYER_TILESET,
@@ -133,7 +144,7 @@ fn render_player_stand(x: i32, y: i32) -> RenderCommand {
         x,
         y,
         opaque: false,
-        clip: None,
+        clip: Some(GAME_AREA_CLIP),
     }
 }
 

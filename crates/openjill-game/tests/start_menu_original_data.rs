@@ -3,7 +3,7 @@
 //! `data/original/JILL1` path is available.
 
 use assert2::check;
-use openjill_core::layout::{GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
+use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{ActiveInput, InputCommand, ScreenHandler, ScreenTransition};
 use openjill_data::DataDirectory;
@@ -11,29 +11,27 @@ use openjill_game::asset_cache::AssetCache;
 use openjill_game::screens::start_menu::StartMenuScreen;
 use std::path::{Path, PathBuf};
 
-/// Framebuffer X of the start-menu box's top-left corner (from
-/// `start_menu.json` `x` = 72).
-const MENU_BOX_X: i32 = 72;
+/// `JILL1.SHA` tileset that owns every player sprite frame
+/// (`PlayerStandConst.TILESET_INDEX = 8`).  Matching on this tileset
+/// distinguishes the start-menu Jill `Blit` from the many background
+/// tile blits emitted on the same tick.
+const PLAYER_TILESET: u8 = 8;
 
-/// Framebuffer Y of the start-menu box's top-left corner (from
-/// `start_menu.json` `y` = 64).
-const MENU_BOX_Y: i32 = 64;
+/// Forward-facing stand tile inside [`PLAYER_TILESET`]
+/// (`PlayerStandConst.TILE_MIDDLE_INDEX = 16`).
+const PLAYER_TILE_STAND_MIDDLE: u16 = 16;
 
-/// Conservative right edge of the start-menu box in framebuffer pixels.
+/// Framebuffer X the start menu's Jill stand-pose sprite must land at.
 ///
-/// The actual right edge derives from the title / item text width, but
-/// the menu box is known to fit inside `[MENU_BOX_X, MENU_BOX_X + 144]`
-/// for the shipped `start_menu.json` (15-character title plus the
-/// 8-pixel-wide corner / bar frame tiles).  This bound is used by the
-/// integration test to assert that the Jill stand-pose `Blit` lands
-/// strictly to the right of the menu box.
-const MENU_BOX_RIGHT_LIMIT: i32 = MENU_BOX_X + 144;
+/// Derived from the start-menu viewport offset `(-1808, -864)` and the
+/// `INTRO.JN1` player record's world coordinate `(1960, 944)`:
+/// `GAME_AREA_X + (1960 - 1808) = GAME_AREA_X + 152`.
+const JILL_BLIT_X: i32 = GAME_AREA_X + 152;
 
-/// Conservative bottom edge of the start-menu box in framebuffer
-/// pixels.  Mirrors [`MENU_BOX_RIGHT_LIMIT`]: nine items plus three
-/// non-item rows at the 8-pixel small-font row height is well within
-/// 112 pixels.
-const MENU_BOX_BOTTOM_LIMIT: i32 = MENU_BOX_Y + 112;
+/// Framebuffer Y the start menu's Jill stand-pose sprite must land at.
+///
+/// Mirrors [`JILL_BLIT_X`]: `GAME_AREA_Y + (944 - 864) = GAME_AREA_Y + 80`.
+const JILL_BLIT_Y: i32 = GAME_AREA_Y + 80;
 
 /// Environment variable for overriding the data directory.
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
@@ -60,10 +58,10 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
 ///   (background tiles) and at least one `DrawText` command (menu title/items).
 /// - The first idle tick also emits the `INTRO.JN1` object layer: at least
 ///   one `DrawText` whose payload contains the substring `"SHAREWARE"`
-///   (object index 61, world (1968, 1000)) and at least one `Blit` whose
-///   framebuffer position lies inside the game area but outside the
-///   start-menu box (the Jill stand-pose sprite at world (1960, 944),
-///   framebuffer `(GAME_AREA_X + 152, GAME_AREA_Y + 80)`).
+///   (object index 61, world (1968, 1000)) and exactly one `Blit` of
+///   `JILL1.SHA` tileset 8 tile 16 at framebuffer position
+///   `(JILL_BLIT_X, JILL_BLIT_Y)` - the Jill stand-pose sprite from
+///   `INTRO.JN1`'s type 0 player record at world (1960, 944).
 /// - Pressing `ThrowItem` with the default selection (item 0, "play") returns
 ///   `ScreenTransition::Map`.
 /// - Pressing `Pause` (Escape) from the base menu returns
@@ -115,9 +113,6 @@ fn start_menu_constructs_and_renders_with_original_data() {
 
     // The INTRO.JN1 object layer must contribute the shareware notice
     // text and the Jill stand-pose sprite to the same tick.
-    let game_area_right = GAME_AREA_X + GAME_AREA_W as i32;
-    let game_area_bottom = GAME_AREA_Y + GAME_AREA_H as i32;
-
     check!(
         result.commands.iter().any(|c| match c {
             RenderCommand::DrawText { text, .. } => text.contains("SHAREWARE"),
@@ -126,19 +121,28 @@ fn start_menu_constructs_and_renders_with_original_data() {
         "idle tick must emit a DrawText carrying the shareware notice"
     );
 
+    // Match the exact Jill stand-pose Blit: player tileset 8, forward-
+    // facing stand tile 16, and the world-to-framebuffer position the
+    // start-menu viewport offset predicts.  A looser predicate would
+    // match background tile blits inside the game area and could pass
+    // even if the JN object layer never drew Jill.
     check!(
         result.commands.iter().any(|c| match c {
-            RenderCommand::Blit { x, y, .. } => {
-                let inside_game_area = *x >= GAME_AREA_X
-                    && *x < game_area_right
-                    && *y >= GAME_AREA_Y
-                    && *y < game_area_bottom;
-                let outside_menu_box = *x >= MENU_BOX_RIGHT_LIMIT || *y >= MENU_BOX_BOTTOM_LIMIT;
-                inside_game_area && outside_menu_box
+            RenderCommand::Blit {
+                tileset,
+                tile,
+                x,
+                y,
+                ..
+            } => {
+                *tileset == PLAYER_TILESET
+                    && *tile == PLAYER_TILE_STAND_MIDDLE
+                    && *x == JILL_BLIT_X
+                    && *y == JILL_BLIT_Y
             }
             _ => false,
         }),
-        "idle tick must emit a Blit for the Jill stand-pose inside the game area but outside the menu box"
+        "idle tick must emit the Jill stand-pose Blit (tileset 8 tile 16) at (JILL_BLIT_X, JILL_BLIT_Y)"
     );
 
     // Confirming item 0 ("play") transitions to Map.
