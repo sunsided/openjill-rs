@@ -122,12 +122,18 @@ struct MenuLayout {
     back_image: u16,
 }
 
-/// Cursor glyph drawn before the currently selected menu item.
+/// Number of animation frames in the menu cursor.
 ///
-/// The original DOS Jill draws a small bullet/circle here; ASCII codepoint
-/// `0x07` (bell) maps to the bullet glyph in the SHA font tilesets, which
-/// is the closest match to the reference cursor.
-const MENU_CURSOR_CHAR: char = '\u{0007}';
+/// Mirrors `AbstractMenu.NB_CURSOR_IMAGE` from the Java reference: the
+/// small SHA font carries an eight-frame diamond/spinner animation at
+/// codepoints `\u{0001}..=\u{0008}` that the cursor cycles through.
+const MENU_CURSOR_FRAMES: u8 = 8;
+
+/// Palette index used for the menu cursor.
+///
+/// Matches `TextManager.COLOR_WHITE` in the Java reference: the cursor is
+/// always drawn white regardless of the highlighted row's text color.
+const MENU_CURSOR_COLOR: u8 = 7;
 
 /// Pixel size of one menu box frame tile.
 ///
@@ -160,6 +166,11 @@ pub struct StartMenuScreen {
     selected: usize,
     /// Active overlay rendered above the base menu.
     overlay: Overlay,
+    /// Current frame in the menu cursor animation (`0..MENU_CURSOR_FRAMES`).
+    ///
+    /// Advanced once per tick to match `AbstractMenu.drawCursor`'s
+    /// `cursorIndex++` increment in the Java reference.
+    cursor_index: u8,
 }
 
 impl StartMenuScreen {
@@ -172,6 +183,7 @@ impl StartMenuScreen {
             cfg,
             selected: 0,
             overlay: Overlay::None,
+            cursor_index: 0,
         }
     }
 }
@@ -181,6 +193,7 @@ impl ScreenHandler for StartMenuScreen {
     fn tick(&mut self, input: &ActiveInput, _state: &mut RuntimeState) -> TickResult {
         let transition = self.process_input(input);
         let commands = self.render_frame();
+        self.cursor_index = (self.cursor_index + 1) % MENU_CURSOR_FRAMES;
         TickResult {
             commands,
             transition,
@@ -348,7 +361,17 @@ impl StartMenuScreen {
 
     /// Emits `DrawText` commands for the menu title and item list.
     ///
-    /// The selected item is highlighted by drawing an arrow (`">"`) before it.
+    /// Mirrors `AbstractStdMenu.drawPicture` + `AbstractMenu.drawCursor` from
+    /// the Java reference:
+    ///
+    /// * Body text for every item is drawn at `(textX + nbSpaceBefore * 6,
+    ///   textY + (i + 1) * 8)` in its configured palette color, with the four
+    ///   leading spaces baked into the string so the renderer's per-glyph
+    ///   `cursor_x` advance lands the text at the same column the original
+    ///   used.
+    /// * The cursor for the selected row is drawn as a separate, always-white
+    ///   glyph at one space-width past the body's left edge, cycling through
+    ///   the eight-frame animation at codepoints `0x01..=0x08`.
     fn render_menu_text(&self) -> Vec<RenderCommand> {
         let layout = &*MENU_LAYOUT;
         let base_x = layout.x + layout.text_col_px;
@@ -364,21 +387,30 @@ impl StartMenuScreen {
         }];
 
         let spaces = " ".repeat(layout.nb_space_before);
+        let cursor_char =
+            char::from_u32(u32::from(self.cursor_index % MENU_CURSOR_FRAMES) + 1).unwrap_or(' ');
         for (index, item) in layout.items.iter().enumerate() {
             let y = base_y + line_h + index as i32 * line_h;
-            let prefix = if index == self.selected {
-                MENU_CURSOR_CHAR
-            } else {
-                ' '
-            };
-            let text = format!("{prefix}{spaces}{}", item.text);
             commands.push(RenderCommand::DrawText {
-                text,
+                text: format!("{spaces}{}", item.text),
                 x: base_x,
                 y,
                 color_index: item.color,
                 font: FontSize::Small,
             });
+            if index == self.selected {
+                // Leading space pushes the cursor glyph one column past
+                // `base_x`, matching `posCursorX = textX + fontSize` in
+                // the Java reference without exposing per-glyph pixel
+                // widths to this caller.
+                commands.push(RenderCommand::DrawText {
+                    text: format!(" {cursor_char}"),
+                    x: base_x,
+                    y,
+                    color_index: MENU_CURSOR_COLOR,
+                    font: FontSize::Small,
+                });
+            }
         }
 
         commands
