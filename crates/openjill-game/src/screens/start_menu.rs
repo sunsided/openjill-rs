@@ -383,23 +383,38 @@ impl StartMenuScreen {
             x: CONTROL_AREA_X + 5,
             y: CONTROL_AREA_Y + 2,
             color_index: 4,
-            font: FontSize::Big,
+            font: FontSize::Small,
+        });
+        // Thin separator line under the HI SCORES header, mirroring the
+        // dark red rule in the reference screenshot.
+        commands.push(RenderCommand::FillRect {
+            x: CONTROL_AREA_X + 2,
+            y: CONTROL_AREA_Y + 9,
+            width: 60,
+            height: 1,
+            color: 4,
         });
 
-        for (index, entry) in self.cfg.high_scores().iter().take(5).enumerate() {
-            let y = CONTROL_AREA_Y + 16 + index as i32 * 12;
+        // Layout: name column on the left (greenish color 2), score
+        // column on the right (orange-ish color 6).  `JILL1.CFG` carries
+        // 10 slots; render up to the panel's vertical capacity at a
+        // 6-pixel row pitch (the small-font row height).
+        const ROW_HEIGHT: i32 = 6;
+        const MAX_ROWS: usize = 8;
+        for (index, entry) in self.cfg.high_scores().iter().take(MAX_ROWS).enumerate() {
+            let y = CONTROL_AREA_Y + 12 + index as i32 * ROW_HEIGHT;
             commands.push(RenderCommand::DrawText {
-                text: format!("{:>7}", entry.score()),
+                text: entry.name().to_string(),
                 x: CONTROL_AREA_X + 2,
                 y,
-                color_index: 6,
+                color_index: 2,
                 font: FontSize::Small,
             });
             commands.push(RenderCommand::DrawText {
-                text: entry.name().to_string(),
-                x: CONTROL_AREA_X + 30,
+                text: format!("{}", entry.score()),
+                x: CONTROL_AREA_X + 40,
                 y,
-                color_index: 2,
+                color_index: 6,
                 font: FontSize::Small,
             });
         }
