@@ -507,10 +507,19 @@ const PORTRAIT_TILESET: u8 = 24;
 /// Tile placement of the Jill face portrait inside the inventory area.
 ///
 /// Mirrors the `imagesInvenroy` array in `status_bar_vga.json`: 16 tiles
-/// arranged as a 4x4 grid covering 64 pixels horizontally by approximately
-/// 64-68 pixels vertically (the bottom row is slightly taller per
-/// tileset 24).  The third entry in each tuple is the source tile index
-/// inside `PORTRAIT_TILESET`.
+/// arranged as a 4x4 grid covering 64 pixels horizontally by ~68 pixels
+/// vertically.  The third entry in each tuple is the source tile index
+/// inside [`PORTRAIT_TILESET`].
+///
+/// The shipped JSON places every row 3 entry at `y = 48`, which only
+/// works when all bottom-row tiles share the same height.  Tileset 24
+/// row 3 actually carries three 22-pixel tall tiles (12, 13, 14) and one
+/// 20-pixel tall tile (15), so a uniform `dy = 48` leaves tiles 12/13/14
+/// bleeding one pixel into the lower status-bar frame and tile 15 one
+/// pixel short of the inventory area's bottom edge.  This table uses
+/// per-tile `dy` values (47 for the 22-tall tiles, 49 for the 20-tall
+/// tile 15) so every bottom-row tile bottom lines up at framebuffer
+/// y = 175, immediately above the lower frame bar at y = 176.
 const PORTRAIT_TILES: [(i32, i32, u16); 16] = [
     (0, 0, 0),
     (16, 0, 1),
@@ -524,10 +533,10 @@ const PORTRAIT_TILES: [(i32, i32, u16); 16] = [
     (16, 32, 9),
     (32, 32, 10),
     (48, 32, 11),
-    (0, 48, 12),
-    (16, 48, 13),
-    (32, 48, 14),
-    (48, 48, 15),
+    (0, 47, 12),
+    (16, 47, 13),
+    (32, 47, 14),
+    (48, 49, 15),
 ];
 
 /// Emits the 16 portrait blits for the inventory area.
