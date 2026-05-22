@@ -302,7 +302,13 @@ impl StartMenuScreen {
         let step = MENU_FRAME_TILE_SIZE;
         let left = layout.x;
         let top = layout.y;
-        let inner_cols = 9_i32;
+        // The shipped `start_menu.json` carries no width field; the original
+        // DOS layout measures the box at roughly 17 inner tile columns so it
+        // can hold the widest "ordering info" item label at the small body
+        // font (6 pixels per glyph) with the four leading spaces and the
+        // cursor.  The previous fixed 9-column width chopped off the right
+        // half of the menu visually.
+        let inner_cols = 17_i32;
         let inner_rows = layout.items.len() as i32 + 2;
         let right = left + (inner_cols + 1) * step;
         let bottom = top + (inner_rows + 1) * step;
