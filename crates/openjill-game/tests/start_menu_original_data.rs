@@ -3,12 +3,35 @@
 //! `data/original/JILL1` path is available.
 
 use assert2::check;
+use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{ActiveInput, InputCommand, ScreenHandler, ScreenTransition};
 use openjill_data::DataDirectory;
 use openjill_game::asset_cache::AssetCache;
 use openjill_game::screens::start_menu::StartMenuScreen;
 use std::path::{Path, PathBuf};
+
+/// `JILL1.SHA` tileset that owns every player sprite frame
+/// (`PlayerStandConst.TILESET_INDEX = 8`).  Matching on this tileset
+/// distinguishes the start-menu Jill `Blit` from the many background
+/// tile blits emitted on the same tick.
+const PLAYER_TILESET: u8 = 8;
+
+/// Forward-facing stand tile inside [`PLAYER_TILESET`]
+/// (`PlayerStandConst.TILE_MIDDLE_INDEX = 16`).
+const PLAYER_TILE_STAND_MIDDLE: u16 = 16;
+
+/// Framebuffer X the start menu's Jill stand-pose sprite must land at.
+///
+/// Derived from the start-menu viewport offset `(-1808, -864)` and the
+/// `INTRO.JN1` player record's world coordinate `(1960, 944)`:
+/// `GAME_AREA_X + (1960 - 1808) = GAME_AREA_X + 152`.
+const JILL_BLIT_X: i32 = GAME_AREA_X + 152;
+
+/// Framebuffer Y the start menu's Jill stand-pose sprite must land at.
+///
+/// Mirrors [`JILL_BLIT_X`]: `GAME_AREA_Y + (944 - 864) = GAME_AREA_Y + 80`.
+const JILL_BLIT_Y: i32 = GAME_AREA_Y + 80;
 
 /// Environment variable for overriding the data directory.
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
@@ -33,6 +56,12 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
 /// - `AssetCache::load` and `StartMenuScreen::new` succeed.
 /// - A first idle tick (no input) produces at least one `Blit` render command
 ///   (background tiles) and at least one `DrawText` command (menu title/items).
+/// - The first idle tick also emits the `INTRO.JN1` object layer: at least
+///   one `DrawText` whose payload contains the substring `"SHAREWARE"`
+///   (object index 61, world (1968, 1000)) and exactly one `Blit` of
+///   `JILL1.SHA` tileset 8 tile 16 at framebuffer position
+///   `(JILL_BLIT_X, JILL_BLIT_Y)` - the Jill stand-pose sprite from
+///   `INTRO.JN1`'s type 0 player record at world (1960, 944).
 /// - Pressing `ThrowItem` with the default selection (item 0, "play") returns
 ///   `ScreenTransition::Map`.
 /// - Pressing `Pause` (Escape) from the base menu returns
@@ -80,6 +109,40 @@ fn start_menu_constructs_and_renders_with_original_data() {
             .iter()
             .any(|c| matches!(c, RenderCommand::Blit { .. })),
         "idle tick must emit at least one Blit command for the background"
+    );
+
+    // The INTRO.JN1 object layer must contribute the shareware notice
+    // text and the Jill stand-pose sprite to the same tick.
+    check!(
+        result.commands.iter().any(|c| match c {
+            RenderCommand::DrawText { text, .. } => text.contains("SHAREWARE"),
+            _ => false,
+        }),
+        "idle tick must emit a DrawText carrying the shareware notice"
+    );
+
+    // Match the exact Jill stand-pose Blit: player tileset 8, forward-
+    // facing stand tile 16, and the world-to-framebuffer position the
+    // start-menu viewport offset predicts.  A looser predicate would
+    // match background tile blits inside the game area and could pass
+    // even if the JN object layer never drew Jill.
+    check!(
+        result.commands.iter().any(|c| match c {
+            RenderCommand::Blit {
+                tileset,
+                tile,
+                x,
+                y,
+                ..
+            } => {
+                *tileset == PLAYER_TILESET
+                    && *tile == PLAYER_TILE_STAND_MIDDLE
+                    && *x == JILL_BLIT_X
+                    && *y == JILL_BLIT_Y
+            }
+            _ => false,
+        }),
+        "idle tick must emit the Jill stand-pose Blit (tileset 8 tile 16) at (JILL_BLIT_X, JILL_BLIT_Y)"
     );
 
     // Confirming item 0 ("play") transitions to Map.

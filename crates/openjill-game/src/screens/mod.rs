@@ -1,6 +1,7 @@
 //! Screen handler implementations for each game screen.
 
 pub mod intro_background;
+pub mod intro_objects;
 pub mod intro_screens;
 pub mod level_screen;
 pub mod map_screen;
