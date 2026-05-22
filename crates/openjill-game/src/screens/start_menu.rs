@@ -9,7 +9,7 @@
 //! commands.
 
 use crate::screens::intro_background::render_intro_background;
-use crate::screens::intro_objects::render_intro_objects;
+use crate::screens::jn_object_layer::render_jn_object_layer;
 use openjill_core::layout::{CONTROL_AREA_X, CONTROL_AREA_Y, INVENTORY_AREA_X, INVENTORY_AREA_Y};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
@@ -291,7 +291,7 @@ impl StartMenuScreen {
             START_MENU_OFFSET_X,
             START_MENU_OFFSET_Y,
         );
-        commands.extend(render_intro_objects(
+        commands.extend(render_jn_object_layer(
             &self.intro,
             START_MENU_OFFSET_X,
             START_MENU_OFFSET_Y,
