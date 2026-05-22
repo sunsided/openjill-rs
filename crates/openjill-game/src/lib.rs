@@ -29,7 +29,7 @@ use orchestrator::GameOrchestrator;
 static INPUT_COMMAND_KEY_MAP: &[(KeyCode, InputCommand)] = &[
     (KeyCode::ArrowLeft, InputCommand::MoveLeft),
     (KeyCode::ArrowRight, InputCommand::MoveRight),
-    (KeyCode::ArrowUp, InputCommand::Jump),
+    (KeyCode::ArrowUp, InputCommand::Up),
     (KeyCode::Space, InputCommand::Jump),
     (KeyCode::AltLeft, InputCommand::Jump),
     (KeyCode::AltRight, InputCommand::Jump),
@@ -425,7 +425,7 @@ mod tests {
         );
         assert_eq!(
             GameApp::map_key_to_input_command(KeyCode::ArrowUp),
-            Some(InputCommand::Jump)
+            Some(InputCommand::Up)
         );
         assert_eq!(
             GameApp::map_key_to_input_command(KeyCode::Space),
@@ -512,15 +512,9 @@ mod tests {
     #[test]
     fn active_commands_persist_until_last_bound_key_released() {
         let mut pressed = BTreeSet::new();
-        GameApp::update_pressed_keys(&mut pressed, KeyCode::ArrowUp, ElementState::Pressed);
         GameApp::update_pressed_keys(&mut pressed, KeyCode::Space, ElementState::Pressed);
         GameApp::update_pressed_keys(&mut pressed, KeyCode::AltLeft, ElementState::Pressed);
-        assert_eq!(
-            GameApp::active_commands(&pressed),
-            BTreeSet::from([InputCommand::Jump])
-        );
-
-        GameApp::update_pressed_keys(&mut pressed, KeyCode::ArrowUp, ElementState::Released);
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::AltRight, ElementState::Pressed);
         assert_eq!(
             GameApp::active_commands(&pressed),
             BTreeSet::from([InputCommand::Jump])
@@ -533,6 +527,12 @@ mod tests {
         );
 
         GameApp::update_pressed_keys(&mut pressed, KeyCode::AltLeft, ElementState::Released);
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::Jump])
+        );
+
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::AltRight, ElementState::Released);
         assert!(GameApp::active_commands(&pressed).is_empty());
     }
 

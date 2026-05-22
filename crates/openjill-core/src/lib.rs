@@ -34,6 +34,14 @@ pub enum InputCommand {
     MoveRight,
     /// Trigger a jump.
     Jump,
+    /// Look up or climb up while on a vine/tree cell.
+    ///
+    /// Mirrors the `isUp` keyboard query in the Java reference, which is
+    /// distinct from `isJump`: the original DOS game maps the up-arrow key to
+    /// climbing and head-up animations, while space and alt drive the jump
+    /// action.  Player movement code uses [`InputCommand::Up`] for climb
+    /// transitions and [`InputCommand::Jump`] for the jump impulse.
+    Up,
     /// Trigger ducking.
     Duck,
     /// Throw the currently held inventory item.
