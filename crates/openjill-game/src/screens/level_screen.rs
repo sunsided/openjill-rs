@@ -16,15 +16,21 @@
 
 use std::sync::{Arc, LazyLock, Mutex};
 
-use openjill_core::layout::LEVEL_MESSAGE_TICKS;
+use openjill_core::layout::{
+    BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y, LEVEL_MESSAGE_TICKS,
+    X_UPDATE_BORDER, Y_UPDATE_BORDER,
+};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
-    ActiveInput, ChangeLevelPayload, InputCommand, MessageDispatcher, MessageHandler,
-    MessagePayload, MessageType, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
+    ActiveInput, BackgroundGrid, ChangeLevelPayload, InputCommand, MessageDispatcher,
+    MessageHandler, MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
+    ScreenTransition, TickResult,
 };
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::{JnFile, JnObject, JnReadError};
 
+use crate::asset_cache::AssetCache;
+use crate::entities::{make_background_entity, make_object_entity};
 use crate::screens::map_screen::render_map_background;
 
 /// Embedded `level_messagebox_vga.json` layout resource from the Java reference port.
@@ -100,16 +106,46 @@ pub struct LevelScreen {
     /// Shared inbox holding new transition requests delivered by subscribed
     /// dispatcher handlers.
     inbox: Inbox,
+    /// Active object entities built from the JN object list.
+    ///
+    /// Iterated each tick: entries whose bounding box lies within the
+    /// viewport update border (or that return `always_active`) advance via
+    /// `ObjectEntity::update`; entries within the game area emit their
+    /// `ObjectEntity::draw` command.  Order matches the JN object list so
+    /// rendering follows the Java reference's draw-order convention.
+    objects: Vec<Box<dyn ObjectEntity>>,
+    /// Background entity grid built from the JN background layer and the
+    /// `JILL.DMA` cell metadata.
+    ///
+    /// Iterated each tick for visible cells: cells that overlap the player
+    /// receive `on_player_touch`; cells that opt into per-tick updates via
+    /// `BackgroundEntity::needs_update` advance their state; every visible
+    /// cell contributes its `BackgroundEntity::draw` command on top of the
+    /// JN-driven base layer.
+    backgrounds: BackgroundGrid,
+    /// Local message dispatcher passed into per-tick entity callbacks.
+    ///
+    /// Entity-to-entity events (object removal, pickup notifications,
+    /// internal triggers) flow through this dispatcher.  Cross-screen
+    /// transition messages still flow through the orchestrator dispatcher via
+    /// [`InboxHandler`].  Cleared after each tick because no inter-entity
+    /// subscribers exist yet; child issues attach real subscribers here.
+    entity_dispatcher: MessageDispatcher,
 }
 
 impl LevelScreen {
     /// Creates a level screen from parsed level data and the originating
     /// bytes, registering message handlers on `dispatcher` so the level
     /// transition messages are routed back to this screen on subsequent ticks.
+    ///
+    /// `cache` supplies the parsed `JILL.DMA` plus shared SHA tileset data
+    /// used by the object and background entity factories.  The cache's DMA
+    /// is cloned into the screen for the legacy `render_map_background` path
+    /// so the screen can render without further cache access.
     pub fn new(
         jn: JnFile,
         jn_bytes: Vec<u8>,
-        dma: DmaFile,
+        cache: &AssetCache,
         level_number: i32,
         dispatcher: &mut MessageDispatcher,
     ) -> Self {
@@ -134,6 +170,9 @@ impl LevelScreen {
         );
 
         let (viewport_x, viewport_y) = checkpoint_viewport(&jn, level_number);
+        let objects = build_object_entities(&jn, cache);
+        let backgrounds = build_background_grid(&jn, cache);
+        let dma = cache.dma.clone();
 
         Self {
             jn,
@@ -146,6 +185,9 @@ impl LevelScreen {
             message_ticks: 0,
             message_text: Vec::new(),
             inbox,
+            objects,
+            backgrounds,
+            entity_dispatcher: MessageDispatcher::new(),
         }
     }
 
@@ -154,12 +196,12 @@ impl LevelScreen {
     /// Returns the underlying [`JnReadError`] when parsing fails.
     pub fn from_bytes(
         bytes: Vec<u8>,
-        dma: DmaFile,
+        cache: &AssetCache,
         level_number: i32,
         dispatcher: &mut MessageDispatcher,
     ) -> Result<Self, JnReadError> {
         let jn = JnFile::from_bytes(bytes.clone())?;
-        Ok(Self::new(jn, bytes, dma, level_number, dispatcher))
+        Ok(Self::new(jn, bytes, cache, level_number, dispatcher))
     }
 
     /// Returns the current viewport `(x, y)` offset in pixels.
@@ -202,15 +244,146 @@ impl LevelScreen {
         self.pending = Some(next);
     }
 
-    /// Renders the per-tick command list, including the level background and
-    /// the level message-box overlay when a transition is pending.
-    fn render_frame(&self) -> Vec<RenderCommand> {
-        let mut commands =
-            render_map_background(&self.jn, &self.dma, self.viewport_x, self.viewport_y);
-        if self.pending.is_some() {
-            commands.extend(render_message_box(&self.message_text));
+    /// Renders the base frame: the framebuffer-clear baseline plus the
+    /// static level background.
+    ///
+    /// The message-box overlay is intentionally not included here; the tick
+    /// loop appends it after the per-entity draw commands so the box paints
+    /// on top of the level and any objects in front of it.
+    fn render_base_frame(&self) -> Vec<RenderCommand> {
+        let mut commands = vec![RenderCommand::Clear { color: 0 }];
+        commands.extend(render_map_background(
+            &self.jn,
+            &self.dma,
+            self.viewport_x,
+            self.viewport_y,
+        ));
+        commands
+    }
+
+    /// Returns the player's bounding box, if a player entity exists.
+    ///
+    /// The first object reporting [`ObjectEntity::is_player`] is treated as
+    /// the active player; later swaps (Firebird transform) replace this entry
+    /// in place.
+    fn player_bounding_box(&self) -> Option<Rect> {
+        self.objects
+            .iter()
+            .find(|obj| obj.is_player())
+            .map(|obj| obj.bounding_box())
+    }
+
+    /// Advances every object entity by one tick and collects their render
+    /// commands.
+    ///
+    /// An object updates when it reports `always_active` or when its
+    /// bounding box overlaps the viewport expanded by [`X_UPDATE_BORDER`] and
+    /// [`Y_UPDATE_BORDER`].  Objects whose bounding box overlaps the visible
+    /// game-area window contribute their `draw` command.
+    fn tick_objects(&mut self, input: &ActiveInput, state: &RuntimeState) -> Vec<RenderCommand> {
+        let mut commands = Vec::new();
+        let update_rect = viewport_update_rect(self.viewport_x, self.viewport_y);
+        let game_rect = viewport_game_rect(self.viewport_x, self.viewport_y);
+        for obj in self.objects.iter_mut() {
+            let bbox = obj.bounding_box();
+            if obj.always_active() || update_rect.intersects(&bbox) {
+                obj.update(input, state, &self.backgrounds, &mut self.entity_dispatcher);
+            }
+            if game_rect.intersects(&bbox)
+                && let Some(cmd) = obj.draw()
+            {
+                commands.push(cmd);
+            }
         }
         commands
+    }
+
+    /// Iterates visible background cells, applies per-cell callbacks, and
+    /// collects each cell's render command.
+    ///
+    /// A cell is "visible" when its 16x16 pixel rectangle overlaps the
+    /// viewport-positioned game area.  When the player overlaps a cell, the
+    /// cell's `on_player_touch` runs first; cells that report
+    /// `needs_update` then advance via `update`; every visible cell finally
+    /// contributes its `draw` output.
+    fn tick_backgrounds(&mut self, player_bbox: Option<Rect>) -> Vec<RenderCommand> {
+        let viewport_x = self.viewport_x;
+        let viewport_y = self.viewport_y;
+        // `viewport_x` / `viewport_y` follow the OpenJill offset sign
+        // convention: the world pixel currently at the viewport top-left is
+        // `(-viewport_x, -viewport_y)`.  Compute that world origin once so the
+        // cell iteration starts at the right tile and the screen conversion
+        // below stays consistent with `render_map_background`.
+        let world_origin_x = -viewport_x;
+        let world_origin_y = -viewport_y;
+        let start_cell_x = world_origin_x.div_euclid(BLOCK_SIZE_I);
+        let start_cell_y = world_origin_y.div_euclid(BLOCK_SIZE_I);
+        let cells_x = (GAME_AREA_W as i32) / BLOCK_SIZE_I + 2;
+        let cells_y = (GAME_AREA_H as i32) / BLOCK_SIZE_I + 2;
+        // Borrow the three fields the loop needs as disjoint mutable
+        // references so the cell's `on_player_touch` can take a `&mut dyn
+        // ObjectEntity` from `objects` while the iteration still holds a
+        // `&mut` borrow into `backgrounds`.
+        let Self {
+            backgrounds,
+            objects,
+            entity_dispatcher,
+            ..
+        } = self;
+        let height = backgrounds.height as i32;
+        let width = backgrounds.width as i32;
+        let player_idx = objects.iter().position(|obj| obj.is_player());
+
+        let mut commands = Vec::new();
+        for row in 0..cells_y {
+            for col in 0..cells_x {
+                let cell_x = start_cell_x + col;
+                let cell_y = start_cell_y + row;
+                if cell_x < 0 || cell_y < 0 || cell_x >= width || cell_y >= height {
+                    continue;
+                }
+                let cell_pixel_x = cell_x * BLOCK_SIZE_I;
+                let cell_pixel_y = cell_y * BLOCK_SIZE_I;
+                let cell_rect = Rect::new(cell_pixel_x, cell_pixel_y, BLOCK_SIZE_I, BLOCK_SIZE_I);
+
+                let Some(cell) = backgrounds.get_mut(cell_x as usize, cell_y as usize) else {
+                    continue;
+                };
+
+                if let Some(bbox) = player_bbox
+                    && bbox.intersects(&cell_rect)
+                    && let Some(idx) = player_idx
+                {
+                    let player = objects[idx].as_mut();
+                    cell.on_player_touch(player, entity_dispatcher);
+                }
+
+                if cell.needs_update() {
+                    cell.update(cell_x, cell_y, entity_dispatcher);
+                }
+
+                // World pixel `cell_pixel_x` maps to game-area pixel
+                // `cell_pixel_x - world_origin_x`, then the framebuffer
+                // origin shift adds `GAME_AREA_X`.  Subtracting
+                // `world_origin_x` is equivalent to adding `viewport_x`
+                // because `world_origin_x = -viewport_x`.
+                let screen_x = GAME_AREA_X + cell_pixel_x - world_origin_x;
+                let screen_y = GAME_AREA_Y + cell_pixel_y - world_origin_y;
+                if let Some(cmd) = cell.draw(screen_x, screen_y) {
+                    commands.push(cmd);
+                }
+            }
+        }
+        commands
+    }
+
+    /// Discards any messages queued in [`Self::entity_dispatcher`].
+    ///
+    /// Issue 57 has no entity-dispatcher subscribers; future child issues
+    /// will replace this with the "drain object-removal messages" pass
+    /// described in `docs/port/06-episode-1-gameplay.md`.
+    fn drain_entity_dispatcher(&mut self) {
+        self.entity_dispatcher.clear();
     }
 }
 
@@ -222,13 +395,34 @@ impl ScreenHandler for LevelScreen {
     /// [`ScreenTransition`] once the countdown reaches zero.  Escape returns
     /// directly to the start menu, mirroring the abort behavior of the
     /// reference implementation when no transition is pending.
-    fn tick(&mut self, input: &ActiveInput, _state: &mut RuntimeState) -> TickResult {
+    fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult {
         self.pump_inbox();
 
-        // Render the frame using the pending state at the start of the tick so
-        // the message box is visible for the entire countdown, including the
-        // tick on which the timer reaches zero and the transition fires.
-        let commands = self.render_frame();
+        // Render order each tick:
+        // 1. Base frame (`Clear` + static level background).
+        // 2. Per-cell background entity draws (overlay tiles).
+        // 3. Object entity draws (drawn on top of backgrounds, mirroring
+        //    `AbstractExecutingStdLevel` in the Java reference).
+        // 4. Message-box overlay last so transitions paint over everything
+        //    else.
+        let mut commands = self.render_base_frame();
+
+        // Update phase: objects update before backgrounds run their per-cell
+        // callbacks so the `player_bbox` fed into the background loop reflects
+        // the post-update player position rather than a stale pre-tick value.
+        let obj_commands = self.tick_objects(input, state);
+        let player_bbox = self.player_bounding_box();
+        let bg_commands = self.tick_backgrounds(player_bbox);
+
+        // Backgrounds first, then objects, matching the Java draw order.
+        commands.extend(bg_commands);
+        commands.extend(obj_commands);
+
+        if self.pending.is_some() {
+            commands.extend(render_message_box(&self.message_text));
+        }
+
+        self.drain_entity_dispatcher();
 
         let mut transition: Option<ScreenTransition> = None;
         if self.pending.is_some() {
@@ -304,6 +498,70 @@ fn pending_into_transition(request: PendingRequest) -> ScreenTransition {
     }
 }
 
+/// Builds the per-level `ObjectEntity` list from a parsed JN object list.
+///
+/// Iterates the JN object records in source order so per-tick draw and
+/// collision iteration follows the same order the Java reference uses for
+/// its object manager list.
+fn build_object_entities(jn: &JnFile, cache: &AssetCache) -> Vec<Box<dyn ObjectEntity>> {
+    jn.objects()
+        .iter()
+        .map(|obj| make_object_entity(obj.object_type(), obj, cache))
+        .collect()
+}
+
+/// Builds the per-level [`BackgroundGrid`] from a parsed JN background layer.
+///
+/// Each cell's map code is looked up against `cache.dma`; the resolved DMA
+/// name selects the concrete [`openjill_core::BackgroundEntity`]
+/// implementation via [`make_background_entity`].  Cells whose map code has
+/// no DMA entry receive the default transparent background entity.
+fn build_background_grid(jn: &JnFile, cache: &AssetCache) -> BackgroundGrid {
+    let bg = jn.background();
+    let width = bg.width();
+    let height = bg.height();
+    let mut rows: Vec<Vec<Box<dyn openjill_core::BackgroundEntity>>> = Vec::with_capacity(height);
+    for y in 0..height {
+        let mut row: Vec<Box<dyn openjill_core::BackgroundEntity>> = Vec::with_capacity(width);
+        for x in 0..width {
+            let map_code = bg.map_code(x, y).unwrap_or(0);
+            let name = cache
+                .dma
+                .get_by_map_code(map_code)
+                .map(|entry| entry.name())
+                .unwrap_or("");
+            row.push(make_background_entity(name, map_code, cache));
+        }
+        rows.push(row);
+    }
+    BackgroundGrid::new(rows)
+}
+
+/// Returns the rectangle (in world pixels) covered by the current viewport
+/// expanded by the per-axis update border.
+///
+/// Objects whose bounding box intersects this rectangle tick each frame;
+/// objects entirely outside skip their update step unless they opt into
+/// `always_active`.
+fn viewport_update_rect(viewport_x: i32, viewport_y: i32) -> Rect {
+    let world_x = -viewport_x - X_UPDATE_BORDER as i32;
+    let world_y = -viewport_y - Y_UPDATE_BORDER as i32;
+    let w = GAME_AREA_W as i32 + 2 * X_UPDATE_BORDER as i32;
+    let h = GAME_AREA_H as i32 + 2 * Y_UPDATE_BORDER as i32;
+    Rect::new(world_x, world_y, w, h)
+}
+
+/// Returns the rectangle (in world pixels) covered by the visible game area
+/// at the current viewport offset.
+///
+/// Objects whose bounding box intersects this rectangle contribute their
+/// `draw` command this frame.
+fn viewport_game_rect(viewport_x: i32, viewport_y: i32) -> Rect {
+    let world_x = -viewport_x;
+    let world_y = -viewport_y;
+    Rect::new(world_x, world_y, GAME_AREA_W as i32, GAME_AREA_H as i32)
+}
+
 /// Locates the checkpoint object for `level_number` in `jn` and returns the
 /// viewport offset that places that object near the center of the game area.
 ///
@@ -360,8 +618,23 @@ fn lookup_message_text(level_number: i32) -> Vec<String> {
 /// (frame border + Jill face), then one `DrawText` per message line up to
 /// [`MESSAGE_MAX_LINES`].  The fills are emitted first so the underlying
 /// level background does not bleed through the box.
+///
+/// Frame and face blits carry a per-command [`ClipRect`] sized to the box's
+/// declared `width` x `height`.  The Java reference draws the box into a
+/// `BufferedImage(width, height)` backing buffer, which silently clips any
+/// tile that would overflow the buffer; this clip rect reproduces the same
+/// behavior in the framebuffer renderer so frame tiles whose tile geometry
+/// extends past the box (e.g. the 16-tall vertical bar tile sitting on the
+/// last row of a 92-tall box that only has 12 px of slack at the bottom)
+/// do not bleed below the box border.
 fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
     let layout = &*MESSAGE_BOX;
+    let clip = openjill_core::ClipRect {
+        x: layout.x,
+        y: layout.y,
+        width: layout.width,
+        height: layout.height,
+    };
     let mut commands: Vec<RenderCommand> = Vec::with_capacity(layout.images.len() + 4);
     commands.push(RenderCommand::FillRect {
         x: layout.x + layout.picturearea.x,
@@ -383,7 +656,7 @@ fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
         x: layout.x + tile.x,
         y: layout.y + tile.y,
         opaque: false,
-        clip: None,
+        clip: Some(clip),
     }));
 
     let text_origin_x = layout.x + layout.textarea_x;
@@ -434,6 +707,18 @@ struct MessageBoxLayout {
     x: i32,
     /// Top-left Y position of the message box in framebuffer pixels.
     y: i32,
+    /// Overall box width in pixels (from the JSON `width` field).
+    ///
+    /// Mirrors the `BufferedImage(width, height)` backing buffer the Java
+    /// reference allocates for the box: tiles that would draw past this
+    /// rectangle are clipped by that buffer.  The Rust port draws directly
+    /// to the framebuffer, so this rectangle is fed into a [`ClipRect`] for
+    /// each frame blit to reproduce the same clipping.
+    width: u32,
+    /// Overall box height in pixels (from the JSON `height` field).
+    ///
+    /// See [`MessageBoxLayout::width`] for the clipping rationale.
+    height: u32,
     /// Text area X offset relative to the message-box origin.
     textarea_x: i32,
     /// Text area Y offset relative to the message-box origin.
@@ -476,6 +761,8 @@ fn parse_message_box_layout() -> MessageBoxLayout {
 
     let x = get_i(&value, "x", 0);
     let y = get_i(&value, "y", 0);
+    let width = get_u32(&value, "width", 0);
+    let height = get_u32(&value, "height", 0);
     let text_color = get_u(&value, "textColor", 7);
     let textarea = value
         .get("textarea")
@@ -529,6 +816,8 @@ fn parse_message_box_layout() -> MessageBoxLayout {
     MessageBoxLayout {
         x,
         y,
+        width,
+        height,
         textarea_x,
         textarea_y,
         textarea_w,
@@ -553,8 +842,9 @@ mod tests {
         ActiveInput, ChangeLevelPayload, InputCommand, MessageDispatcher, MessagePayload,
         MessageType, RenderCommand, ScreenHandler, ScreenTransition,
     };
-    use openjill_data::dma::DmaFile;
     use openjill_data::jn::JnFile;
+
+    use crate::asset_cache::AssetCache;
 
     /// Object record size in bytes (`JnObject` fixed field layout):
     /// `object_type` (1) + `x`/`y`/`x_speed`/`y_speed` (2 each) +
@@ -562,9 +852,10 @@ mod tests {
     /// (2 each) + `pointer` (4) + `info1`/`zap_hold` (2 each).
     const OBJECT_RECORD_BYTES: usize = 31;
 
-    /// Builds an empty `DmaFile`.
-    fn empty_dma() -> DmaFile {
-        DmaFile::from_bytes(vec![]).expect("empty DMA should parse")
+    /// Builds a synthetic [`AssetCache`] for tests that do not need real
+    /// game files.
+    fn synthetic_cache() -> AssetCache {
+        AssetCache::synthetic()
     }
 
     /// Builds a synthetic JN byte buffer carrying `objects` zero-initialized
@@ -603,7 +894,8 @@ mod tests {
         level_number: i32,
     ) -> (LevelScreen, MessageDispatcher) {
         let mut dispatcher = MessageDispatcher::new();
-        let screen = LevelScreen::from_bytes(bytes, empty_dma(), level_number, &mut dispatcher)
+        let cache = synthetic_cache();
+        let screen = LevelScreen::from_bytes(bytes, &cache, level_number, &mut dispatcher)
             .expect("synthetic level JN should parse");
         (screen, dispatcher)
     }
@@ -931,6 +1223,44 @@ mod tests {
         assert_eq!(result.transition, Some(ScreenTransition::StartMenu));
     }
 
+    /// Unit under test: `render_message_box` clips every frame blit to the
+    /// box's declared bounding rectangle.
+    ///
+    /// Preconditions: the embedded layout JSON declares a 192x92 box at
+    /// `(94, 48)`; the frame mosaic includes tiles whose 16-tall tile
+    /// geometry extends past the bottom edge of the box (vertical bars on
+    /// the lower row, lower horizontal bar tiles), and 16-wide tiles whose
+    /// geometry extends past the right edge (right vertical bar).
+    ///
+    /// Invariants asserted: every emitted `Blit` carries a `clip`
+    /// rectangle covering exactly the box's declared bounds so out-of-bounds
+    /// pixels are dropped at present time instead of bleeding into the
+    /// surrounding level content.
+    #[test]
+    fn render_message_box_clips_frame_tiles_to_box_bounds() {
+        let commands = render_message_box(&[String::from("HI")]);
+        let mut blit_count = 0_usize;
+        for cmd in &commands {
+            let RenderCommand::Blit { clip, .. } = cmd else {
+                continue;
+            };
+            blit_count += 1;
+            let clip = clip.expect("every message-box blit must carry a clip rect");
+            assert_eq!(clip.x, 94, "clip x must match the box origin");
+            assert_eq!(clip.y, 48, "clip y must match the box origin");
+            assert_eq!(clip.width, 192, "clip width must match the box width");
+            assert_eq!(
+                clip.height, 92,
+                "clip height must match the box height so 16-tall vertical bar tiles \
+                 on the last row do not bleed below the box"
+            );
+        }
+        assert!(
+            blit_count > 0,
+            "render_message_box must emit at least one frame blit"
+        );
+    }
+
     /// Unit under test: `render_message_box` caps emitted text lines at
     /// [`MESSAGE_MAX_LINES`] so the overlay cannot overflow the text area.
     #[test]
@@ -964,12 +1294,163 @@ mod tests {
         dispatcher.send(MessageType::DieRestartLevel, MessagePayload::None);
         dispatcher.clear();
         let bytes = jn_bytes_with_objects(&[]);
-        let mut screen = LevelScreen::from_bytes(bytes, empty_dma(), 1, &mut dispatcher)
+        let cache = synthetic_cache();
+        let mut screen = LevelScreen::from_bytes(bytes, &cache, 1, &mut dispatcher)
             .expect("synthetic level JN should parse");
         let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
         assert!(
             result.transition.is_none(),
             "cleared dispatcher must not deliver previously-queued messages"
+        );
+    }
+
+    /// Unit under test: `LevelScreen::tick` with no objects and an all-zero
+    /// background layer still emits at least one `RenderCommand::Clear`.
+    ///
+    /// Preconditions: a synthetic JN buffer with zero objects and all-zero
+    /// background map codes; the synthetic `AssetCache` carries an empty
+    /// DMA, so every cell resolves to the transparent
+    /// `StdBackgroundEntity` placeholder that emits no draw output.
+    ///
+    /// Invariants asserted: the tick completes without panic, and the
+    /// resulting command list contains at least one `RenderCommand::Clear`
+    /// so the renderer always has a baseline fill to execute even when both
+    /// the object and background entity iterations contribute nothing.
+    #[test]
+    fn tick_with_no_objects_and_empty_backgrounds_emits_clear() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
+        assert!(
+            result
+                .commands
+                .iter()
+                .any(|cmd| matches!(cmd, RenderCommand::Clear { .. })),
+            "tick must emit a Clear baseline command; got {:?}",
+            result.commands
+        );
+    }
+
+    /// Unit under test: `LevelScreen::tick` emits the message-box overlay
+    /// after the per-entity draw commands so background and object draws
+    /// cannot paint over the box mid-transition.
+    ///
+    /// Preconditions: synthetic level 1 screen; `CheckpointChangeLevel` is
+    /// dispatched before the first tick to start the message-box countdown.
+    ///
+    /// Invariants asserted: the message-box frame blits (tileset 24 / 3)
+    /// land at a higher index in the command list than the baseline
+    /// `Clear` command, so a renderer executing in order paints the
+    /// message box on top.
+    #[test]
+    fn tick_message_box_renders_after_base_frame() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(
+            MessageType::CheckpointChangeLevel,
+            MessagePayload::ChangeLevel(ChangeLevelPayload {
+                level_file: String::from("JN1L02.JN1"),
+                level_number: 2,
+            }),
+        );
+        let commands = screen
+            .tick(&ActiveInput::new(), &mut RuntimeState::new())
+            .commands;
+        let clear_index = commands
+            .iter()
+            .position(|cmd| matches!(cmd, RenderCommand::Clear { .. }))
+            .expect("tick must emit a Clear baseline command");
+        let last_messagebox_blit = commands
+            .iter()
+            .rposition(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::Blit { tileset: 24, .. }
+                        | RenderCommand::Blit { tileset: 3, .. }
+                )
+            })
+            .expect("tick must emit message-box frame blits while a transition is pending");
+        assert!(
+            last_messagebox_blit > clear_index,
+            "message-box overlay must follow the baseline Clear in the command list"
+        );
+    }
+
+    /// Unit under test: `tick_backgrounds` derives screen pixel positions
+    /// from the viewport offset using the OpenJill sign convention shared
+    /// with `render_map_background`.
+    ///
+    /// Preconditions: a synthetic JN whose background layer at cell
+    /// `(5, 0)` carries a non-transparent map code, paired with a DMA file
+    /// that supplies an entry for that code; the screen's viewport is
+    /// offset by one tile horizontally so the cell does not sit on the
+    /// game-area left edge.
+    ///
+    /// Invariants asserted: the background blit for that cell lands at
+    /// `screen_x = GAME_AREA_X + cell_world_x - world_origin_x`, which for
+    /// `viewport_x = -16` (world origin at `+16`) and `cell_world_x = 80`
+    /// puts the blit at `80 + 80 - 16 = 144` — the position
+    /// `render_map_background` would also produce.
+    #[test]
+    fn tick_backgrounds_uses_openjill_viewport_sign() {
+        // Synthesize a one-entry DMA file matching the parser layout:
+        //   map_code (u16 LE) + tile (u8) + tileset_with_flags (u8) +
+        //   flags (u16 LE) + name_len (u8) + name (name_len ASCII bytes).
+        // map_code=1, tile=42, tileset=7, flags=0, name="TEST".
+        let mut dma_bytes: Vec<u8> = Vec::new();
+        dma_bytes.extend_from_slice(&1u16.to_le_bytes()); // map_code
+        dma_bytes.push(42); // tile
+        dma_bytes.push(7); // tileset_with_flags
+        dma_bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+        dma_bytes.push(4); // name_len
+        dma_bytes.extend_from_slice(b"TEST"); // name
+        let dma =
+            openjill_data::dma::DmaFile::from_bytes(dma_bytes).expect("synthetic DMA should parse");
+        let mut cache = AssetCache::synthetic();
+        cache.dma = dma;
+
+        // Build a JN whose background cell (5, 0) carries map code 1.
+        // The JN parser stores cells as `x * BACKGROUND_HEIGHT + y` so the
+        // byte offset for cell `(5, 0)` is `5 * 64 * 2 = 640`.
+        let mut bytes = jn_bytes_with_objects(&[]);
+        let cell_off = 5 * 64 * 2;
+        bytes[cell_off..cell_off + 2].copy_from_slice(&1u16.to_le_bytes());
+
+        let mut dispatcher = MessageDispatcher::new();
+        let mut screen = LevelScreen::from_bytes(bytes, &cache, 1, &mut dispatcher)
+            .expect("synthetic level JN should parse");
+
+        // Force the viewport to a known non-zero offset so the screen-pos
+        // sign convention is exercised: viewport_x = -16 means the world
+        // origin is at +16, and cell (5,0)'s world pixel is (80, 0).
+        // Expected screen_x = GAME_AREA_X (80) + 80 - 16 = 144.
+        let cell_world_x = 5 * 16_i32;
+        let viewport_x = -16_i32;
+        let expected_screen_x = openjill_core::layout::GAME_AREA_X + cell_world_x - (-viewport_x);
+        let expected_screen_y = openjill_core::layout::GAME_AREA_Y;
+
+        // Mutate viewport directly to bypass the checkpoint heuristic.
+        screen.viewport_x = viewport_x;
+        screen.viewport_y = 0;
+
+        let bg_commands = screen.tick_backgrounds(None);
+        let blit = bg_commands
+            .iter()
+            .find_map(|cmd| match cmd {
+                RenderCommand::Blit {
+                    tileset: 7,
+                    tile: 42,
+                    x,
+                    y,
+                    ..
+                } => Some((*x, *y)),
+                _ => None,
+            })
+            .expect("background entity must emit the registered tileset/tile blit");
+        assert_eq!(
+            blit,
+            (expected_screen_x, expected_screen_y),
+            "background blit must use the same viewport sign convention as render_map_background"
         );
     }
 

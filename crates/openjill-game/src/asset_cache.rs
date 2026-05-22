@@ -147,6 +147,28 @@ pub enum AssetError {
 }
 
 #[cfg(test)]
+impl AssetCache {
+    /// Constructs a minimal valid asset cache from zero-byte synthetic
+    /// buffers, used by tests that exercise screens and entities without
+    /// loading real game files.
+    pub(crate) fn synthetic() -> Self {
+        const SHA_HEADER_BYTES: usize = 128 * 4 + 128 * 2;
+        const VCL_MIN_BYTES: usize = 400 + 40 * 4 + 40 * 2;
+        const CFG_MIN_BYTES: usize = 10 * 10 + 20 + 10 * 4 + 6 * 12 + 2 + 2 + 6 * 2 + 2 + 2 + 2;
+        const JN_MIN_BYTES: usize = 128 * 64 * 2 + 2 + 70;
+        Self {
+            dma: DmaFile::from_bytes(vec![]).expect("empty DMA should parse"),
+            sha: ShaFile::from_bytes(vec![0u8; SHA_HEADER_BYTES])
+                .expect("zero SHA header should parse"),
+            vcl: VclFile::from_bytes(vec![0u8; VCL_MIN_BYTES]).expect("zero VCL should parse"),
+            cfg: CfgFile::from_bytes(vec![0u8; CFG_MIN_BYTES], "JN1")
+                .expect("zero CFG should parse"),
+            intro_jn: JnFile::from_bytes(vec![0u8; JN_MIN_BYTES]).expect("zero JN should parse"),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{AssetCache, AssetError};
     use openjill_data::DataDirectory;
