@@ -128,9 +128,15 @@ const TILE_JUMP_RIGHT_BASE: u16 = 40;
 /// indexing tiles 0..7.  `TILE_LEFT_RUNNING_INDEX = 8` is therefore the
 /// *right*-running base; preserve the same convention by naming our right base
 /// off it and the left base off the start of the tileset.
+// FIXME(epic-6): re-verify the left/right run tile bases against the actual
+// SHA tileset once the game is runnable end-to-end.  The Java constant name
+// (`TILE_LEFT_RUNNING_INDEX`) is misleading vs. how `PlayerManager.init`
+// populates the arrays, and only an in-engine check against the original
+// JILL1.SHA frames can confirm which base belongs to which facing.
 const TILE_RUN_LEFT_BASE: u16 = 0;
 
 /// Right running frame base (`PlayerStandConst.TILE_LEFT_RUNNING_INDEX = 8`).
+// FIXME(epic-6): see TILE_RUN_LEFT_BASE.  Confirm against in-engine playback.
 const TILE_RUN_RIGHT_BASE: u16 = 8;
 
 /// Climb frame sequence translated from `PlayerManager.initClimbPicture`.
