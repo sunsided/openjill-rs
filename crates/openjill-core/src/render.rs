@@ -100,7 +100,14 @@ pub enum RenderCommand {
         x: i32,
         /// Destination y coordinate in framebuffer pixels.
         y: i32,
-        /// Palette index used to colorize each text glyph.
+        /// Logical EGA color index `0..=7` used to colorize each text glyph.
+        ///
+        /// The renderer adds `TEXT_COLOR_BRIGHT_SHIFT` (8) and clamps the
+        /// result to `15` before writing pixels, mirroring
+        /// `TextManager.initColorTextMap` in the Java reference: callers pass
+        /// the dark-EGA index and the text path always uses the matching
+        /// bright-EGA color (index `i + 8`).  Values above 7 are saturated to
+        /// 15 (bright white).
         color_index: u8,
         /// Which SHA font tileset to draw with.  See [`FontSize`] for the
         /// per-variant mapping; emitters that do not have a specific

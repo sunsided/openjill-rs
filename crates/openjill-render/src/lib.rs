@@ -43,6 +43,20 @@ const GAME_ASPECT_RATIO: f32 = FRAMEBUFFER_WIDTH as f32 / FRAMEBUFFER_HEIGHT as 
 /// sentinel.  Any non-sentinel pixel writes the requested color index.
 const FONT_GLYPH_TRANSPARENT_PIXEL: u8 = 0;
 
+/// Palette index offset added to the caller's logical EGA color when
+/// rendering [`RenderCommand::DrawText`].
+///
+/// Mirrors `TextManager.BACK_COLOR_SHIFT = 8` in the Java reference, which
+/// promotes the dark EGA indices `0..=7` to their bright EGA counterparts
+/// `8..=15` for all text rendering paths
+/// (`drawSmallText` / `drawBigText` / `grapSmallLetter`).
+const TEXT_COLOR_BRIGHT_SHIFT: u8 = 8;
+
+/// Highest palette index reachable through the bright-EGA text shift,
+/// matching `TextManager.BACKGROUND_COLOR_WHITE` in the Java reference
+/// (`COLOR_WHITE + BACK_COLOR_SHIFT = 15`).
+const BRIGHT_EGA_MAX: u8 = 15;
+
 /// Decoded SHA font glyph tiles used by [`Presenter::draw_text`].
 ///
 /// Construct this wrapper with [`ShaFontTiles::from_tileset`] after loading a
@@ -785,7 +799,16 @@ fn execute_commands_on_framebuffer(
                     FontSize::Big => big_font.as_ref().or(small_font.as_ref()),
                 };
                 if let Some(f) = selected {
-                    draw_text_colorized_indexed(framebuffer, text, *x, *y, f, *color_index);
+                    // Promote the caller's logical EGA color to the matching
+                    // bright-EGA index, matching `BACK_COLOR_SHIFT = 8` and
+                    // the `BACKGROUND_COLOR_WHITE` clamp in
+                    // `TextManagerImpl.initColorTextMap`.  Without this shift
+                    // text renders at the dark half of the EGA palette and
+                    // looks noticeably dimmer than the Java reference.
+                    let bright = color_index
+                        .saturating_add(TEXT_COLOR_BRIGHT_SHIFT)
+                        .min(BRIGHT_EGA_MAX);
+                    draw_text_colorized_indexed(framebuffer, text, *x, *y, f, bright);
                 }
             }
             RenderCommand::FillRect {
@@ -1337,12 +1360,14 @@ mod tests {
     ///
     /// Preconditions: a synthetic SHA carries 128 ASCII-indexed font
     /// glyphs whose `!` slot (codepoint 33) holds one non-zero pixel; the
-    /// command requests palette index 13.
+    /// command requests logical color 5.
     ///
-    /// Invariants asserted: the rendered glyph pixel uses the command's
-    /// `color_index` rather than the source glyph's stored pixel value.
+    /// Invariants asserted: the rendered glyph pixel uses
+    /// `color_index + TEXT_COLOR_BRIGHT_SHIFT (8)`, mirroring
+    /// `TextManager.initColorTextMap` in the Java reference: a logical
+    /// foreground color is always rendered as the matching bright-EGA index.
     #[test]
-    fn execute_commands_on_framebuffer_draw_text_applies_color_index() {
+    fn execute_commands_on_framebuffer_draw_text_applies_bright_ega_color() {
         let mut tiles = ascii_indexed_glyph_table();
         tiles[usize::from(b'!')] = (1, 1, 0, vec![9_u8]);
         let sha = parse_synthetic_sha_with_owned_font_tiles(&tiles);
@@ -1350,13 +1375,44 @@ mod tests {
             text: "!".to_owned(),
             x: 4,
             y: 6,
-            color_index: 13,
+            color_index: 5,
             font: FontSize::Small,
         }];
         let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
 
         execute_commands_on_framebuffer(&mut fb, &commands, &sha);
 
-        assert_eq!(fb[6 * FRAMEBUFFER_WIDTH + 4], 13);
+        assert_eq!(
+            fb[6 * FRAMEBUFFER_WIDTH + 4],
+            5 + super::TEXT_COLOR_BRIGHT_SHIFT
+        );
+    }
+
+    /// Unit under test: `execute_commands_on_framebuffer` with
+    /// `RenderCommand::DrawText` and a logical color above 7.
+    ///
+    /// Preconditions: the command's `color_index` plus the bright-EGA shift
+    /// would exceed 15.
+    ///
+    /// Invariants asserted: the resulting pixel index saturates at
+    /// `BRIGHT_EGA_MAX (15)`, matching the
+    /// `colorIndex > BACKGROUND_COLOR_WHITE` clamp in the Java reference.
+    #[test]
+    fn execute_commands_on_framebuffer_draw_text_clamps_above_bright_white() {
+        let mut tiles = ascii_indexed_glyph_table();
+        tiles[usize::from(b'!')] = (1, 1, 0, vec![9_u8]);
+        let sha = parse_synthetic_sha_with_owned_font_tiles(&tiles);
+        let commands = [RenderCommand::DrawText {
+            text: "!".to_owned(),
+            x: 4,
+            y: 6,
+            color_index: 12,
+            font: FontSize::Small,
+        }];
+        let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
+
+        execute_commands_on_framebuffer(&mut fb, &commands, &sha);
+
+        assert_eq!(fb[6 * FRAMEBUFFER_WIDTH + 4], super::BRIGHT_EGA_MAX);
     }
 }
