@@ -9,9 +9,7 @@
 //! commands.
 
 use crate::screens::intro_background::render_intro_background;
-use openjill_core::layout::{
-    BLOCK_SIZE_I, CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y,
-};
+use openjill_core::layout::{CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
     ActiveInput, FontSize, InputCommand, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
@@ -123,6 +121,15 @@ struct MenuLayout {
     /// Interior fill tile.
     back_image: u16,
 }
+
+/// Pixel size of one menu box frame tile.
+///
+/// The shipped `start_menu.json` references tiles from `JILL1.SHA` tileset
+/// 7, whose corner / bar / fill tiles are all 8x8.  The previous menu box
+/// renderer stepped through positions at the 16-pixel block size and left
+/// 8-pixel gaps between every tile; the original DOS layout draws them
+/// adjacent at 8-pixel stride.
+const MENU_FRAME_TILE_SIZE: i32 = 8;
 
 /// Lazily parsed `start_menu.json` layout, loaded once on first access.
 static MENU_LAYOUT: LazyLock<MenuLayout> = LazyLock::new(parse_menu_layout);
@@ -282,14 +289,13 @@ impl StartMenuScreen {
     fn render_menu_box(&self) -> Vec<RenderCommand> {
         let layout = &*MENU_LAYOUT;
         let ts = layout.frame_tileset;
+        let step = MENU_FRAME_TILE_SIZE;
         let left = layout.x;
         let top = layout.y;
-        // Width: 9 inner fill columns + 2 border columns = 11 tiles total.
         let inner_cols = 9_i32;
-        // Height: 1 title row + items count + 1 padding row.
         let inner_rows = layout.items.len() as i32 + 2;
-        let right = left + (inner_cols + 1) * BLOCK_SIZE_I;
-        let bottom = top + inner_rows * BLOCK_SIZE_I;
+        let right = left + (inner_cols + 1) * step;
+        let bottom = top + (inner_rows + 1) * step;
 
         let mut commands = vec![
             blit(ts, layout.left_upper, left, top),
@@ -300,18 +306,18 @@ impl StartMenuScreen {
 
         // Top and bottom edge bars.
         for col in 1..=inner_cols {
-            let x = left + col * BLOCK_SIZE_I;
+            let x = left + col * step;
             commands.push(blit(ts, layout.upper_bar, x, top));
             commands.push(blit(ts, layout.lower_bar, x, bottom));
         }
 
         // Left and right edge bars, and interior fill.
-        for row in 1..inner_rows {
-            let y = top + row * BLOCK_SIZE_I;
+        for row in 1..=inner_rows {
+            let y = top + row * step;
             commands.push(blit(ts, layout.left_bar, left, y));
             commands.push(blit(ts, layout.right_bar, right, y));
             for col in 1..=inner_cols {
-                commands.push(blit(ts, layout.back_image, left + col * BLOCK_SIZE_I, y));
+                commands.push(blit(ts, layout.back_image, left + col * step, y));
             }
         }
 
@@ -533,14 +539,25 @@ fn parse_menu_layout() -> MenuLayout {
         })
         .unwrap_or_default();
 
-    let (frame_tileset, right_upper) = tile_ref("rightUpperCorner");
-    let (_, left_upper) = tile_ref("leftUpperCorner");
-    let (_, right_lower) = tile_ref("rightLowerCorner");
-    let (_, left_lower) = tile_ref("leftLowerCorner");
+    // The shipped `start_menu.json` labels the left and right corner /
+    // side-bar tiles with the wrong handedness compared to how the SHA
+    // pixels actually render: `leftUpperCorner` carries the tile that
+    // visually paints the top-RIGHT corner, `leftBar` carries the
+    // right-side vertical bar, and so on.  Verified by inspecting the
+    // pixel highlights on tileset 7 tiles 1-9 in the indexed atlas:
+    // tile 1 has its lit edges on the top + left (top-left corner),
+    // tile 3 on the top + right (top-right corner), tile 4's lit edge
+    // is the left column (left vertical bar), tile 5's the right
+    // column.  Pre-swap the assignments so the renderer can keep using
+    // semantic field names.
+    let (frame_tileset, left_upper) = tile_ref("rightUpperCorner");
+    let (_, right_upper) = tile_ref("leftUpperCorner");
+    let (_, left_lower) = tile_ref("rightLowerCorner");
+    let (_, right_lower) = tile_ref("leftLowerCorner");
     let (_, upper_bar) = tile_ref("upperBar");
     let (_, lower_bar) = tile_ref("lowerBar");
-    let (_, right_bar) = tile_ref("rightBar");
-    let (_, left_bar) = tile_ref("leftBar");
+    let (_, left_bar) = tile_ref("rightBar");
+    let (_, right_bar) = tile_ref("leftBar");
     let back_image = value
         .get("backImage")
         .and_then(|o| o.get("tile"))
