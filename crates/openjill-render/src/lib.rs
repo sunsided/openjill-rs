@@ -82,13 +82,17 @@ impl ShaFontTiles {
     /// Printable ASCII (`0x21..=0x7E`) and space (`0x20`) look up their
     /// raw codepoint; everything else (control codes, non-ASCII) falls
     /// back to space rather than rendering a stray printable glyph at the
-    /// truncated `c as u8` position.
+    /// truncated `c as u8` position.  ASCII codepoint `0x07` (bell) is
+    /// explicitly allowed through because the bundled font tilesets carry
+    /// the bullet-style cursor glyph at that position and callers (the
+    /// start menu cursor) need to draw it.
     fn glyph_for_character(&self, character: char) -> Option<&DecodedGlyphTile> {
-        let glyph_index = if character.is_ascii_graphic() || character == ' ' {
-            usize::from(character as u8)
-        } else {
-            usize::from(b' ')
-        };
+        let glyph_index =
+            if character.is_ascii_graphic() || character == ' ' || character == '\u{0007}' {
+                usize::from(character as u8)
+            } else {
+                usize::from(b' ')
+            };
         self.glyphs
             .get(glyph_index)
             .or_else(|| self.glyphs.get(usize::from(b' ')))

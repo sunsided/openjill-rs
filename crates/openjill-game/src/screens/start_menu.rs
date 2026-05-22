@@ -122,6 +122,13 @@ struct MenuLayout {
     back_image: u16,
 }
 
+/// Cursor glyph drawn before the currently selected menu item.
+///
+/// The original DOS Jill draws a small bullet/circle here; ASCII codepoint
+/// `0x07` (bell) maps to the bullet glyph in the SHA font tilesets, which
+/// is the closest match to the reference cursor.
+const MENU_CURSOR_CHAR: char = '\u{0007}';
+
 /// Pixel size of one menu box frame tile.
 ///
 /// The shipped `start_menu.json` references tiles from `JILL1.SHA` tileset
@@ -338,20 +345,24 @@ impl StartMenuScreen {
             x: GAME_AREA_X + base_x,
             y: GAME_AREA_Y + base_y,
             color_index: layout.title_color,
-            font: FontSize::Big,
+            font: FontSize::Small,
         }];
 
         let spaces = " ".repeat(layout.nb_space_before);
         for (index, item) in layout.items.iter().enumerate() {
             let y = base_y + line_h + index as i32 * line_h;
-            let prefix = if index == self.selected { ">" } else { " " };
+            let prefix = if index == self.selected {
+                MENU_CURSOR_CHAR
+            } else {
+                ' '
+            };
             let text = format!("{prefix}{spaces}{}", item.text);
             commands.push(RenderCommand::DrawText {
                 text,
                 x: GAME_AREA_X + base_x,
                 y: GAME_AREA_Y + y,
                 color_index: item.color,
-                font: FontSize::Big,
+                font: FontSize::Small,
             });
         }
 
