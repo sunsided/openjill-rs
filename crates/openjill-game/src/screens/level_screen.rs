@@ -32,6 +32,7 @@ use openjill_data::jn::{JnFile, JnObject, JnReadError};
 use crate::asset_cache::AssetCache;
 use crate::entities::{make_background_entity, make_object_entity};
 use crate::screens::map_screen::render_map_background;
+use crate::status_bar::GAME_AREA_CLIP;
 
 /// Embedded `level_messagebox_vga.json` layout resource from the Java reference port.
 const LEVEL_MESSAGEBOX_JSON: &str =
@@ -351,7 +352,11 @@ impl LevelScreen {
             if game_rect.intersects(&bbox)
                 && let Some(cmd) = obj.draw()
             {
-                commands.push(cmd);
+                commands.push(translate_object_command(
+                    cmd,
+                    self.viewport_x,
+                    self.viewport_y,
+                ));
             }
         }
         commands
@@ -621,6 +626,53 @@ fn viewport_game_rect(viewport_x: i32, viewport_y: i32) -> Rect {
     Rect::new(world_x, world_y, GAME_AREA_W as i32, GAME_AREA_H as i32)
 }
 
+/// Rewrites a render command emitted by an [`ObjectEntity::draw`] from world
+/// pixel coordinates into framebuffer pixel coordinates for the current
+/// viewport.
+///
+/// Object draw implementations report their `(x, y)` in the same world-pixel
+/// space the JN file stores (origin at the top-left of the entire map).  The
+/// framebuffer the renderer consumes, on the other hand, has its origin at
+/// the screen's top-left and the visible game area positioned at
+/// `(GAME_AREA_X, GAME_AREA_Y)` with width [`GAME_AREA_W`] / height
+/// [`GAME_AREA_H`]. The translation mirrors the formula
+/// [`render_map_background`] / `tick_backgrounds` already use for background
+/// tiles:
+///
+/// ```text
+/// screen_x = GAME_AREA_X + world_x - world_origin_x
+///          = GAME_AREA_X + world_x + viewport_x
+/// ```
+///
+/// (with the OpenJill sign convention `world_origin_x = -viewport_x`).
+///
+/// Blit commands additionally pick up the shared [`GAME_AREA_CLIP`] when the
+/// object did not already supply a tighter rectangle, so sprites that
+/// straddle the right or bottom game-area edge do not bleed into the
+/// surrounding status bar.  Non-Blit commands pass through unchanged because
+/// `RenderCommand::DrawText` / `FillRect` / `Clear` are not produced from
+/// world coordinates by the entity layer today.
+fn translate_object_command(cmd: RenderCommand, viewport_x: i32, viewport_y: i32) -> RenderCommand {
+    match cmd {
+        RenderCommand::Blit {
+            tileset,
+            tile,
+            x,
+            y,
+            opaque,
+            clip,
+        } => RenderCommand::Blit {
+            tileset,
+            tile,
+            x: GAME_AREA_X + x + viewport_x,
+            y: GAME_AREA_Y + y + viewport_y,
+            opaque,
+            clip: clip.or(Some(GAME_AREA_CLIP)),
+        },
+        other => other,
+    }
+}
+
 /// Locates the checkpoint object for `level_number` in `jn` and returns the
 /// viewport offset that places that object near the center of the game area.
 ///
@@ -640,11 +692,27 @@ fn checkpoint_viewport(jn: &JnFile, level_number: i32) -> (i32, i32) {
     (0, 0)
 }
 
-/// Returns the first object whose `counter` equals `level_number`, when one
-/// exists.
+/// Returns the first `CheckPointEntity` (object type 12) whose `counter`
+/// equals `level_number`, when one exists.
+///
+/// The `counter` field is also used by unrelated object types to encode
+/// per-instance level links (e.g. `FallingSpikeEntity` / `TouchTriggerEntity`
+/// type 38 and 15 store the level the instance ties to in `counter`), so
+/// filtering by object type 12 is required to pick the genuine checkpoint
+/// rather than the first match by counter alone.  Mirrors the Java
+/// reference's `findCheckPoint`, which iterates the level's `CheckPointEntity`
+/// list rather than the global object list.
+const CHECKPOINT_OBJECT_TYPE: u8 = 12;
+
+/// Returns the first checkpoint object (`object_type = 12`) whose `counter`
+/// equals `level_number`, when one exists.
+///
+/// See [`CHECKPOINT_OBJECT_TYPE`] for the rationale on the object-type filter.
 fn find_checkpoint(jn: &JnFile, level_number: i32) -> Option<&JnObject> {
     let needle = i16::try_from(level_number).ok()?;
-    jn.objects().iter().find(|obj| obj.counter() == needle)
+    jn.objects()
+        .iter()
+        .find(|obj| obj.object_type() == CHECKPOINT_OBJECT_TYPE && obj.counter() == needle)
 }
 
 /// Returns the message-box text lines for the destination `level_number`,
@@ -922,8 +990,24 @@ mod tests {
     /// object records, mutating only the fields the tests need.
     ///
     /// Each entry in `objects` is `(counter, x, y)` for one object record,
-    /// emitted in source order.  All other fields are zero-filled.
+    /// emitted in source order.  `object_type` is set to
+    /// [`super::CHECKPOINT_OBJECT_TYPE`] (12) so the synthetic objects pass
+    /// the checkpoint object-type filter; all other fields are zero-filled.
     fn jn_bytes_with_objects(objects: &[(i16, u16, u16)]) -> Vec<u8> {
+        jn_bytes_with_typed_objects(
+            &objects
+                .iter()
+                .map(|&(counter, x, y)| (super::CHECKPOINT_OBJECT_TYPE, counter, x, y))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// Builds a synthetic JN byte buffer with explicit `object_type` per
+    /// record so tests that exercise the [`find_checkpoint`] type filter can
+    /// assert against non-checkpoint object types.
+    ///
+    /// Each entry is `(object_type, counter, x, y)`.
+    fn jn_bytes_with_typed_objects(objects: &[(u8, i16, u16, u16)]) -> Vec<u8> {
         let object_count = objects.len();
         let total_bytes = 128 * 64 * 2 + 2 + object_count * OBJECT_RECORD_BYTES + 70;
         let mut bytes = vec![0u8; total_bytes];
@@ -932,9 +1016,10 @@ mod tests {
         let count_off = 128 * 64 * 2;
         bytes[count_off..count_off + 2].copy_from_slice(&(object_count as u16).to_le_bytes());
 
-        for (index, (counter, x, y)) in objects.iter().enumerate() {
+        for (index, (object_type, counter, x, y)) in objects.iter().enumerate() {
             let record_off = count_off + 2 + index * OBJECT_RECORD_BYTES;
-            // object_type (u8) at +0 left as 0.
+            // object_type (u8) at +0.
+            bytes[record_off] = *object_type;
             // x (u16) at +1.
             bytes[record_off + 1..record_off + 3].copy_from_slice(&x.to_le_bytes());
             // y (u16) at +3.
@@ -1218,8 +1303,8 @@ mod tests {
         assert_eq!(screen.viewport(), (0, 0));
     }
 
-    /// Unit under test: `find_checkpoint` returns the first object whose
-    /// counter equals the requested level number.
+    /// Unit under test: `find_checkpoint` returns the first checkpoint object
+    /// (type 12) whose counter equals the requested level number.
     #[test]
     fn find_checkpoint_returns_matching_object() {
         let bytes = jn_bytes_with_objects(&[(0, 10, 10), (2, 20, 20), (2, 30, 30)]);
@@ -1227,6 +1312,43 @@ mod tests {
         let obj = find_checkpoint(&jn, 2).expect("level 2 checkpoint should exist");
         assert_eq!(obj.x(), 20);
         assert_eq!(obj.y(), 20);
+    }
+
+    /// Unit under test: `find_checkpoint` filters by object type 12, so
+    /// non-checkpoint objects whose `counter` happens to match the level
+    /// number do not seed the viewport.
+    ///
+    /// Preconditions: a synthetic JN whose first two objects (types 38 and
+    /// 15) carry `counter = 1` but are not checkpoints; the third object
+    /// (type 12, the real checkpoint) also carries `counter = 1` at a
+    /// distinct world position.
+    ///
+    /// Invariants asserted: `find_checkpoint` returns the type-12 object
+    /// rather than the first counter match, mirroring the Java reference's
+    /// `findCheckPoint` which iterates the level's checkpoint list only.
+    #[test]
+    fn find_checkpoint_filters_by_object_type_twelve() {
+        let bytes = jn_bytes_with_typed_objects(&[
+            (38, 1, 432, 416),
+            (15, 1, 448, 496),
+            (super::CHECKPOINT_OBJECT_TYPE, 1, 112, 208),
+        ]);
+        let jn = JnFile::from_bytes(bytes).expect("synthetic JN should parse");
+        let obj = find_checkpoint(&jn, 1).expect("level 1 checkpoint should exist");
+        assert_eq!(obj.object_type(), super::CHECKPOINT_OBJECT_TYPE);
+        assert_eq!(obj.x(), 112);
+        assert_eq!(obj.y(), 208);
+    }
+
+    /// Unit under test: when the JN file holds no checkpoint object whose
+    /// `counter` matches the level number (only non-checkpoint objects do),
+    /// the viewport falls back to `(0, 0)` rather than seeding off the
+    /// first counter match.
+    #[test]
+    fn checkpoint_skips_non_checkpoint_counter_matches() {
+        let bytes = jn_bytes_with_typed_objects(&[(38, 1, 432, 416), (15, 1, 448, 496)]);
+        let (screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        assert_eq!(screen.viewport(), (0, 0));
     }
 
     /// Unit under test: `lookup_message_text` returns the JN1 message string
@@ -1526,6 +1648,76 @@ mod tests {
             last_messagebox_blit > clear_index,
             "message-box overlay must follow the baseline Clear in the command list"
         );
+    }
+
+    /// Unit under test: `translate_object_command` rewrites a world-coord
+    /// `Blit` emitted from `ObjectEntity::draw` into framebuffer coordinates
+    /// using the OpenJill sign convention shared with `tick_backgrounds` and
+    /// `render_map_background`.
+    ///
+    /// Preconditions: a synthetic `Blit` with world `(x, y) = (200, 64)`,
+    /// no clip; the active `viewport_x = -16` (world origin at `+16`),
+    /// `viewport_y = 0` (world origin at the game-area top).
+    ///
+    /// Invariants asserted: the rewritten command lands at
+    /// `(GAME_AREA_X + 200 + viewport_x, GAME_AREA_Y + 64 + viewport_y) =
+    /// (80 + 200 - 16, 16 + 64) = (264, 80)`, and carries the shared
+    /// `GAME_AREA_CLIP` so the sprite cannot bleed past the right or bottom
+    /// game-area border into the surrounding status bar.
+    #[test]
+    fn translate_object_command_applies_viewport_offset_and_clip() {
+        use crate::status_bar::GAME_AREA_CLIP;
+        let cmd = RenderCommand::Blit {
+            tileset: 8,
+            tile: 16,
+            x: 200,
+            y: 64,
+            opaque: false,
+            clip: None,
+        };
+        let translated = super::translate_object_command(cmd, -16, 0);
+        match translated {
+            RenderCommand::Blit { x, y, clip, .. } => {
+                assert_eq!(
+                    x,
+                    80 + 200 + -16,
+                    "screen_x = GAME_AREA_X + world_x + viewport_x"
+                );
+                assert_eq!(y, 16 + 64, "screen_y = GAME_AREA_Y + world_y + viewport_y");
+                assert_eq!(
+                    clip,
+                    Some(GAME_AREA_CLIP),
+                    "object Blit must adopt the shared game-area clip when none was supplied"
+                );
+            }
+            other => panic!("expected Blit; got {other:?}"),
+        }
+    }
+
+    /// Unit under test: `translate_object_command` preserves an explicit
+    /// clip rectangle supplied by the entity instead of overriding it with
+    /// the shared game-area clip.
+    #[test]
+    fn translate_object_command_preserves_explicit_clip() {
+        let explicit = openjill_core::ClipRect {
+            x: 100,
+            y: 50,
+            width: 50,
+            height: 32,
+        };
+        let cmd = RenderCommand::Blit {
+            tileset: 8,
+            tile: 16,
+            x: 0,
+            y: 0,
+            opaque: false,
+            clip: Some(explicit),
+        };
+        let translated = super::translate_object_command(cmd, 0, 0);
+        let RenderCommand::Blit { clip, .. } = translated else {
+            panic!("expected Blit");
+        };
+        assert_eq!(clip, Some(explicit));
     }
 
     /// Unit under test: `tick_backgrounds` derives screen pixel positions
