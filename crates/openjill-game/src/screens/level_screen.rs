@@ -22,7 +22,7 @@ use openjill_core::layout::{
 };
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
-    ActiveInput, BackgroundGrid, ChangeLevelPayload, InputCommand, MessageDispatcher,
+    ActiveInput, BackgroundGrid, ChangeLevelPayload, FontSize, InputCommand, MessageDispatcher,
     MessageHandler, MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
     ScreenTransition, TickResult,
 };
@@ -794,6 +794,7 @@ fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
             x: text_origin_x,
             y: text_origin_y + (line_index as i32) * MESSAGE_LINE_HEIGHT,
             color_index: layout.text_color,
+            font: FontSize::Small,
         });
     }
     commands

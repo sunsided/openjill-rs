@@ -1,7 +1,7 @@
 //! Static VGA status bar render commands and game-area offset helpers.
 
-use openjill_core::RenderCommand;
 use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
+use openjill_core::{FontSize, RenderCommand};
 use std::sync::LazyLock;
 
 /// Embedded JSON describing the static VGA status bar tile layout.
@@ -38,12 +38,17 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
         commands.extend(images.iter().filter_map(parse_blit_entry));
     }
     if let Some(text) = value.get("text").and_then(|v| v.as_array()) {
-        commands.extend(text.iter().filter_map(parse_text_entry));
+        commands.extend(
+            text.iter()
+                .filter_map(|entry| parse_text_entry(entry, FontSize::Small)),
+        );
     }
-    // TODO: `bigtext` should select a larger SHA font tileset; the current renderer uses
-    // the first font tileset for every `DrawText`, so both arrays render at the same size.
     if let Some(bigtext) = value.get("bigtext").and_then(|v| v.as_array()) {
-        commands.extend(bigtext.iter().filter_map(parse_text_entry));
+        commands.extend(
+            bigtext
+                .iter()
+                .filter_map(|entry| parse_text_entry(entry, FontSize::Big)),
+        );
     }
     commands
 }
@@ -69,7 +74,12 @@ fn parse_blit_entry(img: &serde_json::Value) -> Option<RenderCommand> {
 /// Parses one `text` or `bigtext` array entry into a [`RenderCommand::DrawText`]. Returns
 /// `None` if any required field is missing, has the wrong JSON type, or carries a numeric
 /// value that does not fit the target width.
-fn parse_text_entry(entry: &serde_json::Value) -> Option<RenderCommand> {
+///
+/// `font` selects which SHA font tileset the rendered glyphs are drawn from:
+/// callers pass [`FontSize::Small`] for `status_bar_vga.json`'s `text` array
+/// (body labels rendered with the 6x6 font) and [`FontSize::Big`] for its
+/// `bigtext` array (the 8x8 title font).
+fn parse_text_entry(entry: &serde_json::Value, font: FontSize) -> Option<RenderCommand> {
     let text = entry.get("text")?.as_str()?.to_string();
     let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
     let x = i32::try_from(entry.get("x")?.as_i64()?).ok()?;
@@ -79,6 +89,7 @@ fn parse_text_entry(entry: &serde_json::Value) -> Option<RenderCommand> {
         x,
         y,
         color_index,
+        font,
     })
 }
 
@@ -242,6 +253,7 @@ mod tests {
                     x,
                     y,
                     color_index,
+                    ..
                 } => Some((text.clone(), *x, *y, *color_index)),
                 _ => None,
             })

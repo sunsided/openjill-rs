@@ -14,7 +14,7 @@ use openjill_core::layout::{
 };
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
-    ActiveInput, InputCommand, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
+    ActiveInput, FontSize, InputCommand, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
 };
 use openjill_data::cfg::CfgFile;
 use openjill_data::dma::DmaFile;
@@ -332,6 +332,7 @@ impl StartMenuScreen {
             x: GAME_AREA_X + base_x,
             y: GAME_AREA_Y + base_y,
             color_index: layout.title_color,
+            font: FontSize::Big,
         }];
 
         let spaces = " ".repeat(layout.nb_space_before);
@@ -344,6 +345,7 @@ impl StartMenuScreen {
                 x: GAME_AREA_X + base_x,
                 y: GAME_AREA_Y + y,
                 color_index: item.color,
+                font: FontSize::Big,
             });
         }
 
@@ -364,6 +366,7 @@ impl StartMenuScreen {
             x: CONTROL_AREA_X + 5,
             y: CONTROL_AREA_Y + 2,
             color_index: 4,
+            font: FontSize::Big,
         });
 
         for (index, entry) in self.cfg.high_scores().iter().take(5).enumerate() {
@@ -373,12 +376,14 @@ impl StartMenuScreen {
                 x: CONTROL_AREA_X + 2,
                 y,
                 color_index: 6,
+                font: FontSize::Small,
             });
             commands.push(RenderCommand::DrawText {
                 text: entry.name().to_string(),
                 x: CONTROL_AREA_X + 30,
                 y,
                 color_index: 2,
+                font: FontSize::Small,
             });
         }
 
@@ -415,6 +420,7 @@ impl StartMenuScreen {
                 x: INFO_BOX_TEXT_X,
                 y: INFO_BOX_TEXT_Y + (line_index as i32) * INFO_BOX_LINE_HEIGHT,
                 color_index: INFO_BOX_TEXT_COLOR,
+                font: FontSize::Small,
             });
         }
         commands
@@ -437,6 +443,7 @@ impl StartMenuScreen {
             x: 136,
             y: 40,
             color_index: 2,
+            font: FontSize::Big,
         });
         for (index, slot) in self.cfg.save_slots().iter().enumerate() {
             commands.push(RenderCommand::DrawText {
@@ -444,6 +451,7 @@ impl StartMenuScreen {
                 x: 132,
                 y: 56 + index as i32 * 12,
                 color_index: 3,
+                font: FontSize::Small,
             });
         }
         commands
@@ -788,6 +796,7 @@ mod tests {
                     x,
                     y,
                     color_index,
+                    ..
                 } if *x == super::INFO_BOX_TEXT_X && *color_index == super::INFO_BOX_TEXT_COLOR => {
                     Some((*y, text.clone()))
                 }

@@ -36,6 +36,30 @@ impl ClipRect {
     }
 }
 
+/// Per-command font selector used by [`RenderCommand::DrawText`].
+///
+/// The shipped `JILL1.SHA` carries several font tilesets that differ in
+/// glyph size; the original DOS renderer picks one of them per text label
+/// it draws.  The Rust port mirrors that distinction so identical labels
+/// land at identical visual sizes:
+///
+/// - [`FontSize::Small`] (6x6 px) – the default body text used by status
+///   bar labels, message-bar status text, the level-transition message
+///   box, and most in-game DrawText paths.
+/// - [`FontSize::Big`] (8x8 px) – the larger "title" font used by
+///   `status_bar_vga.json`'s `bigtext` array and similar label slots
+///   that the JSON tags as `bigtext`.
+///
+/// New variants can be added later for the digit-only (`4x5`) and huge
+/// menu (`32x8`) tilesets once a draw path actually needs them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontSize {
+    /// 6x6 px body text font (typically the second font tileset).
+    Small,
+    /// 8x8 px title / `bigtext` font (typically the first font tileset).
+    Big,
+}
+
 /// One rendering instruction produced by a screen handler per tick.
 ///
 /// The renderer executes these in order against its indexed framebuffer.
@@ -68,7 +92,7 @@ pub enum RenderCommand {
         /// Optional per-command clip rectangle in framebuffer pixels.
         clip: Option<ClipRect>,
     },
-    /// Draw a text string at `(x, y)` using the SHA font tileset.
+    /// Draw a text string at `(x, y)` using a SHA font tileset.
     DrawText {
         /// Text to render.
         text: String,
@@ -78,6 +102,11 @@ pub enum RenderCommand {
         y: i32,
         /// Palette index used to colorize each text glyph.
         color_index: u8,
+        /// Which SHA font tileset to draw with.  See [`FontSize`] for the
+        /// per-variant mapping; emitters that do not have a specific
+        /// preference should pass [`FontSize::Small`], which matches the
+        /// default body-text font the original DOS game renders with.
+        font: FontSize,
     },
     /// Fill a rectangle with palette index `color`.
     FillRect {
@@ -96,7 +125,7 @@ pub enum RenderCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClipRect, RenderCommand};
+    use super::{ClipRect, FontSize, RenderCommand};
 
     /// Unit under test: all `RenderCommand` variants.
     ///
@@ -126,6 +155,7 @@ mod tests {
             x: 10,
             y: 20,
             color_index: 15,
+            font: FontSize::Small,
         };
         assert_eq!(draw_text.clone(), draw_text);
 

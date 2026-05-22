@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use openjill_core::{ClipRect, Palette, RenderCommand};
+use openjill_core::{ClipRect, FontSize, Palette, RenderCommand};
 use openjill_data::sha::{ShaFile, ShaTile, ShaTileSet};
 use thiserror::Error;
 use wgpu::{
@@ -711,20 +711,27 @@ fn fill_rect_indexed(framebuffer: &mut [u8], x: i32, y: i32, width: u32, height:
 
 /// Dispatches a slice of render commands onto a 320×200 indexed framebuffer.
 ///
-/// Resolves [`RenderCommand::Blit`] tile data from `sha` by matching the command's `tileset`
-/// value against each [`ShaTileSet::entry_index`]. The first font tileset in `sha` is decoded
-/// once and reused for all [`RenderCommand::DrawText`] commands; glyph masks are filled with
-/// each command's `color_index`. `DrawText` commands are skipped silently when no font tileset
-/// is present or decoding fails.
+/// Resolves [`RenderCommand::Blit`] tile data from `sha` by matching the
+/// command's `tileset` value against each [`ShaTileSet::entry_index`].  Two
+/// font tilesets are decoded once per call and selected per
+/// [`RenderCommand::DrawText`] via the command's [`FontSize`] field:
+/// [`FontSize::Small`] uses the second font tileset found in `sha` (the
+/// 6x6 body-text font in the shipped `JILL1.SHA`), and [`FontSize::Big`]
+/// uses the first font tileset (the 8x8 `bigtext` font).  When the
+/// requested font is not present in `sha` the renderer falls back to
+/// whichever font is available so partial fonts still render text; if
+/// neither font is present the `DrawText` is skipped silently.
 fn execute_commands_on_framebuffer(
     framebuffer: &mut [u8],
     commands: &[RenderCommand],
     sha: &ShaFile,
 ) {
-    let font = sha
-        .tilesets()
-        .iter()
-        .find(|ts| ts.is_font())
+    let mut font_tilesets = sha.tilesets().iter().filter(|ts| ts.is_font());
+    let big_font = font_tilesets
+        .next()
+        .and_then(|ts| ShaFontTiles::from_tileset(ts).ok());
+    let small_font = font_tilesets
+        .next()
         .and_then(|ts| ShaFontTiles::from_tileset(ts).ok());
 
     for command in commands {
@@ -765,8 +772,13 @@ fn execute_commands_on_framebuffer(
                 x,
                 y,
                 color_index,
+                font,
             } => {
-                if let Some(ref f) = font {
+                let selected = match font {
+                    FontSize::Small => small_font.as_ref().or(big_font.as_ref()),
+                    FontSize::Big => big_font.as_ref().or(small_font.as_ref()),
+                };
+                if let Some(f) = selected {
                     draw_text_colorized_indexed(framebuffer, text, *x, *y, f, *color_index);
                 }
             }
@@ -867,7 +879,7 @@ mod tests {
         draw_text_colorized_indexed, draw_text_indexed, execute_commands_on_framebuffer,
         expand_indexed_framebuffer, fill_rect_indexed, select_surface_format,
     };
-    use openjill_core::{Palette, RenderCommand};
+    use openjill_core::{FontSize, Palette, RenderCommand};
     use openjill_data::sha::ShaFile;
     use wgpu::TextureFormat;
 
@@ -1333,6 +1345,7 @@ mod tests {
             x: 4,
             y: 6,
             color_index: 13,
+            font: FontSize::Small,
         }];
         let mut fb = [0_u8; FRAMEBUFFER_PIXELS];
 

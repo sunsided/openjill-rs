@@ -130,6 +130,7 @@ fn status_bar_text_labels_resolve_against_original_font() {
                 x,
                 y,
                 color_index,
+                ..
             } => Some((text.as_str(), *x, *y, *color_index)),
             _ => None,
         })
