@@ -432,6 +432,44 @@ add it to `openjill-core`. Do not introduce new workspace packages.
 `serde_json` was conditionally added in epic 5; no additional dependencies
 expected for this epic.
 
+## Per-level sky / game-area background color
+
+The Java reference port (`AbstractBackgroundJillLevel.loadLevel` and
+`createBackgound`) takes the VGA color map shipped in
+`sha-file/src/main/resources/jill_color_map.properties` and assigns
+`defaultBackgroundColor = colorMap[0]`.  Palette index 0 in that table is
+the `!000000` transparent sentinel, so the Java port composites the level
+on top of a transparent fill that exposes whatever lies beneath in the
+backing buffer (effectively black in the standard Swing presenter).  The
+JN file format carries no sky-color field, the `JillLevelConfiguration`
+class has no such member, and there is no derived per-level DMA palette
+either.
+
+Original DOS Jill of the Jungle episode 1 renders a saturated dark blue
+sky (`0x0000A2`, VGA palette index 1) across all levels, which the Java
+reference does *not* reproduce.  To match the original engine the Rust
+port treats the sky color as a per-episode constant rather than a
+per-level field:
+
+- `crates/openjill-game/src/screens/level_screen.rs` exposes
+  `pub const EPISODE_1_SKY_COLOR: u8 = 1;` and threads it through
+  `LevelScreen::new` / `LevelScreen::from_bytes` as an explicit `sky_color`
+  parameter.  The orchestrator passes `EPISODE_1_SKY_COLOR` at every
+  construction site.
+- `LevelScreen::render_base_frame` emits, in order: `RenderCommand::Clear`
+  (the existing baseline), a `RenderCommand::FillRect` covering
+  `(GAME_AREA_X, GAME_AREA_Y, GAME_AREA_W, GAME_AREA_H)` with
+  `self.sky_color`, then the static background tile blits.  The presenter
+  still clears the framebuffer to palette index 0 each frame; the
+  per-level fill sits on top of that clear for the game-area region only,
+  so the inventory / control / message-bar regions outside the game area
+  remain unaffected.
+
+When JN2 / JN3 episode support lands, replace the constant with an
+episode-aware lookup (e.g., a function over the JN file extension or the
+loaded episode descriptor) and update the orchestrator call sites to
+forward the resolved value rather than the JN1-only constant.
+
 ## Status bar dynamic rendering
 
 Epic 5 implements the static status bar tile mosaic. This epic drives dynamic
