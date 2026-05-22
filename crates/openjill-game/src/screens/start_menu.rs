@@ -291,23 +291,31 @@ impl StartMenuScreen {
 
     /// Emits `Blit` commands for the tileset-7 menu box frame.
     ///
-    /// The box occupies `(items.len() + 2)` tile rows (title + items + padding)
-    /// and 10 tile columns, positioned at `(layout.x, layout.y)` in framebuffer
-    /// space.
+    /// Mirrors `AbstractStdMenu.drawPicture` from the Java reference: the box
+    /// holds `items.len() + 5` total cell rows (`NB_BORDER` + items) and
+    /// `max(title, longest item + nbSpaceBefore) + 1` total cell columns, with
+    /// the outer cells reserved for the corner / bar frame tiles.  Positioned
+    /// at `(layout.x, layout.y)` in framebuffer space.
     fn render_menu_box(&self) -> Vec<RenderCommand> {
         let layout = &*MENU_LAYOUT;
         let ts = layout.frame_tileset;
         let step = MENU_FRAME_TILE_SIZE;
         let left = layout.x;
         let top = layout.y;
-        // The shipped `start_menu.json` carries no width field; the original
-        // DOS layout measures the box at roughly 17 inner tile columns so it
-        // can hold the widest "ordering info" item label at the small body
-        // font (6 pixels per glyph) with the four leading spaces and the
-        // cursor.  The previous fixed 9-column width chopped off the right
-        // half of the menu visually.
-        let inner_cols = 17_i32;
-        let inner_rows = layout.items.len() as i32 + 2;
+        // Match Java's `calculateWidthMinimum() + 1` and
+        // `NB_BORDER + items.size()` so the frame sits exactly where the small
+        // body font lays out the title + items, with the cursor and the four
+        // leading spaces accounted for.
+        let title_chars = layout.title_text.chars().count();
+        let max_item_chars = layout
+            .items
+            .iter()
+            .map(|it| it.text.chars().count() + layout.nb_space_before)
+            .max()
+            .unwrap_or(0);
+        let max_chars = title_chars.max(max_item_chars) as i32;
+        let inner_cols = (max_chars - 1).max(1);
+        let inner_rows = layout.items.len() as i32 + 3;
         let right = left + (inner_cols + 1) * step;
         let bottom = top + (inner_rows + 1) * step;
 
