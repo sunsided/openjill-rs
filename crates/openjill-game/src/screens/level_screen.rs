@@ -17,15 +17,16 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use openjill_core::layout::{
-    BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y, INVENTORY_AREA_X,
-    INVENTORY_AREA_Y, LEVEL_MESSAGE_TICKS, MESSAGE_BAR_H, MESSAGE_BAR_Y, SCREEN_WIDTH,
-    X_UPDATE_BORDER, Y_UPDATE_BORDER,
+    BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y, INVENTORY_AREA_H,
+    INVENTORY_AREA_W, INVENTORY_AREA_X, INVENTORY_AREA_Y, LEVEL_MESSAGE_TICKS, MESSAGE_BAR_H,
+    MESSAGE_BAR_Y, SCREEN_WIDTH, X_UPDATE_BORDER, Y_UPDATE_BORDER,
 };
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
     ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundGrid, ChangeLevelPayload,
-    FontSize, InputCommand, InventoryObject, MessageDispatcher, MessageHandler, MessagePayload,
-    MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
+    ClipRect, FontSize, InputCommand, InventoryObject, MessageDispatcher, MessageHandler,
+    MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
+    ScreenTransition, TickResult,
 };
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::{JnFile, JnObject, JnReadError};
@@ -132,6 +133,25 @@ const INVENTORY_BG_COLOR: u8 = 8;
 /// Matches the original game's six-digit score display.
 const SCORE_DIGITS: usize = 6;
 
+/// Maximum displayable score value (`10^SCORE_DIGITS - 1`).
+///
+/// The score is clamped to this ceiling when ingested from
+/// `InventoryPoint` deltas so the rendered text always fits the six-digit
+/// erase band; a runaway score never spills extra glyphs past
+/// [`SCORE_ERASE_W`] into adjacent UI.  Also enforced when reading from
+/// [`RuntimeState`] in the overlay path so externally-mutated state stays
+/// inside the same visual contract.
+const SCORE_DISPLAY_MAX: i32 = 999_999;
+
+/// Maximum displayable lives digit (`0..=9`).
+///
+/// Limits the rendered glyph count to one so the lives `DrawText` never
+/// overflows [`LIVES_ERASE_W`].  The underlying [`RuntimeState::lives`]
+/// counter is left untouched above this value; the saturation is purely a
+/// display concern, mirroring the original game's single-digit lives
+/// indicator.
+const LIVES_DISPLAY_MAX: i32 = 9;
+
 /// Inventory-area-local X of the lives count digit.
 ///
 /// `inventory_conf.json` does not carry an explicit lives anchor; the value
@@ -180,6 +200,27 @@ const ITEM_GRID_COLS: usize = 4;
 /// Pixel pitch between adjacent inventory item grid cells.
 const ITEM_GRID_PITCH: i32 = 16;
 
+/// Framebuffer clip rectangle that confines dynamic-overlay output to the
+/// inventory area (origin `(INVENTORY_AREA_X, INVENTORY_AREA_Y)`, size
+/// `INVENTORY_AREA_W × INVENTORY_AREA_H` from `openjill_core::layout`).
+///
+/// `inventory_conf.json` declares an item grid (`itemConf.x = 2`,
+/// `itemConf.y = 27`, 4 cols × 3 rows × 16 px pitch) whose 64 × 48 footprint
+/// sticks two pixels past the inventory area's right edge and six pixels
+/// past its bottom edge; the Java reference renders the grid into a
+/// `BufferedImage(INVENTORY_AREA_W, INVENTORY_AREA_H)` backing buffer that
+/// silently clips the overflow.  The Rust port draws directly into the
+/// framebuffer, so the same clip is supplied per-command on every
+/// inventory-overlay blit + erase so the dynamic redraw cannot punch
+/// through the surrounding status-bar frame (vertical bar tile at
+/// `x = 72`, lower horizontal bar at `y = 176`, `"INVENTORY"` label band).
+const INVENTORY_AREA_CLIP: ClipRect = ClipRect {
+    x: INVENTORY_AREA_X,
+    y: INVENTORY_AREA_Y,
+    width: INVENTORY_AREA_W,
+    height: INVENTORY_AREA_H,
+};
+
 /// EGA color index used by the in-game status-bar text overlay.
 ///
 /// Matches the bright EGA index the level message-box uses for non-title
@@ -188,14 +229,22 @@ const STATUS_BAR_TEXT_COLOR: u8 = 4;
 
 /// Status-bar text X offset inside the message bar in framebuffer pixels.
 ///
-/// Two pixel left margin matching the message-box layout's text-area
-/// padding.
+/// Two-pixel left margin from the framebuffer origin.  The original
+/// `status_bar_vga.json` `messageBar` entry covers the full screen width
+/// (`x = 0`, `width = 320`) without specifying a text inset, so the value
+/// is a port-side convention picked to match the small 6 × 6 SHA font's
+/// visual padding inside the 12 px bar; later episodes can override it if
+/// the reference layout grows a dedicated key.
 const STATUS_BAR_TEXT_X: i32 = 2;
 
-/// Status-bar text Y offset inside the message bar in framebuffer pixels.
+/// Status-bar text Y offset (relative to [`MESSAGE_BAR_Y`]) in framebuffer
+/// pixels.
 ///
-/// Three pixel top margin so the 6 px small font sits vertically centered
-/// inside the 12 px message bar.
+/// Three-pixel top margin centring the 6 px small font inside the
+/// `MESSAGE_BAR_H = 12` band declared by `status_bar_vga.json`'s
+/// `messageBar` entry.  The reference JSON does not pin the text origin
+/// either, so this is a port-side convention matching the visual centring
+/// the original DOS executable produces.
 const STATUS_BAR_TEXT_Y_OFFSET: i32 = 3;
 
 /// Returns the inventory item tileset / tile pair for an [`InventoryObject`]
@@ -692,10 +741,26 @@ impl LevelScreen {
         for update in updates {
             match update {
                 StatusUpdate::Point(delta) => {
-                    state.score = state.score.saturating_add(delta);
+                    // Clamp to `[0, SCORE_DISPLAY_MAX]` so negative deltas
+                    // cannot drive the visible score below zero and so a
+                    // streak of pickups cannot push the rendered digit count
+                    // past the six-digit erase band defined by
+                    // `SCORE_ERASE_W`.  The clamp lives at ingest rather
+                    // than on the render path so downstream gameplay logic
+                    // (HUD readers, save-game writers) sees the same value
+                    // the player sees on-screen.
+                    state.score = state
+                        .score
+                        .saturating_add(delta)
+                        .clamp(0, SCORE_DISPLAY_MAX);
                 }
                 StatusUpdate::Life(delta) => {
-                    state.lives = state.lives.saturating_add(delta);
+                    // Clamp to `>= 0` only: the underlying counter can go
+                    // beyond `LIVES_DISPLAY_MAX` to model extra-life
+                    // pickups that stack past the single-digit display,
+                    // while a negative delta cannot drive the lives count
+                    // below zero in the shared state.
+                    state.lives = state.lives.saturating_add(delta).max(0);
                 }
                 StatusUpdate::Item(item) => {
                     state.inventory.push(item);
@@ -722,7 +787,10 @@ impl LevelScreen {
     fn render_dynamic_status(&self, state: &RuntimeState) -> Vec<RenderCommand> {
         let mut commands = Vec::new();
 
-        // Score: zero-padded six-digit decimal.
+        // Score: zero-padded six-digit decimal, clamped to
+        // `[0, SCORE_DISPLAY_MAX]` so externally-mutated `state.score`
+        // never spills extra glyphs past the six-digit erase band.
+        let display_score = state.score.clamp(0, SCORE_DISPLAY_MAX);
         commands.push(RenderCommand::FillRect {
             x: INVENTORY_AREA_X + SCORE_X_INV,
             y: INVENTORY_AREA_Y + SCORE_Y_INV,
@@ -731,15 +799,18 @@ impl LevelScreen {
             color: INVENTORY_BG_COLOR,
         });
         commands.push(RenderCommand::DrawText {
-            text: format!("{:0>width$}", state.score.max(0), width = SCORE_DIGITS,),
+            text: format!("{:0>width$}", display_score, width = SCORE_DIGITS),
             x: INVENTORY_AREA_X + SCORE_X_INV,
             y: INVENTORY_AREA_Y + SCORE_Y_INV,
             color_index: SCORE_COLOR,
             font: FontSize::Small,
         });
 
-        // Lives: single decimal digit (saturating below 0 / clipped to a
-        // sensible upper bound by the FillRect width).
+        // Lives: single decimal digit, clamped to `[0, LIVES_DISPLAY_MAX]`
+        // so a state value above 9 (extra-life stacking) cannot widen the
+        // glyph count past the one-digit erase rect declared by
+        // `LIVES_ERASE_W`.
+        let display_lives = state.lives.clamp(0, LIVES_DISPLAY_MAX);
         commands.push(RenderCommand::FillRect {
             x: INVENTORY_AREA_X + LIVES_X_INV,
             y: INVENTORY_AREA_Y + LIVES_Y_INV,
@@ -748,22 +819,40 @@ impl LevelScreen {
             color: INVENTORY_BG_COLOR,
         });
         commands.push(RenderCommand::DrawText {
-            text: state.lives.max(0).to_string(),
+            text: display_lives.to_string(),
             x: INVENTORY_AREA_X + LIVES_X_INV,
             y: INVENTORY_AREA_Y + LIVES_Y_INV,
             color_index: LIVES_COLOR,
             font: FontSize::Small,
         });
 
-        // Inventory item grid: erase the whole grid block, then blit each
-        // carried item in row-major order until the grid is full.
+        // Inventory item grid: erase the grid block and blit each carried
+        // item in row-major order until the grid is full.
+        //
+        // The `itemConf` rectangle declared in `inventory_conf.json`
+        // (4 cols × 3 rows × 16 px pitch starting at inventory-local
+        // `(2, 27)`) extends two pixels past the inventory area's right
+        // edge and six pixels past its bottom edge.  The erase rect is
+        // clamped to the inventory interior so the fill does not punch
+        // through the surrounding vertical bar tile column (`x = 72`) or
+        // the lower horizontal bar / `"INVENTORY"` label band
+        // (`y ≥ 176`), and every grid `Blit` carries the
+        // [`INVENTORY_AREA_CLIP`] so the rightmost icon column's two-pixel
+        // overflow is silently clipped the same way the Java reference's
+        // backing `BufferedImage` clips it.
         let grid_screen_x = INVENTORY_AREA_X + ITEM_GRID_X_INV;
         let grid_screen_y = INVENTORY_AREA_Y + ITEM_GRID_Y_INV;
+        let inv_right = INVENTORY_AREA_X + INVENTORY_AREA_W as i32;
+        let inv_bottom = INVENTORY_AREA_Y + INVENTORY_AREA_H as i32;
+        let grid_right = grid_screen_x + ITEM_GRID_COLS as i32 * ITEM_GRID_PITCH;
+        let grid_bottom = grid_screen_y + ITEM_GRID_ROWS as i32 * ITEM_GRID_PITCH;
+        let erase_w = (grid_right.min(inv_right) - grid_screen_x).max(0) as u32;
+        let erase_h = (grid_bottom.min(inv_bottom) - grid_screen_y).max(0) as u32;
         commands.push(RenderCommand::FillRect {
             x: grid_screen_x,
             y: grid_screen_y,
-            width: (ITEM_GRID_COLS as i32 * ITEM_GRID_PITCH) as u32,
-            height: (ITEM_GRID_ROWS as i32 * ITEM_GRID_PITCH) as u32,
+            width: erase_w,
+            height: erase_h,
             color: INVENTORY_BG_COLOR,
         });
         for (index, item) in state
@@ -781,7 +870,7 @@ impl LevelScreen {
                 x: grid_screen_x + col * ITEM_GRID_PITCH,
                 y: grid_screen_y + row * ITEM_GRID_PITCH,
                 opaque: false,
-                clip: None,
+                clip: Some(INVENTORY_AREA_CLIP),
             });
         }
 
@@ -2559,6 +2648,221 @@ mod tests {
         assert!(
             grid_blit.is_some(),
             "expected a gem Blit at the inventory grid's top-left cell"
+        );
+    }
+
+    /// Unit under test: score saturates at [`super::SCORE_DISPLAY_MAX`] on
+    /// ingest so the rendered text always fits the six-digit erase band.
+    ///
+    /// Preconditions: a fresh level screen; a single `InventoryPoint`
+    /// message carrying a delta well past the six-digit ceiling.
+    ///
+    /// Invariants asserted: `state.score` clamps to
+    /// `SCORE_DISPLAY_MAX = 999_999`; the score `DrawText` carries exactly
+    /// six glyphs (`"999999"`), never seven.
+    #[test]
+    fn inventory_point_message_caps_score_at_six_digit_max() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(
+            MessageType::InventoryPoint,
+            MessagePayload::Count(2_000_000),
+        );
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+        assert_eq!(state.score, super::SCORE_DISPLAY_MAX);
+        let RenderCommand::DrawText { text, .. } = score_draw_text(&result.commands) else {
+            unreachable!("score_draw_text guarantees DrawText");
+        };
+        assert_eq!(text, "999999");
+    }
+
+    /// Unit under test: a negative `InventoryPoint` delta never drives the
+    /// rendered score below zero.
+    ///
+    /// Preconditions: fresh state (`score == 0`); an `InventoryPoint(-50)`
+    /// message.
+    ///
+    /// Invariants asserted: `state.score` stays at 0; the score `DrawText`
+    /// is `"000000"`.
+    #[test]
+    fn inventory_point_message_clamps_score_at_zero() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(MessageType::InventoryPoint, MessagePayload::Count(-50));
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+        assert_eq!(state.score, 0);
+        let RenderCommand::DrawText { text, .. } = score_draw_text(&result.commands) else {
+            unreachable!("score_draw_text guarantees DrawText");
+        };
+        assert_eq!(text, "000000");
+    }
+
+    /// Unit under test: the lives `DrawText` clamps to a single digit even
+    /// when the underlying `state.lives` counter exceeds
+    /// [`super::LIVES_DISPLAY_MAX`].
+    ///
+    /// Preconditions: fresh screen; `state.lives` pre-seeded above the
+    /// single-digit cap; one tick advances the overlay.
+    ///
+    /// Invariants asserted: the lives `DrawText` carries one glyph (`"9"`)
+    /// even though `state.lives` is left at its larger underlying value.
+    #[test]
+    fn lives_draw_text_clamps_to_single_digit_when_state_exceeds_cap() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        state.lives = 25;
+        let result = screen.tick(&input, &mut state);
+        let target_x = INVENTORY_AREA_X + super::LIVES_X_INV;
+        let target_y = INVENTORY_AREA_Y + super::LIVES_Y_INV;
+        let lives_cmd = result
+            .commands
+            .iter()
+            .find(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::DrawText { x, y, .. } if *x == target_x && *y == target_y
+                )
+            })
+            .expect("expected a lives DrawText command");
+        let RenderCommand::DrawText { text, .. } = lives_cmd else {
+            unreachable!("filter guarantees DrawText");
+        };
+        assert_eq!(text, "9");
+        assert_eq!(state.lives, 25, "underlying state must be left untouched");
+    }
+
+    /// Unit under test: a negative `InventoryLife` delta cannot drive
+    /// `state.lives` below zero.
+    ///
+    /// Preconditions: fresh `RuntimeState::new()` (3 lives); two
+    /// `InventoryLife(-5)` deltas applied across separate ticks.
+    ///
+    /// Invariants asserted: `state.lives` saturates at 0 rather than going
+    /// negative.
+    #[test]
+    fn inventory_life_message_clamps_lives_at_zero() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-5));
+        screen.tick(&input, &mut state);
+        assert_eq!(state.lives, 0);
+        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-1));
+        screen.tick(&input, &mut state);
+        assert_eq!(state.lives, 0);
+    }
+
+    /// Unit under test: every inventory grid `Blit` carries the inventory
+    /// area clip so the rightmost icon column's two-pixel overflow can
+    /// never bleed into the static status-bar frame.
+    ///
+    /// Preconditions: a fresh screen with four `InventoryItem(Gem)`
+    /// messages (one full row, so the last column gets exercised).
+    ///
+    /// Invariants asserted: every grid `Blit` reports
+    /// `clip == Some(INVENTORY_AREA_CLIP)`.
+    #[test]
+    fn inventory_grid_blits_carry_inventory_area_clip() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        for _ in 0..4 {
+            dispatcher.send(
+                MessageType::InventoryItem,
+                MessagePayload::InventoryItem(InventoryObject::Gem),
+            );
+        }
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+
+        let grid_blits: Vec<&RenderCommand> = result
+            .commands
+            .iter()
+            .filter(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::Blit {
+                        tileset: 14,
+                        tile: 11,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(grid_blits.len(), 4, "expected one Blit per inventory item");
+        for cmd in grid_blits {
+            let RenderCommand::Blit { clip, .. } = cmd else {
+                unreachable!("filter guarantees Blit");
+            };
+            assert_eq!(
+                *clip,
+                Some(super::INVENTORY_AREA_CLIP),
+                "inventory grid blits must carry the inventory-area clip"
+            );
+        }
+    }
+
+    /// Unit under test: the inventory grid erase `FillRect` is clamped to
+    /// the inventory area's interior.
+    ///
+    /// Preconditions: fresh screen; one tick.
+    ///
+    /// Invariants asserted: the grid erase `FillRect` does not extend past
+    /// `INVENTORY_AREA_X + INVENTORY_AREA_W` on the right, nor past
+    /// `INVENTORY_AREA_Y + INVENTORY_AREA_H` on the bottom.
+    #[test]
+    fn inventory_grid_erase_stays_inside_inventory_area() {
+        use openjill_core::layout::{INVENTORY_AREA_H, INVENTORY_AREA_W};
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+
+        let grid_x = INVENTORY_AREA_X + super::ITEM_GRID_X_INV;
+        let grid_y = INVENTORY_AREA_Y + super::ITEM_GRID_Y_INV;
+        let inv_right = INVENTORY_AREA_X + INVENTORY_AREA_W as i32;
+        let inv_bottom = INVENTORY_AREA_Y + INVENTORY_AREA_H as i32;
+        let erase = result
+            .commands
+            .iter()
+            .find(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::FillRect { x, y, .. } if *x == grid_x && *y == grid_y
+                )
+            })
+            .expect("expected a grid erase FillRect");
+        let RenderCommand::FillRect {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } = erase
+        else {
+            unreachable!("filter guarantees FillRect");
+        };
+        assert!(
+            x + *width as i32 <= inv_right,
+            "grid erase must not extend past the inventory right edge"
+        );
+        assert!(
+            y + *height as i32 <= inv_bottom,
+            "grid erase must not extend past the inventory bottom edge"
         );
     }
 
