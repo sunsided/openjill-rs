@@ -7,17 +7,24 @@ pub const MAP_LEVEL: i32 = -1;
 
 /// An item the player can carry in their inventory.
 ///
-/// Extend as the gameplay epic adds more collectible types.
+/// Mirrors the inventory icon set from the Java reference's
+/// `InventoryItemMessage` enum.  Episode 1 uses all variants listed below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InventoryObject {
     /// The Jill character token.
     Jill,
     /// Gem collectible.
     Gem,
-    /// Key collectible.
+    /// Key collectible (red or rock variants share this icon).
     Key,
+    /// Knife weapon pickup.
+    Knife,
+    /// Blade weapon pickup.
+    Blade,
     /// Fire flower collectible.
     FireFlower,
+    /// Firebird transform power-up.
+    Firebird,
 }
 
 /// Persistent state carried across screen transitions.

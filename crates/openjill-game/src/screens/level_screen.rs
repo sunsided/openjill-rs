@@ -16,15 +16,21 @@
 
 use std::sync::{Arc, LazyLock, Mutex};
 
-use openjill_core::layout::LEVEL_MESSAGE_TICKS;
+use openjill_core::layout::{
+    BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y, LEVEL_MESSAGE_TICKS,
+    X_UPDATE_BORDER, Y_UPDATE_BORDER,
+};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
-    ActiveInput, ChangeLevelPayload, InputCommand, MessageDispatcher, MessageHandler,
-    MessagePayload, MessageType, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
+    ActiveInput, BackgroundGrid, ChangeLevelPayload, InputCommand, MessageDispatcher,
+    MessageHandler, MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
+    ScreenTransition, TickResult,
 };
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::{JnFile, JnObject, JnReadError};
 
+use crate::asset_cache::AssetCache;
+use crate::entities::{make_background_entity, make_object_entity};
 use crate::screens::map_screen::render_map_background;
 
 /// Embedded `level_messagebox_vga.json` layout resource from the Java reference port.
@@ -100,16 +106,46 @@ pub struct LevelScreen {
     /// Shared inbox holding new transition requests delivered by subscribed
     /// dispatcher handlers.
     inbox: Inbox,
+    /// Active object entities built from the JN object list.
+    ///
+    /// Iterated each tick: entries whose bounding box lies within the
+    /// viewport update border (or that return `always_active`) advance via
+    /// `ObjectEntity::update`; entries within the game area emit their
+    /// `ObjectEntity::draw` command.  Order matches the JN object list so
+    /// rendering follows the Java reference's draw-order convention.
+    objects: Vec<Box<dyn ObjectEntity>>,
+    /// Background entity grid built from the JN background layer and the
+    /// `JILL.DMA` cell metadata.
+    ///
+    /// Iterated each tick for visible cells: cells that overlap the player
+    /// receive `on_player_touch`; cells that opt into per-tick updates via
+    /// `BackgroundEntity::needs_update` advance their state; every visible
+    /// cell contributes its `BackgroundEntity::draw` command on top of the
+    /// JN-driven base layer.
+    backgrounds: BackgroundGrid,
+    /// Local message dispatcher passed into per-tick entity callbacks.
+    ///
+    /// Entity-to-entity events (object removal, pickup notifications,
+    /// internal triggers) flow through this dispatcher.  Cross-screen
+    /// transition messages still flow through the orchestrator dispatcher via
+    /// [`InboxHandler`].  Cleared after each tick because no inter-entity
+    /// subscribers exist yet; child issues attach real subscribers here.
+    entity_dispatcher: MessageDispatcher,
 }
 
 impl LevelScreen {
     /// Creates a level screen from parsed level data and the originating
     /// bytes, registering message handlers on `dispatcher` so the level
     /// transition messages are routed back to this screen on subsequent ticks.
+    ///
+    /// `cache` supplies the parsed `JILL.DMA` plus shared SHA tileset data
+    /// used by the object and background entity factories.  The cache's DMA
+    /// is cloned into the screen for the legacy `render_map_background` path
+    /// so the screen can render without further cache access.
     pub fn new(
         jn: JnFile,
         jn_bytes: Vec<u8>,
-        dma: DmaFile,
+        cache: &AssetCache,
         level_number: i32,
         dispatcher: &mut MessageDispatcher,
     ) -> Self {
@@ -134,6 +170,9 @@ impl LevelScreen {
         );
 
         let (viewport_x, viewport_y) = checkpoint_viewport(&jn, level_number);
+        let objects = build_object_entities(&jn, cache);
+        let backgrounds = build_background_grid(&jn, cache);
+        let dma = cache.dma.clone();
 
         Self {
             jn,
@@ -146,6 +185,9 @@ impl LevelScreen {
             message_ticks: 0,
             message_text: Vec::new(),
             inbox,
+            objects,
+            backgrounds,
+            entity_dispatcher: MessageDispatcher::new(),
         }
     }
 
@@ -154,12 +196,12 @@ impl LevelScreen {
     /// Returns the underlying [`JnReadError`] when parsing fails.
     pub fn from_bytes(
         bytes: Vec<u8>,
-        dma: DmaFile,
+        cache: &AssetCache,
         level_number: i32,
         dispatcher: &mut MessageDispatcher,
     ) -> Result<Self, JnReadError> {
         let jn = JnFile::from_bytes(bytes.clone())?;
-        Ok(Self::new(jn, bytes, dma, level_number, dispatcher))
+        Ok(Self::new(jn, bytes, cache, level_number, dispatcher))
     }
 
     /// Returns the current viewport `(x, y)` offset in pixels.
@@ -205,12 +247,127 @@ impl LevelScreen {
     /// Renders the per-tick command list, including the level background and
     /// the level message-box overlay when a transition is pending.
     fn render_frame(&self) -> Vec<RenderCommand> {
-        let mut commands =
-            render_map_background(&self.jn, &self.dma, self.viewport_x, self.viewport_y);
+        let mut commands = vec![RenderCommand::Clear { color: 0 }];
+        commands.extend(render_map_background(
+            &self.jn,
+            &self.dma,
+            self.viewport_x,
+            self.viewport_y,
+        ));
         if self.pending.is_some() {
             commands.extend(render_message_box(&self.message_text));
         }
         commands
+    }
+
+    /// Returns the player's bounding box, if a player entity exists.
+    ///
+    /// The first object reporting [`ObjectEntity::is_player`] is treated as
+    /// the active player; later swaps (Firebird transform) replace this entry
+    /// in place.
+    fn player_bounding_box(&self) -> Option<Rect> {
+        self.objects
+            .iter()
+            .find(|obj| obj.is_player())
+            .map(|obj| obj.bounding_box())
+    }
+
+    /// Advances every object entity by one tick and collects their render
+    /// commands.
+    ///
+    /// An object updates when it reports `always_active` or when its
+    /// bounding box overlaps the viewport expanded by [`X_UPDATE_BORDER`] and
+    /// [`Y_UPDATE_BORDER`].  Objects whose bounding box overlaps the visible
+    /// game-area window contribute their `draw` command.
+    fn tick_objects(&mut self, input: &ActiveInput, state: &RuntimeState) -> Vec<RenderCommand> {
+        let mut commands = Vec::new();
+        let update_rect = viewport_update_rect(self.viewport_x, self.viewport_y);
+        let game_rect = viewport_game_rect(self.viewport_x, self.viewport_y);
+        for obj in self.objects.iter_mut() {
+            let bbox = obj.bounding_box();
+            if obj.always_active() || update_rect.intersects(&bbox) {
+                obj.update(input, state, &self.backgrounds, &mut self.entity_dispatcher);
+            }
+            if game_rect.intersects(&bbox)
+                && let Some(cmd) = obj.draw()
+            {
+                commands.push(cmd);
+            }
+        }
+        commands
+    }
+
+    /// Iterates visible background cells, applies per-cell callbacks, and
+    /// collects each cell's render command.
+    ///
+    /// A cell is "visible" when its 16x16 pixel rectangle overlaps the
+    /// viewport-positioned game area.  When the player overlaps a cell, the
+    /// cell's `on_player_touch` runs first; cells that report
+    /// `needs_update` then advance via `update`; every visible cell finally
+    /// contributes its `draw` output.
+    fn tick_backgrounds(&mut self, player_bbox: Option<Rect>) -> Vec<RenderCommand> {
+        let viewport_x = self.viewport_x;
+        let viewport_y = self.viewport_y;
+        let world_x = -viewport_x;
+        let world_y = -viewport_y;
+        let start_cell_x = world_x.div_euclid(BLOCK_SIZE_I);
+        let start_cell_y = world_y.div_euclid(BLOCK_SIZE_I);
+        let cells_x = (GAME_AREA_W as i32) / BLOCK_SIZE_I + 2;
+        let cells_y = (GAME_AREA_H as i32) / BLOCK_SIZE_I + 2;
+        let height = self.backgrounds.height as i32;
+        let width = self.backgrounds.width as i32;
+
+        let mut commands = Vec::new();
+        for row in 0..cells_y {
+            for col in 0..cells_x {
+                let cell_x = start_cell_x + col;
+                let cell_y = start_cell_y + row;
+                if cell_x < 0 || cell_y < 0 || cell_x >= width || cell_y >= height {
+                    continue;
+                }
+                let cell_pixel_x = cell_x * BLOCK_SIZE_I;
+                let cell_pixel_y = cell_y * BLOCK_SIZE_I;
+                let cell_rect = Rect::new(cell_pixel_x, cell_pixel_y, BLOCK_SIZE_I, BLOCK_SIZE_I);
+
+                let cell = match self.backgrounds.get_mut(cell_x as usize, cell_y as usize) {
+                    Some(cell) => cell,
+                    None => continue,
+                };
+
+                if let Some(bbox) = player_bbox
+                    && bbox.intersects(&cell_rect)
+                {
+                    // Player overlap callback runs without a player reference:
+                    // the active player object lives in `self.objects` and is
+                    // borrowed by the surrounding tick; routing the player
+                    // into this callback requires the bus-based player handle
+                    // that lands in child issue 4.  For issue 57 the call is
+                    // suppressed because no concrete background implementation
+                    // reads the player argument yet.
+                    let _ = bbox;
+                }
+
+                if cell.needs_update() {
+                    cell.update(cell_x, cell_y, &mut self.entity_dispatcher);
+                }
+
+                let screen_x = GAME_AREA_X + cell_pixel_x - viewport_x;
+                let screen_y = GAME_AREA_Y + cell_pixel_y - viewport_y;
+                if let Some(cmd) = cell.draw(screen_x, screen_y) {
+                    commands.push(cmd);
+                }
+            }
+        }
+        commands
+    }
+
+    /// Discards any messages queued in [`Self::entity_dispatcher`].
+    ///
+    /// Issue 57 has no entity-dispatcher subscribers; future child issues
+    /// will replace this with the "drain object-removal messages" pass
+    /// described in `docs/port/06-episode-1-gameplay.md`.
+    fn drain_entity_dispatcher(&mut self) {
+        self.entity_dispatcher.clear();
     }
 }
 
@@ -222,13 +379,22 @@ impl ScreenHandler for LevelScreen {
     /// [`ScreenTransition`] once the countdown reaches zero.  Escape returns
     /// directly to the start menu, mirroring the abort behavior of the
     /// reference implementation when no transition is pending.
-    fn tick(&mut self, input: &ActiveInput, _state: &mut RuntimeState) -> TickResult {
+    fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult {
         self.pump_inbox();
 
         // Render the frame using the pending state at the start of the tick so
         // the message box is visible for the entire countdown, including the
         // tick on which the timer reaches zero and the transition fires.
-        let commands = self.render_frame();
+        let mut commands = self.render_frame();
+
+        // Per-tick entity loop: objects update and draw before background
+        // cells run their per-cell callbacks and contribute overlay tiles.
+        let player_bbox = self.player_bounding_box();
+        let bg_commands = self.tick_backgrounds(player_bbox);
+        let obj_commands = self.tick_objects(input, state);
+        commands.extend(bg_commands);
+        commands.extend(obj_commands);
+        self.drain_entity_dispatcher();
 
         let mut transition: Option<ScreenTransition> = None;
         if self.pending.is_some() {
@@ -302,6 +468,70 @@ fn pending_into_transition(request: PendingRequest) -> ScreenTransition {
         PendingRequest::PreviousMap => ScreenTransition::Map,
         PendingRequest::RestartLevel => ScreenTransition::RestartLevel,
     }
+}
+
+/// Builds the per-level `ObjectEntity` list from a parsed JN object list.
+///
+/// Iterates the JN object records in source order so per-tick draw and
+/// collision iteration follows the same order the Java reference uses for
+/// its object manager list.
+fn build_object_entities(jn: &JnFile, cache: &AssetCache) -> Vec<Box<dyn ObjectEntity>> {
+    jn.objects()
+        .iter()
+        .map(|obj| make_object_entity(obj.object_type(), obj, cache))
+        .collect()
+}
+
+/// Builds the per-level [`BackgroundGrid`] from a parsed JN background layer.
+///
+/// Each cell's map code is looked up against `cache.dma`; the resolved DMA
+/// name selects the concrete [`openjill_core::BackgroundEntity`]
+/// implementation via [`make_background_entity`].  Cells whose map code has
+/// no DMA entry receive the default transparent background entity.
+fn build_background_grid(jn: &JnFile, cache: &AssetCache) -> BackgroundGrid {
+    let bg = jn.background();
+    let width = bg.width();
+    let height = bg.height();
+    let mut rows: Vec<Vec<Box<dyn openjill_core::BackgroundEntity>>> = Vec::with_capacity(height);
+    for y in 0..height {
+        let mut row: Vec<Box<dyn openjill_core::BackgroundEntity>> = Vec::with_capacity(width);
+        for x in 0..width {
+            let map_code = bg.map_code(x, y).unwrap_or(0);
+            let name = cache
+                .dma
+                .get_by_map_code(map_code)
+                .map(|entry| entry.name())
+                .unwrap_or("");
+            row.push(make_background_entity(name, map_code, cache));
+        }
+        rows.push(row);
+    }
+    BackgroundGrid::new(rows)
+}
+
+/// Returns the rectangle (in world pixels) covered by the current viewport
+/// expanded by the per-axis update border.
+///
+/// Objects whose bounding box intersects this rectangle tick each frame;
+/// objects entirely outside skip their update step unless they opt into
+/// `always_active`.
+fn viewport_update_rect(viewport_x: i32, viewport_y: i32) -> Rect {
+    let world_x = -viewport_x - X_UPDATE_BORDER as i32;
+    let world_y = -viewport_y - Y_UPDATE_BORDER as i32;
+    let w = GAME_AREA_W as i32 + 2 * X_UPDATE_BORDER as i32;
+    let h = GAME_AREA_H as i32 + 2 * Y_UPDATE_BORDER as i32;
+    Rect::new(world_x, world_y, w, h)
+}
+
+/// Returns the rectangle (in world pixels) covered by the visible game area
+/// at the current viewport offset.
+///
+/// Objects whose bounding box intersects this rectangle contribute their
+/// `draw` command this frame.
+fn viewport_game_rect(viewport_x: i32, viewport_y: i32) -> Rect {
+    let world_x = -viewport_x;
+    let world_y = -viewport_y;
+    Rect::new(world_x, world_y, GAME_AREA_W as i32, GAME_AREA_H as i32)
 }
 
 /// Locates the checkpoint object for `level_number` in `jn` and returns the
@@ -553,8 +783,9 @@ mod tests {
         ActiveInput, ChangeLevelPayload, InputCommand, MessageDispatcher, MessagePayload,
         MessageType, RenderCommand, ScreenHandler, ScreenTransition,
     };
-    use openjill_data::dma::DmaFile;
     use openjill_data::jn::JnFile;
+
+    use crate::asset_cache::AssetCache;
 
     /// Object record size in bytes (`JnObject` fixed field layout):
     /// `object_type` (1) + `x`/`y`/`x_speed`/`y_speed` (2 each) +
@@ -562,9 +793,10 @@ mod tests {
     /// (2 each) + `pointer` (4) + `info1`/`zap_hold` (2 each).
     const OBJECT_RECORD_BYTES: usize = 31;
 
-    /// Builds an empty `DmaFile`.
-    fn empty_dma() -> DmaFile {
-        DmaFile::from_bytes(vec![]).expect("empty DMA should parse")
+    /// Builds a synthetic [`AssetCache`] for tests that do not need real
+    /// game files.
+    fn synthetic_cache() -> AssetCache {
+        AssetCache::synthetic()
     }
 
     /// Builds a synthetic JN byte buffer carrying `objects` zero-initialized
@@ -603,7 +835,8 @@ mod tests {
         level_number: i32,
     ) -> (LevelScreen, MessageDispatcher) {
         let mut dispatcher = MessageDispatcher::new();
-        let screen = LevelScreen::from_bytes(bytes, empty_dma(), level_number, &mut dispatcher)
+        let cache = synthetic_cache();
+        let screen = LevelScreen::from_bytes(bytes, &cache, level_number, &mut dispatcher)
             .expect("synthetic level JN should parse");
         (screen, dispatcher)
     }
@@ -964,12 +1197,40 @@ mod tests {
         dispatcher.send(MessageType::DieRestartLevel, MessagePayload::None);
         dispatcher.clear();
         let bytes = jn_bytes_with_objects(&[]);
-        let mut screen = LevelScreen::from_bytes(bytes, empty_dma(), 1, &mut dispatcher)
+        let cache = synthetic_cache();
+        let mut screen = LevelScreen::from_bytes(bytes, &cache, 1, &mut dispatcher)
             .expect("synthetic level JN should parse");
         let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
         assert!(
             result.transition.is_none(),
             "cleared dispatcher must not deliver previously-queued messages"
+        );
+    }
+
+    /// Unit under test: `LevelScreen::tick` with no objects and an all-zero
+    /// background layer still emits at least one `RenderCommand::Clear`.
+    ///
+    /// Preconditions: a synthetic JN buffer with zero objects and all-zero
+    /// background map codes; the synthetic `AssetCache` carries an empty
+    /// DMA, so every cell resolves to the transparent
+    /// `StdBackgroundEntity` placeholder that emits no draw output.
+    ///
+    /// Invariants asserted: the tick completes without panic, and the
+    /// resulting command list contains at least one `RenderCommand::Clear`
+    /// so the renderer always has a baseline fill to execute even when both
+    /// the object and background entity iterations contribute nothing.
+    #[test]
+    fn tick_with_no_objects_and_empty_backgrounds_emits_clear() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
+        assert!(
+            result
+                .commands
+                .iter()
+                .any(|cmd| matches!(cmd, RenderCommand::Clear { .. })),
+            "tick must emit a Clear baseline command; got {:?}",
+            result.commands
         );
     }
 

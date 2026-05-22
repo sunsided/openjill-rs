@@ -4,12 +4,17 @@ use std::collections::BTreeSet;
 
 use openjill_data::DataDirectory;
 
+pub mod entity;
 pub mod layout;
 pub mod message;
 pub mod render;
 pub mod runtime;
 pub mod screen;
 
+pub use entity::{
+    BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundEntity, BackgroundGrid, DeathKind,
+    ObjectEntity, Rect,
+};
 pub use message::{
     ChangeLevelPayload, MessageDispatcher, MessageHandler, MessagePayload, MessageType,
 };

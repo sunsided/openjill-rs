@@ -17,6 +17,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 pub mod asset_cache;
+pub mod entities;
 pub mod level_config;
 pub mod orchestrator;
 pub mod screens;

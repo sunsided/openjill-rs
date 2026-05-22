@@ -44,10 +44,11 @@ fn load_map_screen(data_dir: &DataDirectory, dma: DmaFile) -> Result<MapScreen, 
 ///
 /// Used by [`GameOrchestrator::apply_transition`] on
 /// [`ScreenTransition::Level`] when no in-memory bytes are available for the
-/// requested level file.
+/// requested level file.  `cache` supplies the shared episode assets (DMA,
+/// SHA) consumed by the object and background entity factories.
 fn load_level_screen(
     data_dir: &DataDirectory,
-    dma: DmaFile,
+    cache: &AssetCache,
     file: &str,
     level_number: i32,
     dispatcher: &mut MessageDispatcher,
@@ -56,7 +57,7 @@ fn load_level_screen(
         .resolve_path_case_insensitive(file)
         .map_err(LevelLoadError::Resolve)?;
     let bytes = std::fs::read(&path).map_err(LevelLoadError::Read)?;
-    LevelScreen::from_bytes(bytes, dma, level_number, dispatcher).map_err(LevelLoadError::Parse)
+    LevelScreen::from_bytes(bytes, cache, level_number, dispatcher).map_err(LevelLoadError::Parse)
 }
 
 /// Owns the current screen handler and drives the game tick and transition loop.
@@ -287,16 +288,13 @@ impl GameOrchestrator {
                     .filter(|(_, cached_file)| cached_file.eq_ignore_ascii_case(file.as_str()))
                     .map(|(bytes, _)| bytes.clone());
                 let level_result = match cached {
-                    Some(bytes) => LevelScreen::from_bytes(
-                        bytes,
-                        self.cache.dma.clone(),
-                        number,
-                        &mut self.dispatcher,
-                    )
-                    .map_err(LevelLoadError::Parse),
+                    Some(bytes) => {
+                        LevelScreen::from_bytes(bytes, &self.cache, number, &mut self.dispatcher)
+                            .map_err(LevelLoadError::Parse)
+                    }
                     None => load_level_screen(
                         &self.data_dir,
-                        self.cache.dma.clone(),
+                        &self.cache,
                         &file,
                         number,
                         &mut self.dispatcher,
@@ -329,7 +327,7 @@ impl GameOrchestrator {
                 let level_number = self.level_jn_number.unwrap_or(0);
                 match LevelScreen::from_bytes(
                     bytes,
-                    self.cache.dma.clone(),
+                    &self.cache,
                     level_number,
                     &mut self.dispatcher,
                 ) {

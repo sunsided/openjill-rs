@@ -105,9 +105,8 @@ fn level_screen_constructs_and_renders_with_original_data() {
         std::fs::read(&level_path).unwrap_or_else(|err| panic!("{LEVEL_FILE} should read: {err}"));
 
     let mut dispatcher = MessageDispatcher::new();
-    let mut screen =
-        LevelScreen::from_bytes(level_bytes.clone(), cache.dma.clone(), 1, &mut dispatcher)
-            .unwrap_or_else(|err| panic!("{LEVEL_FILE} should parse: {err}"));
+    let mut screen = LevelScreen::from_bytes(level_bytes.clone(), &cache, 1, &mut dispatcher)
+        .unwrap_or_else(|err| panic!("{LEVEL_FILE} should parse: {err}"));
 
     let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
     check!(result.transition.is_none(), "idle tick must not transition");
