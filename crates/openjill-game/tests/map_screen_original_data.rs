@@ -3,12 +3,19 @@
 //! `data/original/JILL1` path is available.
 
 use assert2::check;
+use openjill_core::layout::{GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{ActiveInput, InputCommand, ScreenHandler, ScreenTransition};
 use openjill_data::DataDirectory;
 use openjill_game::asset_cache::AssetCache;
 use openjill_game::screens::map_screen::MapScreen;
 use std::path::{Path, PathBuf};
+
+/// SHA tileset that carries every player sprite frame (mirrors the
+/// `PLAYER_TILESET` constant in `screens::jn_object_layer`).  Asserting on
+/// this tileset distinguishes the player `Blit` from any background tile
+/// `Blit` even when both happen to land at the same framebuffer position.
+const PLAYER_TILESET: u8 = 8;
 
 /// Environment variable for overriding the data directory.
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
@@ -57,6 +64,9 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> DataDirOutcome {
 /// - `AssetCache::load` and `MapScreen::from_bytes` succeed.
 /// - An idle tick produces at least one `RenderCommand::Blit` (the real map
 ///   has many non-zero, non-transparent background cells).
+/// - The idle tick also emits at least one `Blit` from the player tileset
+///   (`PLAYER_TILESET = 8`) whose framebuffer position lies inside the game
+///   area, confirming the static `MAP.JN1` object layer drew Jill.
 /// - Pressing Escape (Pause) returns `ScreenTransition::StartMenu`.
 /// - `MapScreen::map_jn_bytes` returns the original `MAP.JN1` byte buffer.
 #[test]
@@ -104,6 +114,23 @@ fn map_screen_constructs_and_renders_with_original_data() {
             .iter()
             .any(|c| matches!(c, RenderCommand::Blit { .. })),
         "idle tick must emit at least one Blit for background tiles"
+    );
+
+    // The MAP.JN1 object layer should now contribute Jill's stand pose.
+    let game_area_right = GAME_AREA_X + GAME_AREA_W as i32;
+    let game_area_bottom = GAME_AREA_Y + GAME_AREA_H as i32;
+    check!(
+        result.commands.iter().any(|c| match c {
+            RenderCommand::Blit { tileset, x, y, .. } => {
+                *tileset == PLAYER_TILESET
+                    && *x >= GAME_AREA_X
+                    && *x < game_area_right
+                    && *y >= GAME_AREA_Y
+                    && *y < game_area_bottom
+            }
+            _ => false,
+        }),
+        "idle tick must emit a player-tileset Blit inside the game area for the MAP.JN1 starting Jill"
     );
 
     // Escape returns to the start menu.

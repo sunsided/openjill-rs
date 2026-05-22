@@ -6,6 +6,7 @@
 //! the gameplay epic; this screen only draws the visible background and
 //! returns to the start menu when Escape is pressed.
 
+use crate::screens::jn_object_layer::render_jn_object_layer;
 use crate::status_bar::game_area_blit;
 use openjill_core::layout::{BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W};
 use openjill_core::runtime::RuntimeState;
@@ -88,14 +89,27 @@ impl MapScreen {
     fn render_background(&self) -> Vec<RenderCommand> {
         render_map_background(&self.jn, &self.dma, self.viewport_x, self.viewport_y)
     }
+
+    /// Renders the static object layer for the world map.
+    ///
+    /// Mirrors the Java reference's `AbstractObjectJillLevel`
+    /// `drawObject` pass for `MAP.JN1`: the type 0 player record placed
+    /// at world (96, 40) draws as the forward-facing stand pose so Jill
+    /// is visible the moment the screen appears.  Animation, gravity,
+    /// checkpoint touch dispatch, doors, lifts, and the rest of the
+    /// object entity loop are deferred to a follow-up; see issue #85.
+    fn render_objects(&self) -> Vec<RenderCommand> {
+        render_jn_object_layer(&self.jn, self.viewport_x, self.viewport_y)
+    }
 }
 
 impl ScreenHandler for MapScreen {
     /// Advances the map screen by one tick: handles Escape, renders the
-    /// background.
+    /// background, and overlays the static JN object layer.
     fn tick(&mut self, input: &ActiveInput, _state: &mut RuntimeState) -> TickResult {
         let transition = self.process_input(input);
-        let commands = self.render_background();
+        let mut commands = self.render_background();
+        commands.extend(self.render_objects());
         TickResult {
             commands,
             transition,
@@ -259,6 +273,37 @@ mod tests {
         DmaFile::from_bytes(vec![]).expect("empty DMA should parse")
     }
 
+    /// Per-object record size in the JN object layer (mirrors
+    /// `openjill_data::jn::parse_object`'s field widths).
+    const JN_OBJECT_RECORD_BYTES: usize = 31;
+
+    /// Builds a synthetic MAP.JN1 byte buffer containing one type-0 (player)
+    /// object record at world position `(world_x, world_y)` with a 16x32
+    /// bounding box.  The background layer remains all-zero; the save block
+    /// also remains all-zero so the JN parser accepts it.
+    fn jn_bytes_with_player(world_x: u16, world_y: u16) -> Vec<u8> {
+        const BACKGROUND_BYTES: usize = 128 * 64 * 2;
+        const SAVE_BLOCK_BYTES: usize = 70;
+        let mut bytes = vec![0u8; BACKGROUND_BYTES + 2 + JN_OBJECT_RECORD_BYTES + SAVE_BLOCK_BYTES];
+
+        // Object count = 1.
+        let count_off = BACKGROUND_BYTES;
+        bytes[count_off..count_off + 2].copy_from_slice(&1u16.to_le_bytes());
+
+        // Object record: type 0, position, 16x32 bounding box.  All other
+        // fields are left at zero.  Field layout follows
+        // `openjill_data::jn::parse_object`: object_type(u8) + x(u16) +
+        // y(u16) + x_speed(i16) + y_speed(i16) + width(u16) + height(u16).
+        let record_off = count_off + 2;
+        bytes[record_off] = 0;
+        bytes[record_off + 1..record_off + 3].copy_from_slice(&world_x.to_le_bytes());
+        bytes[record_off + 3..record_off + 5].copy_from_slice(&world_y.to_le_bytes());
+        bytes[record_off + 9..record_off + 11].copy_from_slice(&16u16.to_le_bytes());
+        bytes[record_off + 11..record_off + 13].copy_from_slice(&32u16.to_le_bytes());
+
+        bytes
+    }
+
     /// Unit under test: `MapScreen::from_bytes` accepts an all-zero MAP.JN1
     /// fixture (8192 zero map codes + zero objects + 70-byte save data).
     ///
@@ -366,6 +411,48 @@ mod tests {
         input.insert(InputCommand::Pause);
         let result = screen.tick(&input, &mut RuntimeState::new());
         assert_eq!(result.transition, Some(ScreenTransition::StartMenu));
+    }
+
+    /// Unit under test: an idle tick on a synthetic MAP.JN1 carrying a single
+    /// type-0 player object emits a `Blit` of the player tileset at the
+    /// framebuffer position the world-to-screen translation predicts.
+    ///
+    /// Preconditions: synthetic MAP.JN1 with one type-0 object at world
+    /// (96, 40), 16x32; empty DMA; viewport defaults to (0, 0).
+    ///
+    /// Invariants asserted: exactly one player-tileset `Blit` is present in
+    /// the tick's command list (the background contributes none because all
+    /// map codes are zero), and its framebuffer position matches
+    /// `(GAME_AREA_X + 96, GAME_AREA_Y + 40)`.
+    #[test]
+    fn player_object_emits_blit_at_world_to_screen_position() {
+        const PLAYER_TILESET: u8 = 8;
+        let bytes = jn_bytes_with_player(96, 40);
+        let mut screen = MapScreen::from_bytes(bytes, empty_dma())
+            .expect("synthetic MAP.JN1 with one player should parse");
+        let result = screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
+
+        let player_blits: Vec<&RenderCommand> = result
+            .commands
+            .iter()
+            .filter(|c| match c {
+                RenderCommand::Blit { tileset, .. } => *tileset == PLAYER_TILESET,
+                _ => false,
+            })
+            .collect();
+
+        assert_eq!(
+            player_blits.len(),
+            1,
+            "exactly one player-tileset Blit expected"
+        );
+        match player_blits[0] {
+            RenderCommand::Blit { x, y, .. } => {
+                assert_eq!(*x, GAME_AREA_X + 96);
+                assert_eq!(*y, GAME_AREA_Y + 40);
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Unit under test: `MapScreen::map_jn_bytes` returns the original bytes

@@ -1,4 +1,5 @@
-//! Object-layer renderer for `INTRO.JN1`-backed screens.
+//! Static JN object-layer renderer shared by `INTRO.JN1`- and
+//! `MAP.JN1`-backed screens.
 //!
 //! Mirrors `AbstractObjectJillLevel`'s per-frame `updateObject` /
 //! `drawObject` pair from the Java reference: iterate the JN object
@@ -7,11 +8,14 @@
 //! and emit one [`RenderCommand`] per visible object.
 //!
 //! The dispatch table is limited to the static, non-interactive object
-//! types `INTRO.JN1` uses for its title and start-menu screens:
+//! types `INTRO.JN1` and `MAP.JN1` use for their title, start-menu,
+//! and world-map draw paths:
 //!
 //! - type 0 - static-pose Jill sprite (rendered with the
 //!   forward-facing stand tile from `JILL1.SHA` tileset 8).
-//!   Used by the start menu's right-half Jill at world (1960, 944).
+//!   Used by the start menu's right-half Jill at world (1960, 944)
+//!   and by the world map's starting Jill at world (96, 40) before
+//!   gameplay physics begins.
 //! - type 20 - small-font `TextTileManager` text.
 //!   Used by the start menu's "THIS GAME IS / SHAREWARE" notice.
 //! - type 21 - big-font `TextTileManager` text.
@@ -31,10 +35,11 @@ use crate::status_bar::GAME_AREA_CLIP;
 /// JN object type for the player / static-pose Jill sprite.
 ///
 /// Matches `objects_manager_mapping.json` entry `type: 0`
-/// (`PlayerManager`).  In `INTRO.JN1` the start-menu viewport carries
-/// one such record with `x_speed = y_speed = 0` and `state = 0`,
-/// which the Java reference draws as the forward-facing stand pose
-/// from `JILL1.SHA` tileset 8 tile 16.
+/// (`PlayerManager`).  Both `INTRO.JN1` (start-menu viewport, world
+/// (1960, 944)) and `MAP.JN1` (world map starting position, world
+/// (96, 40)) place one such record with `x_speed = y_speed = 0` and
+/// `state = 0`, which the Java reference draws as the forward-facing
+/// stand pose from `JILL1.SHA` tileset 8 tile 16.
 const OBJ_TYPE_PLAYER: u8 = 0;
 
 /// JN object type for a small-font text record (`TextTileManager` /
@@ -54,15 +59,17 @@ const OBJ_TYPE_BIG_TEXT: u8 = 21;
 ///
 /// Matches `PlayerStandConst.TILESET_INDEX = 8` in the Java reference;
 /// this constant is duplicated here rather than imported from the
-/// player entity module to keep the start-menu render path independent
-/// of the gameplay player implementation.
+/// player entity module to keep this static draw path independent of
+/// the gameplay player implementation.
 const PLAYER_TILESET: u8 = 8;
 
 /// Forward-facing stand tile inside [`PLAYER_TILESET`].
 ///
 /// Matches `PlayerStandConst.TILE_MIDDLE_INDEX = 16` in the Java
-/// reference.  `INTRO.JN1` does not animate the start-menu Jill, so
-/// this single tile is enough for the static stand pose.
+/// reference.  The start menu does not animate Jill at all, and the
+/// world map only animates Jill once gameplay physics begins; both
+/// non-interactive draw paths use this single tile for the initial
+/// stand pose.
 const PLAYER_TILE_STAND_MIDDLE: u16 = 16;
 
 /// Maximum logical palette index the [`RenderCommand::DrawText`]
@@ -75,8 +82,8 @@ const PLAYER_TILE_STAND_MIDDLE: u16 = 16;
 /// already applies after the `TEXT_COLOR_BRIGHT_SHIFT`.
 const MAX_TEXT_COLOR: i16 = 7;
 
-/// Renders the visible portion of the JN object layer for an
-/// `INTRO.JN1`-backed screen.
+/// Renders the visible portion of a JN object layer using the static
+/// dispatch table documented at the module level.
 ///
 /// `offset_x` and `offset_y` follow the same sign convention as
 /// [`crate::screens::intro_background::render_intro_background`]: a
@@ -85,7 +92,7 @@ const MAX_TEXT_COLOR: i16 = 7;
 /// intersects the game-area viewport are translated into framebuffer
 /// space and dispatched to per-type emitters; off-screen and
 /// unsupported records produce no commands.
-pub fn render_intro_objects(jn: &JnFile, offset_x: i32, offset_y: i32) -> Vec<RenderCommand> {
+pub fn render_jn_object_layer(jn: &JnFile, offset_x: i32, offset_y: i32) -> Vec<RenderCommand> {
     let view_x0 = -offset_x;
     let view_y0 = -offset_y;
     let view_x1 = view_x0 + GAME_AREA_W as i32;
@@ -181,7 +188,7 @@ fn render_text(
 mod tests {
     use super::{
         MAX_TEXT_COLOR, OBJ_TYPE_BIG_TEXT, OBJ_TYPE_PLAYER, OBJ_TYPE_SMALL_TEXT,
-        PLAYER_TILE_STAND_MIDDLE, PLAYER_TILESET, render_intro_objects,
+        PLAYER_TILE_STAND_MIDDLE, PLAYER_TILESET, render_jn_object_layer,
     };
     use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
     use openjill_core::{FontSize, RenderCommand};
@@ -264,7 +271,7 @@ mod tests {
         JnFile::from_bytes(bytes).expect("synthetic JN must parse")
     }
 
-    /// Unit under test: `render_intro_objects` for a single
+    /// Unit under test: `render_jn_object_layer` for a single
     /// in-viewport type-0 player record.
     ///
     /// Preconditions: synthetic JN with one type-0 object at world
@@ -286,7 +293,7 @@ mod tests {
             y_speed: 0,
             payload_text: None,
         });
-        let commands = render_intro_objects(&jn, -1808, -864);
+        let commands = render_jn_object_layer(&jn, -1808, -864);
         assert_eq!(commands.len(), 1, "exactly one Blit expected");
         match &commands[0] {
             RenderCommand::Blit {
@@ -305,7 +312,7 @@ mod tests {
         }
     }
 
-    /// Unit under test: `render_intro_objects` for an in-viewport
+    /// Unit under test: `render_jn_object_layer` for an in-viewport
     /// type-20 (small) text record.
     ///
     /// Preconditions: synthetic JN with one type-20 object whose
@@ -328,7 +335,7 @@ mod tests {
             y_speed: -1,
             payload_text: Some("SHAREWARE"),
         });
-        let commands = render_intro_objects(&jn, -1808, -864);
+        let commands = render_jn_object_layer(&jn, -1808, -864);
         assert_eq!(commands.len(), 1);
         match &commands[0] {
             RenderCommand::DrawText {
@@ -348,7 +355,7 @@ mod tests {
         }
     }
 
-    /// Unit under test: `render_intro_objects` for an in-viewport
+    /// Unit under test: `render_jn_object_layer` for an in-viewport
     /// type-21 (big) text record.
     ///
     /// Preconditions: synthetic JN with one type-21 object resolving
@@ -368,7 +375,7 @@ mod tests {
             y_speed: -1,
             payload_text: Some("TITLE"),
         });
-        let commands = render_intro_objects(&jn, -1808, -864);
+        let commands = render_jn_object_layer(&jn, -1808, -864);
         assert_eq!(commands.len(), 1);
         match &commands[0] {
             RenderCommand::DrawText { font, .. } => assert_eq!(*font, FontSize::Big),
@@ -394,7 +401,7 @@ mod tests {
             y_speed: 0,
             payload_text: None,
         });
-        let commands = render_intro_objects(&jn, -1808, -864);
+        let commands = render_jn_object_layer(&jn, -1808, -864);
         assert!(commands.is_empty());
     }
 
@@ -417,7 +424,7 @@ mod tests {
             y_speed: 0,
             payload_text: None,
         });
-        let commands = render_intro_objects(&jn, -1808, -864);
+        let commands = render_jn_object_layer(&jn, -1808, -864);
         assert!(commands.is_empty());
     }
 
@@ -441,7 +448,7 @@ mod tests {
             y_speed: -1,
             payload_text: None,
         });
-        let commands = render_intro_objects(&jn, -1808, -864);
+        let commands = render_jn_object_layer(&jn, -1808, -864);
         assert!(commands.is_empty());
     }
 
@@ -465,7 +472,7 @@ mod tests {
             y_speed: -1,
             payload_text: Some("HELLO"),
         });
-        let commands = render_intro_objects(&jn, -1808, -864);
+        let commands = render_jn_object_layer(&jn, -1808, -864);
         match &commands[0] {
             RenderCommand::DrawText { color_index, .. } => {
                 assert_eq!(*color_index, MAX_TEXT_COLOR as u8);
