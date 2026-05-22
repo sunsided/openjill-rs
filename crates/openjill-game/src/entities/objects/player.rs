@@ -100,11 +100,20 @@ const NB_COLORED_BULLET: i32 = 10;
 // Sprite tile indices (all in tileset 8)
 // ---------------------------------------------------------------------------
 
-/// Stand facing right (`PlayerStandConst.TILE_RIGHT_INDEX = 20`).
-const TILE_STAND_RIGHT: u16 = 20;
+/// Stand facing right.
+///
+/// The Java reference's `PlayerStandConst.TILE_RIGHT_INDEX = 20` and
+/// `TILE_LEFT_INDEX = 21` constants are misnomers: in-engine playback
+/// against the real `JILL1.SHA` tileset 8 shows tile 20 renders the
+/// *left*-facing stand sprite and tile 21 the *right*-facing one, which
+/// matched a user-reported "Jill snaps to the opposite direction when
+/// running stops" bug.  The Rust port binds the tile constants to the
+/// actual rendered facing rather than the Java field name so the stand
+/// frame after a left run does not flip Jill's silhouette.
+const TILE_STAND_RIGHT: u16 = 21;
 
-/// Stand facing left (`PlayerStandConst.TILE_LEFT_INDEX = 21`).
-const TILE_STAND_LEFT: u16 = 21;
+/// Stand facing left.  See [`TILE_STAND_RIGHT`] for the swap rationale.
+const TILE_STAND_LEFT: u16 = 20;
 
 /// Stand facing forward (`PlayerStandConst.TILE_MIDDLE_INDEX = 16`).
 const TILE_STAND_MIDDLE: u16 = 16;
