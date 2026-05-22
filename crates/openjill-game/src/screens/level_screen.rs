@@ -244,9 +244,13 @@ impl LevelScreen {
         self.pending = Some(next);
     }
 
-    /// Renders the per-tick command list, including the level background and
-    /// the level message-box overlay when a transition is pending.
-    fn render_frame(&self) -> Vec<RenderCommand> {
+    /// Renders the base frame: the framebuffer-clear baseline plus the
+    /// static level background.
+    ///
+    /// The message-box overlay is intentionally not included here; the tick
+    /// loop appends it after the per-entity draw commands so the box paints
+    /// on top of the level and any objects in front of it.
+    fn render_base_frame(&self) -> Vec<RenderCommand> {
         let mut commands = vec![RenderCommand::Clear { color: 0 }];
         commands.extend(render_map_background(
             &self.jn,
@@ -254,9 +258,6 @@ impl LevelScreen {
             self.viewport_x,
             self.viewport_y,
         ));
-        if self.pending.is_some() {
-            commands.extend(render_message_box(&self.message_text));
-        }
         commands
     }
 
@@ -308,14 +309,30 @@ impl LevelScreen {
     fn tick_backgrounds(&mut self, player_bbox: Option<Rect>) -> Vec<RenderCommand> {
         let viewport_x = self.viewport_x;
         let viewport_y = self.viewport_y;
-        let world_x = -viewport_x;
-        let world_y = -viewport_y;
-        let start_cell_x = world_x.div_euclid(BLOCK_SIZE_I);
-        let start_cell_y = world_y.div_euclid(BLOCK_SIZE_I);
+        // `viewport_x` / `viewport_y` follow the OpenJill offset sign
+        // convention: the world pixel currently at the viewport top-left is
+        // `(-viewport_x, -viewport_y)`.  Compute that world origin once so the
+        // cell iteration starts at the right tile and the screen conversion
+        // below stays consistent with `render_map_background`.
+        let world_origin_x = -viewport_x;
+        let world_origin_y = -viewport_y;
+        let start_cell_x = world_origin_x.div_euclid(BLOCK_SIZE_I);
+        let start_cell_y = world_origin_y.div_euclid(BLOCK_SIZE_I);
         let cells_x = (GAME_AREA_W as i32) / BLOCK_SIZE_I + 2;
         let cells_y = (GAME_AREA_H as i32) / BLOCK_SIZE_I + 2;
-        let height = self.backgrounds.height as i32;
-        let width = self.backgrounds.width as i32;
+        // Borrow the three fields the loop needs as disjoint mutable
+        // references so the cell's `on_player_touch` can take a `&mut dyn
+        // ObjectEntity` from `objects` while the iteration still holds a
+        // `&mut` borrow into `backgrounds`.
+        let Self {
+            backgrounds,
+            objects,
+            entity_dispatcher,
+            ..
+        } = self;
+        let height = backgrounds.height as i32;
+        let width = backgrounds.width as i32;
+        let player_idx = objects.iter().position(|obj| obj.is_player());
 
         let mut commands = Vec::new();
         for row in 0..cells_y {
@@ -329,30 +346,29 @@ impl LevelScreen {
                 let cell_pixel_y = cell_y * BLOCK_SIZE_I;
                 let cell_rect = Rect::new(cell_pixel_x, cell_pixel_y, BLOCK_SIZE_I, BLOCK_SIZE_I);
 
-                let cell = match self.backgrounds.get_mut(cell_x as usize, cell_y as usize) {
-                    Some(cell) => cell,
-                    None => continue,
+                let Some(cell) = backgrounds.get_mut(cell_x as usize, cell_y as usize) else {
+                    continue;
                 };
 
                 if let Some(bbox) = player_bbox
                     && bbox.intersects(&cell_rect)
+                    && let Some(idx) = player_idx
                 {
-                    // Player overlap callback runs without a player reference:
-                    // the active player object lives in `self.objects` and is
-                    // borrowed by the surrounding tick; routing the player
-                    // into this callback requires the bus-based player handle
-                    // that lands in child issue 4.  For issue 57 the call is
-                    // suppressed because no concrete background implementation
-                    // reads the player argument yet.
-                    let _ = bbox;
+                    let player = objects[idx].as_mut();
+                    cell.on_player_touch(player, entity_dispatcher);
                 }
 
                 if cell.needs_update() {
-                    cell.update(cell_x, cell_y, &mut self.entity_dispatcher);
+                    cell.update(cell_x, cell_y, entity_dispatcher);
                 }
 
-                let screen_x = GAME_AREA_X + cell_pixel_x - viewport_x;
-                let screen_y = GAME_AREA_Y + cell_pixel_y - viewport_y;
+                // World pixel `cell_pixel_x` maps to game-area pixel
+                // `cell_pixel_x - world_origin_x`, then the framebuffer
+                // origin shift adds `GAME_AREA_X`.  Subtracting
+                // `world_origin_x` is equivalent to adding `viewport_x`
+                // because `world_origin_x = -viewport_x`.
+                let screen_x = GAME_AREA_X + cell_pixel_x - world_origin_x;
+                let screen_y = GAME_AREA_Y + cell_pixel_y - world_origin_y;
                 if let Some(cmd) = cell.draw(screen_x, screen_y) {
                     commands.push(cmd);
                 }
@@ -382,18 +398,30 @@ impl ScreenHandler for LevelScreen {
     fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult {
         self.pump_inbox();
 
-        // Render the frame using the pending state at the start of the tick so
-        // the message box is visible for the entire countdown, including the
-        // tick on which the timer reaches zero and the transition fires.
-        let mut commands = self.render_frame();
+        // Render order each tick:
+        // 1. Base frame (`Clear` + static level background).
+        // 2. Per-cell background entity draws (overlay tiles).
+        // 3. Object entity draws (drawn on top of backgrounds, mirroring
+        //    `AbstractExecutingStdLevel` in the Java reference).
+        // 4. Message-box overlay last so transitions paint over everything
+        //    else.
+        let mut commands = self.render_base_frame();
 
-        // Per-tick entity loop: objects update and draw before background
-        // cells run their per-cell callbacks and contribute overlay tiles.
+        // Update phase: objects update before backgrounds run their per-cell
+        // callbacks so the `player_bbox` fed into the background loop reflects
+        // the post-update player position rather than a stale pre-tick value.
+        let obj_commands = self.tick_objects(input, state);
         let player_bbox = self.player_bounding_box();
         let bg_commands = self.tick_backgrounds(player_bbox);
-        let obj_commands = self.tick_objects(input, state);
+
+        // Backgrounds first, then objects, matching the Java draw order.
         commands.extend(bg_commands);
         commands.extend(obj_commands);
+
+        if self.pending.is_some() {
+            commands.extend(render_message_box(&self.message_text));
+        }
+
         self.drain_entity_dispatcher();
 
         let mut transition: Option<ScreenTransition> = None;
@@ -1300,6 +1328,129 @@ mod tests {
                 .any(|cmd| matches!(cmd, RenderCommand::Clear { .. })),
             "tick must emit a Clear baseline command; got {:?}",
             result.commands
+        );
+    }
+
+    /// Unit under test: `LevelScreen::tick` emits the message-box overlay
+    /// after the per-entity draw commands so background and object draws
+    /// cannot paint over the box mid-transition.
+    ///
+    /// Preconditions: synthetic level 1 screen; `CheckpointChangeLevel` is
+    /// dispatched before the first tick to start the message-box countdown.
+    ///
+    /// Invariants asserted: the message-box frame blits (tileset 24 / 3)
+    /// land at a higher index in the command list than the baseline
+    /// `Clear` command, so a renderer executing in order paints the
+    /// message box on top.
+    #[test]
+    fn tick_message_box_renders_after_base_frame() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(
+            MessageType::CheckpointChangeLevel,
+            MessagePayload::ChangeLevel(ChangeLevelPayload {
+                level_file: String::from("JN1L02.JN1"),
+                level_number: 2,
+            }),
+        );
+        let commands = screen
+            .tick(&ActiveInput::new(), &mut RuntimeState::new())
+            .commands;
+        let clear_index = commands
+            .iter()
+            .position(|cmd| matches!(cmd, RenderCommand::Clear { .. }))
+            .expect("tick must emit a Clear baseline command");
+        let last_messagebox_blit = commands
+            .iter()
+            .rposition(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::Blit { tileset: 24, .. }
+                        | RenderCommand::Blit { tileset: 3, .. }
+                )
+            })
+            .expect("tick must emit message-box frame blits while a transition is pending");
+        assert!(
+            last_messagebox_blit > clear_index,
+            "message-box overlay must follow the baseline Clear in the command list"
+        );
+    }
+
+    /// Unit under test: `tick_backgrounds` derives screen pixel positions
+    /// from the viewport offset using the OpenJill sign convention shared
+    /// with `render_map_background`.
+    ///
+    /// Preconditions: a synthetic JN whose background layer at cell
+    /// `(5, 0)` carries a non-transparent map code, paired with a DMA file
+    /// that supplies an entry for that code; the screen's viewport is
+    /// offset by one tile horizontally so the cell does not sit on the
+    /// game-area left edge.
+    ///
+    /// Invariants asserted: the background blit for that cell lands at
+    /// `screen_x = GAME_AREA_X + cell_world_x - world_origin_x`, which for
+    /// `viewport_x = -16` (world origin at `+16`) and `cell_world_x = 80`
+    /// puts the blit at `80 + 80 - 16 = 144` — the position
+    /// `render_map_background` would also produce.
+    #[test]
+    fn tick_backgrounds_uses_openjill_viewport_sign() {
+        // Synthesize a one-entry DMA file matching the parser layout:
+        //   map_code (u16 LE) + tile (u8) + tileset_with_flags (u8) +
+        //   flags (u16 LE) + name_len (u8) + name (name_len ASCII bytes).
+        // map_code=1, tile=42, tileset=7, flags=0, name="TEST".
+        let mut dma_bytes: Vec<u8> = Vec::new();
+        dma_bytes.extend_from_slice(&1u16.to_le_bytes()); // map_code
+        dma_bytes.push(42); // tile
+        dma_bytes.push(7); // tileset_with_flags
+        dma_bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+        dma_bytes.push(4); // name_len
+        dma_bytes.extend_from_slice(b"TEST"); // name
+        let dma =
+            openjill_data::dma::DmaFile::from_bytes(dma_bytes).expect("synthetic DMA should parse");
+        let mut cache = AssetCache::synthetic();
+        cache.dma = dma;
+
+        // Build a JN whose background cell (5, 0) carries map code 1.
+        // The JN parser stores cells as `x * BACKGROUND_HEIGHT + y` so the
+        // byte offset for cell `(5, 0)` is `5 * 64 * 2 = 640`.
+        let mut bytes = jn_bytes_with_objects(&[]);
+        let cell_off = 5 * 64 * 2;
+        bytes[cell_off..cell_off + 2].copy_from_slice(&1u16.to_le_bytes());
+
+        let mut dispatcher = MessageDispatcher::new();
+        let mut screen = LevelScreen::from_bytes(bytes, &cache, 1, &mut dispatcher)
+            .expect("synthetic level JN should parse");
+
+        // Force the viewport to a known non-zero offset so the screen-pos
+        // sign convention is exercised: viewport_x = -16 means the world
+        // origin is at +16, and cell (5,0)'s world pixel is (80, 0).
+        // Expected screen_x = GAME_AREA_X (80) + 80 - 16 = 144.
+        let cell_world_x = 5 * 16_i32;
+        let viewport_x = -16_i32;
+        let expected_screen_x = openjill_core::layout::GAME_AREA_X + cell_world_x - (-viewport_x);
+        let expected_screen_y = openjill_core::layout::GAME_AREA_Y;
+
+        // Mutate viewport directly to bypass the checkpoint heuristic.
+        screen.viewport_x = viewport_x;
+        screen.viewport_y = 0;
+
+        let bg_commands = screen.tick_backgrounds(None);
+        let blit = bg_commands
+            .iter()
+            .find_map(|cmd| match cmd {
+                RenderCommand::Blit {
+                    tileset: 7,
+                    tile: 42,
+                    x,
+                    y,
+                    ..
+                } => Some((*x, *y)),
+                _ => None,
+            })
+            .expect("background entity must emit the registered tileset/tile blit");
+        assert_eq!(
+            blit,
+            (expected_screen_x, expected_screen_y),
+            "background blit must use the same viewport sign convention as render_map_background"
         );
     }
 
