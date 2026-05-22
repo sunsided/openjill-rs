@@ -31,3 +31,13 @@ updates:
         applies-to: version-updates
         update-types:
           - "major"
+
+  # Legacy Java reference sources (pom.xml) kept for porting reference only.
+  # Explicitly ignore all Maven dependencies so Dependabot never opens Java PRs.
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: "*"
