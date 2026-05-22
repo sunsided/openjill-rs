@@ -590,8 +590,23 @@ fn lookup_message_text(level_number: i32) -> Vec<String> {
 /// (frame border + Jill face), then one `DrawText` per message line up to
 /// [`MESSAGE_MAX_LINES`].  The fills are emitted first so the underlying
 /// level background does not bleed through the box.
+///
+/// Frame and face blits carry a per-command [`ClipRect`] sized to the box's
+/// declared `width` x `height`.  The Java reference draws the box into a
+/// `BufferedImage(width, height)` backing buffer, which silently clips any
+/// tile that would overflow the buffer; this clip rect reproduces the same
+/// behavior in the framebuffer renderer so frame tiles whose tile geometry
+/// extends past the box (e.g. the 16-tall vertical bar tile sitting on the
+/// last row of a 92-tall box that only has 12 px of slack at the bottom)
+/// do not bleed below the box border.
 fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
     let layout = &*MESSAGE_BOX;
+    let clip = openjill_core::ClipRect {
+        x: layout.x,
+        y: layout.y,
+        width: layout.width,
+        height: layout.height,
+    };
     let mut commands: Vec<RenderCommand> = Vec::with_capacity(layout.images.len() + 4);
     commands.push(RenderCommand::FillRect {
         x: layout.x + layout.picturearea.x,
@@ -613,7 +628,7 @@ fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
         x: layout.x + tile.x,
         y: layout.y + tile.y,
         opaque: false,
-        clip: None,
+        clip: Some(clip),
     }));
 
     let text_origin_x = layout.x + layout.textarea_x;
@@ -664,6 +679,18 @@ struct MessageBoxLayout {
     x: i32,
     /// Top-left Y position of the message box in framebuffer pixels.
     y: i32,
+    /// Overall box width in pixels (from the JSON `width` field).
+    ///
+    /// Mirrors the `BufferedImage(width, height)` backing buffer the Java
+    /// reference allocates for the box: tiles that would draw past this
+    /// rectangle are clipped by that buffer.  The Rust port draws directly
+    /// to the framebuffer, so this rectangle is fed into a [`ClipRect`] for
+    /// each frame blit to reproduce the same clipping.
+    width: u32,
+    /// Overall box height in pixels (from the JSON `height` field).
+    ///
+    /// See [`MessageBoxLayout::width`] for the clipping rationale.
+    height: u32,
     /// Text area X offset relative to the message-box origin.
     textarea_x: i32,
     /// Text area Y offset relative to the message-box origin.
@@ -706,6 +733,8 @@ fn parse_message_box_layout() -> MessageBoxLayout {
 
     let x = get_i(&value, "x", 0);
     let y = get_i(&value, "y", 0);
+    let width = get_u32(&value, "width", 0);
+    let height = get_u32(&value, "height", 0);
     let text_color = get_u(&value, "textColor", 7);
     let textarea = value
         .get("textarea")
@@ -759,6 +788,8 @@ fn parse_message_box_layout() -> MessageBoxLayout {
     MessageBoxLayout {
         x,
         y,
+        width,
+        height,
         textarea_x,
         textarea_y,
         textarea_w,
@@ -1162,6 +1193,44 @@ mod tests {
         input.insert(InputCommand::Pause);
         let result = screen.tick(&input, &mut RuntimeState::new());
         assert_eq!(result.transition, Some(ScreenTransition::StartMenu));
+    }
+
+    /// Unit under test: `render_message_box` clips every frame blit to the
+    /// box's declared bounding rectangle.
+    ///
+    /// Preconditions: the embedded layout JSON declares a 192x92 box at
+    /// `(94, 48)`; the frame mosaic includes tiles whose 16-tall tile
+    /// geometry extends past the bottom edge of the box (vertical bars on
+    /// the lower row, lower horizontal bar tiles), and 16-wide tiles whose
+    /// geometry extends past the right edge (right vertical bar).
+    ///
+    /// Invariants asserted: every emitted `Blit` carries a `clip`
+    /// rectangle covering exactly the box's declared bounds so out-of-bounds
+    /// pixels are dropped at present time instead of bleeding into the
+    /// surrounding level content.
+    #[test]
+    fn render_message_box_clips_frame_tiles_to_box_bounds() {
+        let commands = render_message_box(&[String::from("HI")]);
+        let mut blit_count = 0_usize;
+        for cmd in &commands {
+            let RenderCommand::Blit { clip, .. } = cmd else {
+                continue;
+            };
+            blit_count += 1;
+            let clip = clip.expect("every message-box blit must carry a clip rect");
+            assert_eq!(clip.x, 94, "clip x must match the box origin");
+            assert_eq!(clip.y, 48, "clip y must match the box origin");
+            assert_eq!(clip.width, 192, "clip width must match the box width");
+            assert_eq!(
+                clip.height, 92,
+                "clip height must match the box height so 16-tall vertical bar tiles \
+                 on the last row do not bleed below the box"
+            );
+        }
+        assert!(
+            blit_count > 0,
+            "render_message_box must emit at least one frame blit"
+        );
     }
 
     /// Unit under test: `render_message_box` caps emitted text lines at
