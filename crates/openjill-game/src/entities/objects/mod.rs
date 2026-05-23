@@ -7,17 +7,27 @@
 //! remaining types fall through to the catch-all [`stub::StubObjectEntity`].
 
 pub mod apple;
+pub mod bees;
 pub mod blade;
 pub mod bonus;
 pub mod bubbles;
 pub mod bullet;
 pub mod checkpoint;
 pub mod collapsing_ceiling;
+pub mod crab;
+pub mod enemy_shared;
+pub mod eyes;
 pub mod falling_spike;
+pub mod firebird_enemy;
 pub mod firebird_player;
 pub mod firebird_weapon;
 pub mod flame;
+pub mod frog;
+pub mod gator;
+pub mod ghost;
+pub mod giant_ant;
 pub mod hit_fire;
+pub mod hive;
 pub mod huge_letter_tile;
 pub mod knife;
 pub mod lift;
@@ -27,6 +37,8 @@ pub mod point;
 pub mod red_key;
 pub mod rock_key;
 pub mod rolling_rock;
+pub mod skull;
+pub mod snake;
 pub mod spark;
 pub mod stub;
 pub mod switch;
@@ -40,17 +52,26 @@ use openjill_data::jn::JnObject;
 use crate::asset_cache::AssetCache;
 
 pub use apple::AppleEntity;
+pub use bees::BeesEntity;
 pub use blade::BladeEntity;
 pub use bonus::BonusEntity;
 pub use bubbles::BubblesEntity;
 pub use bullet::BulletEntity;
 pub use checkpoint::CheckPointEntity;
 pub use collapsing_ceiling::CollapsingCeilingEntity;
+pub use crab::CrabEntity;
+pub use eyes::EyesEntity;
 pub use falling_spike::FallingSpikeEntity;
+pub use firebird_enemy::FirebirdEnemyEntity;
 pub use firebird_player::FirebirdPlayerEntity;
 pub use firebird_weapon::FirebirdWeaponEntity;
 pub use flame::FlameEntity;
+pub use frog::FrogEntity;
+pub use gator::GatorEntity;
+pub use ghost::GhostEntity;
+pub use giant_ant::GiantAntEntity;
 pub use hit_fire::HitFireEntity;
+pub use hive::HiveEntity;
 pub use huge_letter_tile::HugeLetterTileEntity;
 pub use knife::KnifeEntity;
 pub use lift::LiftEntity;
@@ -60,6 +81,8 @@ pub use point::PointEntity;
 pub use red_key::RedKeyEntity;
 pub use rock_key::RockKeyEntity;
 pub use rolling_rock::RollingRockEntity;
+pub use skull::SkullEntity;
+pub use snake::SnakeEntity;
 pub use spark::SparkEntity;
 pub use stub::StubObjectEntity;
 pub use switch::SwitchEntity;
@@ -94,11 +117,14 @@ pub fn make_object_entity(
         14 => Box::new(RedKeyEntity::new(item, cache)),
         15 => Box::new(TouchTriggerEntity::new(item, cache)),
         20 | 21 => Box::new(TextTileEntity::new(item, cache)),
+        22 => Box::new(FrogEntity::new(item, cache)),
         24 => Box::new(LockedDoorEntity::new(item, cache)),
         25 => Box::new(CollapsingCeilingEntity::new(item, cache)),
         26 => Box::new(ToggleWallEntity::new(item, cache)),
         27 => Box::new(PointEntity::new(item, cache)),
         28 => Box::new(BonusEntity::new(item, cache)),
+        29 => Box::new(GiantAntEntity::new(item, cache)),
+        30 => Box::new(FirebirdEnemyEntity::new(item, cache)),
         31 => Box::new(FlameEntity::new(item, cache)),
         32 => Box::new(SwitchEntity::new(item, cache)),
         33 => Box::new(RockKeyEntity::new(item, cache)),
@@ -106,12 +132,20 @@ pub fn make_object_entity(
         36 => Box::new(BulletEntity::new(item, cache)),
         37 => Box::new(HitFireEntity::new(item, cache)),
         38 => Box::new(FallingSpikeEntity::new(item, cache)),
+        39 => Box::new(SnakeEntity::new(item, cache)),
         42 => Box::new(HugeLetterTileEntity::new(item, cache)),
+        45 => Box::new(HiveEntity::new(item, cache)),
+        46 => Box::new(BeesEntity::new(item, cache)),
+        47 => Box::new(CrabEntity::new(item, cache)),
+        48 => Box::new(GatorEntity::new(item, cache)),
         50 => Box::new(BladeEntity::new(item, cache)),
+        51 => Box::new(SkullEntity::new(item, cache)),
+        53 => Box::new(GhostEntity::new(item, cache)),
         56 => Box::new(FirebirdPlayerEntity::new(item, cache)),
         58 => Box::new(BubblesEntity::new(item, cache)),
         61 => Box::new(LiftEntity::new(item, cache)),
         62 => Box::new(FirebirdWeaponEntity::new(item, cache)),
+        64 => Box::new(EyesEntity::new(item, cache)),
         65 => Box::new(SparkEntity::new(item, cache)),
         other => Box::new(StubObjectEntity::new(other, item)),
     }
