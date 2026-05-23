@@ -54,6 +54,26 @@ impl BeesEntity {
             pending_kill: None,
         }
     }
+
+    /// Builds a `BeesEntity` spawned at runtime from a hive.
+    ///
+    /// Used by `LevelScreen::spawn_objects` when a `CreateObject` with
+    /// `object_type = 46` arrives; bypasses the `JnObject` record because
+    /// dynamically-spawned bees have no static JN record.
+    pub fn spawn_at(x: i32, y: i32) -> Self {
+        Self {
+            x,
+            y,
+            w: BLOCK_SIZE_I,
+            h: BLOCK_SIZE_I,
+            player_x: x,
+            counter: 0,
+            dead: false,
+            score_dispatched: false,
+            zaphold: 0,
+            pending_kill: None,
+        }
+    }
 }
 
 impl ObjectEntity for BeesEntity {

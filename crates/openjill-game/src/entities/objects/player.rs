@@ -361,6 +361,7 @@ impl ObjectEntity for PlayerEntity {
             dispatcher.send(
                 MessageType::CreateObject,
                 MessagePayload::SpawnAt {
+                    object_type: 36,
                     x: bullet_x,
                     y: self.y,
                     xd: dir * BULLET_SPEED_PX,

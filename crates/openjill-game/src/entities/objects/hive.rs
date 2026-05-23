@@ -81,6 +81,7 @@ impl ObjectEntity for HiveEntity {
             dispatcher.send(
                 MessageType::CreateObject,
                 MessagePayload::SpawnAt {
+                    object_type: 46,
                     x: self.x,
                     y: self.y,
                     xd: 0,
@@ -186,23 +187,23 @@ mod tests {
         jn.objects()[0].clone()
     }
 
-    /// Hive dispatches `CreateObject` after `SPAWN_PERIOD` ticks.
+    /// Hive dispatches `CreateObject` with `object_type = 46` after `SPAWN_PERIOD` ticks.
     #[test]
-    fn hive_dispatches_create_object_after_spawn_period() {
-        struct Recorder(Arc<Mutex<usize>>);
+    fn hive_dispatches_bees_create_object_after_spawn_period() {
+        struct Recorder(Arc<Mutex<Vec<MessagePayload>>>);
         impl MessageHandler for Recorder {
-            fn handle(&mut self, _: MessageType, _: &MessagePayload) {
-                *self.0.lock().unwrap() += 1;
+            fn handle(&mut self, _: MessageType, payload: &MessagePayload) {
+                self.0.lock().unwrap().push(payload.clone());
             }
         }
 
         let cache = AssetCache::synthetic();
         let mut hive = HiveEntity::new(&synthetic_hive(32, 32), &cache);
-        let count = Arc::new(Mutex::new(0usize));
+        let payloads: Arc<Mutex<Vec<MessagePayload>>> = Arc::new(Mutex::new(Vec::new()));
         let mut dispatcher = MessageDispatcher::new();
         dispatcher.subscribe(
             MessageType::CreateObject,
-            Box::new(Recorder(Arc::clone(&count))),
+            Box::new(Recorder(Arc::clone(&payloads))),
         );
 
         let grid = empty_grid(8, 8);
@@ -212,10 +213,23 @@ mod tests {
         for _ in 0..SPAWN_PERIOD {
             hive.update(&input, &state, &grid, &mut dispatcher);
         }
+
+        let got = payloads.lock().unwrap();
         assert_eq!(
-            *count.lock().unwrap(),
+            got.len(),
             1,
             "hive spawns exactly one bee after SPAWN_PERIOD ticks"
+        );
+        assert!(
+            matches!(
+                got[0],
+                MessagePayload::SpawnAt {
+                    object_type: 46,
+                    ..
+                }
+            ),
+            "spawn payload must request object_type 46 (BeesEntity); got {:?}",
+            got[0]
         );
     }
 }

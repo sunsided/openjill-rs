@@ -107,13 +107,17 @@ pub enum MessagePayload {
     Text(String),
     /// Signed pixel delta `(dx, dy)` for movement messages such as `PlayerMove`.
     Move(i32, i32),
-    /// Spawn-position and initial velocity for a `CreateObject` request.
+    /// Spawn-position, initial velocity, and object type for a `CreateObject`
+    /// request.
     ///
     /// `x` and `y` are the world-space top-left of the new object in pixels.
-    /// `xd` and `yd` are the per-tick pixel velocity.  Used by `PlayerEntity`
-    /// to request bullet spawning via `MessageType::CreateObject`; the level
-    /// loop reads these fields to instantiate a `BulletEntity`.
+    /// `xd` and `yd` are the per-tick pixel velocity.  `object_type` is the JN
+    /// object type id to instantiate (e.g. `36` for `BulletEntity`, `46` for
+    /// `BeesEntity`); the level loop routes on this field to call the correct
+    /// factory constructor.
     SpawnAt {
+        /// JN object type id for the entity to create.
+        object_type: u8,
         /// World X of the spawn origin in pixels.
         x: i32,
         /// World Y of the spawn origin in pixels.

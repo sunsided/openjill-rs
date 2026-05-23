@@ -58,6 +58,11 @@ impl SkullEntity {
     }
 
     fn collides_solid(&self, backgrounds: &BackgroundGrid, nx: i32, ny: i32) -> bool {
+        let map_w = (backgrounds.width as i32) * BLOCK_SIZE_I;
+        let map_h = (backgrounds.height as i32) * BLOCK_SIZE_I;
+        if nx < 0 || ny < 0 || nx + self.w > map_w || ny + self.h > map_h {
+            return true;
+        }
         let cx_l = nx.div_euclid(BLOCK_SIZE_I).max(0) as usize;
         let cx_r = (nx + self.w - 1)
             .div_euclid(BLOCK_SIZE_I)

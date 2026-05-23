@@ -61,7 +61,7 @@ pub(crate) fn floor_under_next(
     let cell_y = cell_y as usize;
     backgrounds
         .get(cell_x, cell_y)
-        .map(|c| !c.is_passthrough() || c.is_stair())
+        .map(|c| c.blocks_vertical(1) || c.is_stair())
         .unwrap_or(false)
 }
 
