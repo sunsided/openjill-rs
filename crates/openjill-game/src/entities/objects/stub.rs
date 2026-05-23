@@ -90,7 +90,7 @@ impl ObjectEntity for StubObjectEntity {
     }
 
     /// No-op: a stub never reacts to a player touch.
-    fn on_touch(&mut self, _dispatcher: &mut MessageDispatcher) {}
+    fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {}
 
     /// No-op: a stub never reacts to weapon hits.
     fn on_kill(&mut self, _damage: i32, _death_kind: DeathKind) {}

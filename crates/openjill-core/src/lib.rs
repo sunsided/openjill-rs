@@ -16,7 +16,8 @@ pub use entity::{
     ObjectEntity, Rect,
 };
 pub use message::{
-    ChangeLevelPayload, MessageDispatcher, MessageHandler, MessagePayload, MessageType,
+    ChangeLevelPayload, InventoryItemPayload, MessageDispatcher, MessageHandler, MessagePayload,
+    MessageType,
 };
 pub use render::{ClipRect, FontSize, RenderCommand};
 pub use runtime::{InventoryObject, MAP_LEVEL, RuntimeState};

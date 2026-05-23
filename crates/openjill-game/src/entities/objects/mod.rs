@@ -1,16 +1,23 @@
 //! Object entity implementations registered against JN object type ids.
 //!
 //! Every concrete type listed in `objects_manager_mapping.json` of the Java
-//! reference is expected to eventually live as one submodule below.  Issue 57
-//! seeds the registry with the three types required for the per-tick update
-//! loop (player, apple, checkpoint) plus the catch-all
-//! [`stub::StubObjectEntity`] that the factory returns for unregistered type
-//! ids.
+//! reference is expected to eventually live as one submodule below.  The
+//! registry currently covers the player plus the pickup, key, door, trigger,
+//! and checkpoint entities required by epic 6 child issue 4; remaining types
+//! fall through to the catch-all [`stub::StubObjectEntity`].
 
 pub mod apple;
+pub mod blade;
+pub mod bonus;
 pub mod checkpoint;
+pub mod knife;
+pub mod lock_door;
 pub mod player;
+pub mod point;
+pub mod red_key;
+pub mod rock_key;
 pub mod stub;
+pub mod touch_trigger;
 
 use openjill_core::ObjectEntity;
 use openjill_data::jn::JnObject;
@@ -18,15 +25,26 @@ use openjill_data::jn::JnObject;
 use crate::asset_cache::AssetCache;
 
 pub use apple::AppleEntity;
+pub use blade::BladeEntity;
+pub use bonus::BonusEntity;
 pub use checkpoint::CheckPointEntity;
+pub use knife::KnifeEntity;
+pub use lock_door::LockedDoorEntity;
 pub use player::PlayerEntity;
+pub use point::PointEntity;
+pub use red_key::RedKeyEntity;
+pub use rock_key::RockKeyEntity;
 pub use stub::StubObjectEntity;
+pub use touch_trigger::TouchTriggerEntity;
 
 /// Builds the correct [`ObjectEntity`] implementation for a JN object record.
 ///
 /// `type_id` is the raw object type byte from the JN object list.  `item`
 /// supplies the position, dimensions, and per-object metadata required by the
-/// individual entity types.  `cache` supplies shared episode assets that some
+/// individual entity types.  `string_entry` is the JN string-stack value the
+/// object's `string_index` points at (when present), forwarded to entities
+/// like [`CheckPointEntity`] whose Java reference reads music-and-map flags
+/// from the same string.  `cache` supplies shared episode assets that some
 /// entities consult at construction time.
 ///
 /// Returns [`StubObjectEntity`] for any `type_id` that does not have a
@@ -35,12 +53,21 @@ pub use stub::StubObjectEntity;
 pub fn make_object_entity(
     type_id: u8,
     item: &JnObject,
+    string_entry: Option<&str>,
     cache: &AssetCache,
 ) -> Box<dyn ObjectEntity> {
     match type_id {
         0 => Box::new(PlayerEntity::new(item, cache)),
         1 => Box::new(AppleEntity::new(item, cache)),
-        12 => Box::new(CheckPointEntity::new(item, cache)),
+        2 => Box::new(KnifeEntity::new(item, cache)),
+        12 => Box::new(CheckPointEntity::new(item, string_entry, cache)),
+        14 => Box::new(RedKeyEntity::new(item, cache)),
+        15 => Box::new(TouchTriggerEntity::new(item, cache)),
+        24 => Box::new(LockedDoorEntity::new(item, cache)),
+        27 => Box::new(PointEntity::new(item, cache)),
+        28 => Box::new(BonusEntity::new(item, cache)),
+        33 => Box::new(RockKeyEntity::new(item, cache)),
+        50 => Box::new(BladeEntity::new(item, cache)),
         other => Box::new(StubObjectEntity::new(other, item)),
     }
 }
@@ -80,7 +107,7 @@ mod tests {
     fn make_object_entity_returns_stub_for_unregistered_type() {
         let cache = AssetCache::synthetic();
         let item = synthetic_object_of_type(99);
-        let entity = make_object_entity(99, &item, &cache);
+        let entity = make_object_entity(99, &item, None, &cache);
         assert!(!entity.is_player());
         assert!(!entity.is_checkpoint());
         let bbox = entity.bounding_box();
@@ -98,7 +125,7 @@ mod tests {
     fn make_object_entity_returns_player_for_type_zero() {
         let cache = AssetCache::synthetic();
         let item = synthetic_object_of_type(0);
-        let entity = make_object_entity(0, &item, &cache);
+        let entity = make_object_entity(0, &item, None, &cache);
         assert!(entity.is_player());
         assert!(!entity.is_checkpoint());
     }
@@ -113,7 +140,7 @@ mod tests {
     fn make_object_entity_returns_checkpoint_for_type_twelve() {
         let cache = AssetCache::synthetic();
         let item = synthetic_object_of_type(12);
-        let entity = make_object_entity(12, &item, &cache);
+        let entity = make_object_entity(12, &item, None, &cache);
         assert!(entity.is_checkpoint());
         assert!(!entity.is_player());
     }
@@ -129,7 +156,7 @@ mod tests {
     fn make_object_entity_returns_apple_for_type_one() {
         let cache = AssetCache::synthetic();
         let item = synthetic_object_of_type(1);
-        let entity = make_object_entity(1, &item, &cache);
+        let entity = make_object_entity(1, &item, None, &cache);
         assert!(!entity.is_player());
         assert!(!entity.is_checkpoint());
         let bbox = entity.bounding_box();

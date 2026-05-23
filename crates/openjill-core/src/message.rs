@@ -55,6 +55,32 @@ pub struct ChangeLevelPayload {
     pub level_number: i32,
 }
 
+/// Payload for an `InventoryItem` message: which item, and whether the
+/// dispatch adds or removes a copy from the player's inventory.
+///
+/// Mirrors the `add`/`remove` flag carried by `InventoryItemMessage`
+/// (`org.jill.openjill.core.api.message.statusbar.inventory`) in the Java
+/// reference implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InventoryItemPayload {
+    /// Item the message refers to.
+    pub item: InventoryObject,
+    /// `true` when the dispatch adds the item, `false` when it removes a copy.
+    pub add: bool,
+}
+
+impl InventoryItemPayload {
+    /// Builds a payload that adds `item` to the inventory.
+    pub const fn add(item: InventoryObject) -> Self {
+        Self { item, add: true }
+    }
+
+    /// Builds a payload that removes one `item` from the inventory.
+    pub const fn remove(item: InventoryObject) -> Self {
+        Self { item, add: false }
+    }
+}
+
 /// Data attached to one dispatched message.
 ///
 /// Each variant corresponds to the payload type expected by its [`MessageType`].
@@ -71,8 +97,8 @@ pub struct ChangeLevelPayload {
 pub enum MessagePayload {
     /// Level-change data.
     ChangeLevel(ChangeLevelPayload),
-    /// Inventory item carried in the message.
-    InventoryItem(InventoryObject),
+    /// Inventory item carried in the message, plus an add/remove flag.
+    InventoryItem(InventoryItemPayload),
     /// Integer count (lives delta, score delta, etc.).
     Count(i32),
     /// Text string (status bar text, message box content).
