@@ -17,13 +17,15 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use openjill_core::layout::{
-    BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y, LEVEL_MESSAGE_TICKS,
-    X_UPDATE_BORDER, Y_UPDATE_BORDER,
+    BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y, INVENTORY_AREA_H,
+    INVENTORY_AREA_W, INVENTORY_AREA_X, INVENTORY_AREA_Y, LEVEL_MESSAGE_TICKS, MESSAGE_BAR_H,
+    MESSAGE_BAR_Y, SCREEN_WIDTH, X_UPDATE_BORDER, Y_UPDATE_BORDER,
 };
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
-    ActiveInput, BackgroundGrid, ChangeLevelPayload, FontSize, InputCommand, MessageDispatcher,
-    MessageHandler, MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
+    ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundGrid, ChangeLevelPayload,
+    ClipRect, FontSize, InputCommand, InventoryObject, MessageDispatcher, MessageHandler,
+    MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
     ScreenTransition, TickResult,
 };
 use openjill_data::dma::DmaFile;
@@ -93,6 +95,201 @@ enum PendingRequest {
 /// Shared queue of pending transition requests received via the dispatcher.
 type Inbox = Arc<Mutex<Vec<PendingRequest>>>;
 
+/// Inventory-area-local X of the score number's left edge.
+///
+/// Sourced from `OpenJill/src/main/resources/inventory_conf.json` `score.x`.
+const SCORE_X_INV: i32 = 57;
+
+/// Inventory-area-local Y of the score number's top edge.
+///
+/// Sourced from `OpenJill/src/main/resources/inventory_conf.json` `score.y`.
+const SCORE_Y_INV: i32 = 16;
+
+/// EGA color index used by the score digits.
+///
+/// Sourced from `OpenJill/src/main/resources/inventory_conf.json` `score.color`.
+const SCORE_COLOR: u8 = 4;
+
+/// Width in pixels of the FillRect erase region behind the score digits.
+///
+/// Large enough to cover six 6 px-wide small-font glyphs with two pixels of
+/// slack; matches the band the original engine clears before each score
+/// redraw.
+const SCORE_ERASE_W: u32 = 40;
+
+/// Height in pixels of the FillRect erase region behind the score digits.
+///
+/// One small-font row (6 px) plus two pixels of vertical slack.
+const SCORE_ERASE_H: u32 = 8;
+
+/// EGA palette index used to erase the score region before each redraw.
+///
+/// Sourced from `OpenJill/src/main/resources/inventory_conf.json`
+/// `backgroundColor` (the inventory area's flat background fill).
+const INVENTORY_BG_COLOR: u8 = 8;
+
+/// Number of zero-padded decimal digits drawn for the score value.
+///
+/// Matches the original game's six-digit score display.
+const SCORE_DIGITS: usize = 6;
+
+/// Maximum displayable score value (`10^SCORE_DIGITS - 1`).
+///
+/// The score is clamped to this ceiling when ingested from
+/// `InventoryPoint` deltas so the rendered text always fits the six-digit
+/// erase band; a runaway score never spills extra glyphs past
+/// [`SCORE_ERASE_W`] into adjacent UI.  Also enforced when reading from
+/// [`RuntimeState`] in the overlay path so externally-mutated state stays
+/// inside the same visual contract.
+const SCORE_DISPLAY_MAX: i32 = 999_999;
+
+/// Maximum displayable lives digit (`0..=9`).
+///
+/// Limits the rendered glyph count to one so the lives `DrawText` never
+/// overflows [`LIVES_ERASE_W`].  The underlying [`RuntimeState::lives`]
+/// counter is left untouched above this value; the saturation is purely a
+/// display concern, mirroring the original game's single-digit lives
+/// indicator.
+const LIVES_DISPLAY_MAX: i32 = 9;
+
+/// Inventory-area-local X of the lives count digit.
+///
+/// `inventory_conf.json` does not carry an explicit lives anchor; the value
+/// is rendered next to the `score` label so the dynamic overlay stays inside
+/// the inventory panel without colliding with the lifebar or item grid.
+/// Child issue 60 will replace this with a positional constant once a
+/// dedicated lives icon is wired in.
+const LIVES_X_INV: i32 = 33;
+
+/// Inventory-area-local Y of the lives count digit.
+///
+/// See [`LIVES_X_INV`] for the sourcing caveat.
+const LIVES_Y_INV: i32 = 22;
+
+/// EGA color index used by the lives digit.
+const LIVES_COLOR: u8 = 4;
+
+/// Width in pixels of the FillRect erase region behind the lives digit.
+const LIVES_ERASE_W: u32 = 16;
+
+/// Height in pixels of the FillRect erase region behind the lives digit.
+const LIVES_ERASE_H: u32 = 8;
+
+/// Inventory-area-local X of the inventory item grid's top-left cell.
+///
+/// Sourced from `OpenJill/src/main/resources/inventory_conf.json`
+/// `itemConf.x`.
+const ITEM_GRID_X_INV: i32 = 2;
+
+/// Inventory-area-local Y of the inventory item grid's top-left cell.
+///
+/// Sourced from `OpenJill/src/main/resources/inventory_conf.json`
+/// `itemConf.y`.
+const ITEM_GRID_Y_INV: i32 = 27;
+
+/// Number of inventory item grid rows.
+///
+/// Sourced from `inventory_conf.json` `itemConf.nbRow`.
+const ITEM_GRID_ROWS: usize = 3;
+
+/// Number of inventory item grid columns.
+///
+/// Sourced from `inventory_conf.json` `itemConf.nbCol`.
+const ITEM_GRID_COLS: usize = 4;
+
+/// Pixel pitch between adjacent inventory item grid cells.
+const ITEM_GRID_PITCH: i32 = 16;
+
+/// Framebuffer clip rectangle that confines dynamic-overlay output to the
+/// inventory area (origin `(INVENTORY_AREA_X, INVENTORY_AREA_Y)`, size
+/// `INVENTORY_AREA_W × INVENTORY_AREA_H` from `openjill_core::layout`).
+///
+/// `inventory_conf.json` declares an item grid (`itemConf.x = 2`,
+/// `itemConf.y = 27`, 4 cols × 3 rows × 16 px pitch) whose 64 × 48 footprint
+/// sticks two pixels past the inventory area's right edge and six pixels
+/// past its bottom edge; the Java reference renders the grid into a
+/// `BufferedImage(INVENTORY_AREA_W, INVENTORY_AREA_H)` backing buffer that
+/// silently clips the overflow.  The Rust port draws directly into the
+/// framebuffer, so the same clip is supplied per-command on every
+/// inventory-overlay blit + erase so the dynamic redraw cannot punch
+/// through the surrounding status-bar frame (vertical bar tile at
+/// `x = 72`, lower horizontal bar at `y = 176`, `"INVENTORY"` label band).
+const INVENTORY_AREA_CLIP: ClipRect = ClipRect {
+    x: INVENTORY_AREA_X,
+    y: INVENTORY_AREA_Y,
+    width: INVENTORY_AREA_W,
+    height: INVENTORY_AREA_H,
+};
+
+/// EGA color index used by the in-game status-bar text overlay.
+///
+/// Matches the bright EGA index the level message-box uses for non-title
+/// text; the renderer expands it to the bright variant before drawing.
+const STATUS_BAR_TEXT_COLOR: u8 = 4;
+
+/// Status-bar text X offset inside the message bar in framebuffer pixels.
+///
+/// Two-pixel left margin from the framebuffer origin.  The original
+/// `status_bar_vga.json` `messageBar` entry covers the full screen width
+/// (`x = 0`, `width = 320`) without specifying a text inset, so the value
+/// is a port-side convention picked to match the small 6 × 6 SHA font's
+/// visual padding inside the 12 px bar; later episodes can override it if
+/// the reference layout grows a dedicated key.
+const STATUS_BAR_TEXT_X: i32 = 2;
+
+/// Status-bar text Y offset (relative to [`MESSAGE_BAR_Y`]) in framebuffer
+/// pixels.
+///
+/// Three-pixel top margin centring the 6 px small font inside the
+/// `MESSAGE_BAR_H = 12` band declared by `status_bar_vga.json`'s
+/// `messageBar` entry.  The reference JSON does not pin the text origin
+/// either, so this is a port-side convention matching the visual centring
+/// the original DOS executable produces.
+const STATUS_BAR_TEXT_Y_OFFSET: i32 = 3;
+
+/// Returns the inventory item tileset / tile pair for an [`InventoryObject`]
+/// variant.
+///
+/// Sourced from `OpenJill/src/main/resources/inventory_conf.json` `items`.
+/// The mapping covers every variant currently emitted by episode 1 pickups;
+/// [`InventoryObject::FireFlower`] reuses the `FROG` icon (tileset 14, tile
+/// 14) and [`InventoryObject::Firebird`] reuses the `INVINCIBILITY` icon
+/// (tileset 14, tile 37) because the original `inventory_conf.json` has no
+/// dedicated entries for those gameplay-only pickups; child issue 60 will
+/// refine the mapping once those pickups land.
+fn inventory_item_tile(item: InventoryObject) -> (u8, u16) {
+    match item {
+        InventoryObject::Jill => (14, 38),
+        InventoryObject::Gem => (14, 11),
+        InventoryObject::Key => (14, 12),
+        InventoryObject::Knife => (14, 13),
+        InventoryObject::Blade => (14, 35),
+        InventoryObject::FireFlower => (14, 14),
+        InventoryObject::Firebird => (14, 37),
+    }
+}
+
+/// Update queued by a status-bar dispatcher subscriber for the next tick.
+///
+/// Mirrors the [`PendingRequest`] inbox pattern: handlers register at
+/// construction time, each handler pushes one variant into the shared queue,
+/// and [`LevelScreen::pump_status_inbox`] drains the queue every tick before
+/// rendering the dynamic overlay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StatusUpdate {
+    /// Score delta from an `InventoryPoint` message payload.
+    Point(i32),
+    /// Life-count delta from an `InventoryLife` message payload.
+    Life(i32),
+    /// Inventory item added by an `InventoryItem` message payload.
+    Item(InventoryObject),
+    /// Status-bar text replacement from a `StatusBarText` message payload.
+    Text(String),
+}
+
+/// Shared queue of status updates collected from the dispatcher subscribers.
+type StatusInbox = Arc<Mutex<Vec<StatusUpdate>>>;
+
 /// Level screen handler.
 ///
 /// Owns a parsed level JN file plus the raw bytes for restart-level
@@ -156,6 +353,26 @@ pub struct LevelScreen {
     /// caller at construction so future episode support can vary the value
     /// without changing this screen.
     sky_color: u8,
+    /// Shared queue holding score / life / item / status-bar text updates
+    /// collected via the dispatcher subscribers registered in
+    /// [`LevelScreen::new`].
+    ///
+    /// Drained every tick by [`LevelScreen::pump_status_inbox`] so the
+    /// matching effects (score and lives accumulation, inventory append,
+    /// status-bar text reset) land on the same frame the dispatcher delivered
+    /// the message.
+    status_inbox: StatusInbox,
+    /// Currently displayed status-bar text, or `None` when no message is
+    /// active.
+    ///
+    /// Set by an incoming `StatusBarText` message and cleared when
+    /// [`Self::status_text_ticks`] reaches zero.
+    status_text: Option<String>,
+    /// Remaining ticks before the active status-bar text is cleared.
+    ///
+    /// Seeded to [`LEVEL_MESSAGE_TICKS`] (72 ticks ≈ 4 s) on every new
+    /// `StatusBarText` message; counted down each tick by [`Self::tick`].
+    status_text_ticks: u32,
 }
 
 impl LevelScreen {
@@ -199,6 +416,32 @@ impl LevelScreen {
             }),
         );
 
+        let status_inbox: StatusInbox = Arc::new(Mutex::new(Vec::new()));
+        dispatcher.subscribe(
+            MessageType::InventoryPoint,
+            Box::new(StatusInboxHandler {
+                inbox: Arc::clone(&status_inbox),
+            }),
+        );
+        dispatcher.subscribe(
+            MessageType::InventoryLife,
+            Box::new(StatusInboxHandler {
+                inbox: Arc::clone(&status_inbox),
+            }),
+        );
+        dispatcher.subscribe(
+            MessageType::InventoryItem,
+            Box::new(StatusInboxHandler {
+                inbox: Arc::clone(&status_inbox),
+            }),
+        );
+        dispatcher.subscribe(
+            MessageType::StatusBarText,
+            Box::new(StatusInboxHandler {
+                inbox: Arc::clone(&status_inbox),
+            }),
+        );
+
         let (viewport_x, viewport_y) = checkpoint_viewport(&jn, level_number);
         let objects = build_object_entities(&jn, cache);
         let backgrounds = build_background_grid(&jn, cache);
@@ -219,6 +462,9 @@ impl LevelScreen {
             backgrounds,
             entity_dispatcher: MessageDispatcher::new(),
             sky_color,
+            status_inbox,
+            status_text: None,
+            status_text_ticks: 0,
         }
     }
 
@@ -333,22 +579,36 @@ impl LevelScreen {
             .map(|obj| obj.bounding_box())
     }
 
-    /// Advances every object entity by one tick and collects their render
-    /// commands.
+    /// Advances every object entity by one tick.
     ///
     /// An object updates when it reports `always_active` or when its
     /// bounding box overlaps the viewport expanded by [`X_UPDATE_BORDER`] and
-    /// [`Y_UPDATE_BORDER`].  Objects whose bounding box overlaps the visible
-    /// game-area window contribute their `draw` command.
-    fn tick_objects(&mut self, input: &ActiveInput, state: &RuntimeState) -> Vec<RenderCommand> {
-        let mut commands = Vec::new();
+    /// [`Y_UPDATE_BORDER`].  The update rect is evaluated against the viewport
+    /// *before* this frame's scroll snap so objects whose pre-tick bounding
+    /// box was within the border still update on the tick they leave the
+    /// border, matching the Java reference's `AbstractExecutingStdPlayerLevel`
+    /// iteration order.
+    fn update_objects(&mut self, input: &ActiveInput, state: &RuntimeState) {
         let update_rect = viewport_update_rect(self.viewport_x, self.viewport_y);
-        let game_rect = viewport_game_rect(self.viewport_x, self.viewport_y);
         for obj in self.objects.iter_mut() {
             let bbox = obj.bounding_box();
             if obj.always_active() || update_rect.intersects(&bbox) {
                 obj.update(input, state, &self.backgrounds, &mut self.entity_dispatcher);
             }
+        }
+    }
+
+    /// Collects render commands for every object whose post-update bounding
+    /// box overlaps the visible game-area window.
+    ///
+    /// Run after [`Self::update_viewport`] so commands use the freshly-snapped
+    /// viewport: the player and any object that moved with this tick land at
+    /// their new screen position rather than at the previous frame's offset.
+    fn draw_objects(&mut self) -> Vec<RenderCommand> {
+        let mut commands = Vec::new();
+        let game_rect = viewport_game_rect(self.viewport_x, self.viewport_y);
+        for obj in self.objects.iter_mut() {
+            let bbox = obj.bounding_box();
             if game_rect.intersects(&bbox)
                 && let Some(cmd) = obj.draw()
             {
@@ -360,6 +620,24 @@ impl LevelScreen {
             }
         }
         commands
+    }
+
+    /// Snaps the viewport so the player remains inside the 96 px horizontal
+    /// and 48 px vertical update border, clamped to the map bounds.
+    ///
+    /// Delegates to [`compute_viewport_scroll`] for the per-axis snap +
+    /// clamp arithmetic; this method only locates the player bounding box and
+    /// writes the result back into [`Self::viewport_x`] / [`Self::viewport_y`].
+    ///
+    /// No-op when no player entity exists yet (e.g. before object factories
+    /// register the player).
+    fn update_viewport(&mut self) {
+        let Some(player_bbox) = self.player_bounding_box() else {
+            return;
+        };
+        let (vx, vy) = compute_viewport_scroll(player_bbox, self.viewport_x, self.viewport_y);
+        self.viewport_x = vx;
+        self.viewport_y = vy;
     }
 
     /// Iterates visible background cells, applies per-cell callbacks, and
@@ -441,6 +719,184 @@ impl LevelScreen {
         commands
     }
 
+    /// Drains the status-update inbox and applies each entry to the shared
+    /// [`RuntimeState`] (score, lives, inventory) plus the local status-bar
+    /// text fields.
+    ///
+    /// Mirrors the [`PendingRequest`] inbox drain: handlers registered in
+    /// [`LevelScreen::new`] push one [`StatusUpdate`] per dispatched message,
+    /// and this drain pass converts those queued updates into mutations on
+    /// `state` and `self`.  `StatusUpdate::Text` resets the
+    /// [`LEVEL_MESSAGE_TICKS`] countdown so a second message extends the
+    /// display rather than letting an in-flight clear short-circuit the new
+    /// text.
+    fn pump_status_inbox(&mut self, state: &mut RuntimeState) {
+        let updates: Vec<StatusUpdate> = {
+            let mut queue = self
+                .status_inbox
+                .lock()
+                .expect("level status inbox mutex poisoned");
+            std::mem::take(&mut *queue)
+        };
+        for update in updates {
+            match update {
+                StatusUpdate::Point(delta) => {
+                    // Clamp to `[0, SCORE_DISPLAY_MAX]` so negative deltas
+                    // cannot drive the visible score below zero and so a
+                    // streak of pickups cannot push the rendered digit count
+                    // past the six-digit erase band defined by
+                    // `SCORE_ERASE_W`.  The clamp lives at ingest rather
+                    // than on the render path so downstream gameplay logic
+                    // (HUD readers, save-game writers) sees the same value
+                    // the player sees on-screen.
+                    state.score = state
+                        .score
+                        .saturating_add(delta)
+                        .clamp(0, SCORE_DISPLAY_MAX);
+                }
+                StatusUpdate::Life(delta) => {
+                    // Clamp to `>= 0` only: the underlying counter can go
+                    // beyond `LIVES_DISPLAY_MAX` to model extra-life
+                    // pickups that stack past the single-digit display,
+                    // while a negative delta cannot drive the lives count
+                    // below zero in the shared state.
+                    state.lives = state.lives.saturating_add(delta).max(0);
+                }
+                StatusUpdate::Item(item) => {
+                    state.inventory.push(item);
+                }
+                StatusUpdate::Text(text) => {
+                    self.status_text = Some(text);
+                    self.status_text_ticks = LEVEL_MESSAGE_TICKS;
+                }
+            }
+        }
+    }
+
+    /// Builds the dynamic status-bar overlay render commands for the current
+    /// tick: score digits, lives digit, inventory item grid, and the
+    /// status-bar message text (when present).
+    ///
+    /// Each subsection emits a [`RenderCommand::FillRect`] erase followed by
+    /// the new pixel content (`DrawText` for digits and the message bar,
+    /// `Blit` for inventory icons).  The erase rects use the inventory area's
+    /// flat background color so the overlay can be redrawn every frame
+    /// without leaving glyph ghosts behind from earlier values, matching the
+    /// "FillRect then redraw" pattern the Java reference implements for
+    /// `InventoryPointMessage` / `InventoryLifeMessage` / `InventoryItemMessage`.
+    fn render_dynamic_status(&self, state: &RuntimeState) -> Vec<RenderCommand> {
+        let mut commands = Vec::new();
+
+        // Score: zero-padded six-digit decimal, clamped to
+        // `[0, SCORE_DISPLAY_MAX]` so externally-mutated `state.score`
+        // never spills extra glyphs past the six-digit erase band.
+        let display_score = state.score.clamp(0, SCORE_DISPLAY_MAX);
+        commands.push(RenderCommand::FillRect {
+            x: INVENTORY_AREA_X + SCORE_X_INV,
+            y: INVENTORY_AREA_Y + SCORE_Y_INV,
+            width: SCORE_ERASE_W,
+            height: SCORE_ERASE_H,
+            color: INVENTORY_BG_COLOR,
+        });
+        commands.push(RenderCommand::DrawText {
+            text: format!("{:0>width$}", display_score, width = SCORE_DIGITS),
+            x: INVENTORY_AREA_X + SCORE_X_INV,
+            y: INVENTORY_AREA_Y + SCORE_Y_INV,
+            color_index: SCORE_COLOR,
+            font: FontSize::Small,
+        });
+
+        // Lives: single decimal digit, clamped to `[0, LIVES_DISPLAY_MAX]`
+        // so a state value above 9 (extra-life stacking) cannot widen the
+        // glyph count past the one-digit erase rect declared by
+        // `LIVES_ERASE_W`.
+        let display_lives = state.lives.clamp(0, LIVES_DISPLAY_MAX);
+        commands.push(RenderCommand::FillRect {
+            x: INVENTORY_AREA_X + LIVES_X_INV,
+            y: INVENTORY_AREA_Y + LIVES_Y_INV,
+            width: LIVES_ERASE_W,
+            height: LIVES_ERASE_H,
+            color: INVENTORY_BG_COLOR,
+        });
+        commands.push(RenderCommand::DrawText {
+            text: display_lives.to_string(),
+            x: INVENTORY_AREA_X + LIVES_X_INV,
+            y: INVENTORY_AREA_Y + LIVES_Y_INV,
+            color_index: LIVES_COLOR,
+            font: FontSize::Small,
+        });
+
+        // Inventory item grid: erase the grid block and blit each carried
+        // item in row-major order until the grid is full.
+        //
+        // The `itemConf` rectangle declared in `inventory_conf.json`
+        // (4 cols × 3 rows × 16 px pitch starting at inventory-local
+        // `(2, 27)`) extends two pixels past the inventory area's right
+        // edge and six pixels past its bottom edge.  The erase rect is
+        // clamped to the inventory interior so the fill does not punch
+        // through the surrounding vertical bar tile column (`x = 72`) or
+        // the lower horizontal bar / `"INVENTORY"` label band
+        // (`y ≥ 176`), and every grid `Blit` carries the
+        // [`INVENTORY_AREA_CLIP`] so the rightmost icon column's two-pixel
+        // overflow is silently clipped the same way the Java reference's
+        // backing `BufferedImage` clips it.
+        let grid_screen_x = INVENTORY_AREA_X + ITEM_GRID_X_INV;
+        let grid_screen_y = INVENTORY_AREA_Y + ITEM_GRID_Y_INV;
+        let inv_right = INVENTORY_AREA_X + INVENTORY_AREA_W as i32;
+        let inv_bottom = INVENTORY_AREA_Y + INVENTORY_AREA_H as i32;
+        let grid_right = grid_screen_x + ITEM_GRID_COLS as i32 * ITEM_GRID_PITCH;
+        let grid_bottom = grid_screen_y + ITEM_GRID_ROWS as i32 * ITEM_GRID_PITCH;
+        let erase_w = (grid_right.min(inv_right) - grid_screen_x).max(0) as u32;
+        let erase_h = (grid_bottom.min(inv_bottom) - grid_screen_y).max(0) as u32;
+        commands.push(RenderCommand::FillRect {
+            x: grid_screen_x,
+            y: grid_screen_y,
+            width: erase_w,
+            height: erase_h,
+            color: INVENTORY_BG_COLOR,
+        });
+        for (index, item) in state
+            .inventory
+            .iter()
+            .take(ITEM_GRID_ROWS * ITEM_GRID_COLS)
+            .enumerate()
+        {
+            let col = (index % ITEM_GRID_COLS) as i32;
+            let row = (index / ITEM_GRID_COLS) as i32;
+            let (tileset, tile) = inventory_item_tile(*item);
+            commands.push(RenderCommand::Blit {
+                tileset,
+                tile,
+                x: grid_screen_x + col * ITEM_GRID_PITCH,
+                y: grid_screen_y + row * ITEM_GRID_PITCH,
+                opaque: false,
+                clip: Some(INVENTORY_AREA_CLIP),
+            });
+        }
+
+        // Message bar text: only emit when an active message is being
+        // displayed.  The FillRect erases the entire bar so leftover glyphs
+        // from a previous message do not bleed past the new text length.
+        if let Some(text) = self.status_text.as_ref() {
+            commands.push(RenderCommand::FillRect {
+                x: 0,
+                y: MESSAGE_BAR_Y,
+                width: SCREEN_WIDTH,
+                height: MESSAGE_BAR_H,
+                color: 0,
+            });
+            commands.push(RenderCommand::DrawText {
+                text: text.clone(),
+                x: STATUS_BAR_TEXT_X,
+                y: MESSAGE_BAR_Y + STATUS_BAR_TEXT_Y_OFFSET,
+                color_index: STATUS_BAR_TEXT_COLOR,
+                font: FontSize::Small,
+            });
+        }
+
+        commands
+    }
+
     /// Discards any messages queued in [`Self::entity_dispatcher`].
     ///
     /// Issue 57 has no entity-dispatcher subscribers; future child issues
@@ -461,32 +917,53 @@ impl ScreenHandler for LevelScreen {
     /// reference implementation when no transition is pending.
     fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult {
         self.pump_inbox();
+        self.pump_status_inbox(state);
 
-        // Render order each tick:
-        // 1. Base frame (`Clear` + static level background).
-        // 2. Per-cell background entity draws (overlay tiles).
-        // 3. Object entity draws (drawn on top of backgrounds, mirroring
-        //    `AbstractExecutingStdLevel` in the Java reference).
-        // 4. Message-box overlay last so transitions paint over everything
+        // Tick order each frame:
+        // 1. Update every object entity (player moves on this tick).
+        // 2. Snap the viewport so the post-update player stays inside the
+        //    96/48 px update border, clamped to the map bounds.
+        // 3. Build the base frame using the freshly-snapped viewport.
+        // 4. Per-cell background tick + draw (also uses the new viewport).
+        // 5. Object draws (on top of backgrounds, matching the Java
+        //    reference draw order).
+        // 6. Message-box overlay last so transitions paint over everything
         //    else.
+        self.update_objects(input, state);
+        self.update_viewport();
+
         let mut commands = self.render_base_frame();
 
-        // Update phase: objects update before backgrounds run their per-cell
-        // callbacks so the `player_bbox` fed into the background loop reflects
-        // the post-update player position rather than a stale pre-tick value.
-        let obj_commands = self.tick_objects(input, state);
         let player_bbox = self.player_bounding_box();
         let bg_commands = self.tick_backgrounds(player_bbox);
+        let obj_commands = self.draw_objects();
 
-        // Backgrounds first, then objects, matching the Java draw order.
         commands.extend(bg_commands);
         commands.extend(obj_commands);
+
+        // Dynamic status-bar overlay sits on top of the game-area commands so
+        // its message-bar text and per-tick score/lives/inventory digits paint
+        // over the static status-bar mosaic prepended by the orchestrator.
+        commands.extend(self.render_dynamic_status(state));
 
         if self.pending.is_some() {
             commands.extend(render_message_box(&self.message_text));
         }
 
         self.drain_entity_dispatcher();
+
+        // Status-bar text countdown: clear the active message after
+        // `LEVEL_MESSAGE_TICKS` ticks so a one-off pickup hint vanishes
+        // without a follow-up `StatusBarText` send.  Runs after the overlay
+        // has already been rendered for this frame so the message is visible
+        // on the tick it expires, mirroring the level-message-box countdown
+        // above.
+        if self.status_text_ticks > 0 {
+            self.status_text_ticks -= 1;
+            if self.status_text_ticks == 0 {
+                self.status_text = None;
+            }
+        }
 
         let mut transition: Option<ScreenTransition> = None;
         if self.pending.is_some() {
@@ -541,6 +1018,40 @@ impl MessageHandler for InboxHandler {
         };
         if let Ok(mut queue) = self.inbox.lock() {
             queue.push(request);
+        }
+    }
+}
+
+/// Dispatcher handler that records arriving status-bar updates into the
+/// [`StatusInbox`] for the level screen to drain on its next tick.
+///
+/// One handler instance is subscribed per source [`MessageType`]; the
+/// matching payload variant is translated into the corresponding
+/// [`StatusUpdate`].  Unrelated payload variants are silently ignored to
+/// stay forward-compatible with future message-type extensions.
+struct StatusInboxHandler {
+    /// Shared inbox the level screen drains every tick.
+    inbox: StatusInbox,
+}
+
+impl MessageHandler for StatusInboxHandler {
+    /// Converts each supported `(MessageType, MessagePayload)` pair into a
+    /// [`StatusUpdate`] and appends it to the inbox.  Mismatched pairs are
+    /// silently dropped.
+    fn handle(&mut self, msg_type: MessageType, payload: &MessagePayload) {
+        let update = match (msg_type, payload) {
+            (MessageType::InventoryPoint, MessagePayload::Count(n)) => StatusUpdate::Point(*n),
+            (MessageType::InventoryLife, MessagePayload::Count(n)) => StatusUpdate::Life(*n),
+            (MessageType::InventoryItem, MessagePayload::InventoryItem(item)) => {
+                StatusUpdate::Item(*item)
+            }
+            (MessageType::StatusBarText, MessagePayload::Text(text)) => {
+                StatusUpdate::Text(text.clone())
+            }
+            _ => return,
+        };
+        if let Ok(mut queue) = self.inbox.lock() {
+            queue.push(update);
         }
     }
 }
@@ -671,6 +1182,51 @@ fn translate_object_command(cmd: RenderCommand, viewport_x: i32, viewport_y: i32
         },
         other => other,
     }
+}
+
+/// Returns the per-tick viewport offset that keeps `player_bbox` inside the
+/// 96 px horizontal and 48 px vertical update border, clamped to the map's
+/// scrollable range.
+///
+/// Mirrors the `AbstractExecutingStdPlayerLevel` scroll rule from the Java
+/// reference: when the player's bounding box leaves the inner border the
+/// viewport advances by exactly the overshoot; otherwise the viewport is
+/// left untouched.  The clamp range is
+/// `[0, MAP_WIDTH * 16 - GAME_AREA_W]` x `[0, MAP_HEIGHT * 16 - GAME_AREA_H]`
+/// with the same OpenJill sign convention used elsewhere in this file: the
+/// visible world top-left equals `(-viewport_x, -viewport_y)`, so the
+/// computation is performed on the non-negative world-pixel form
+/// (`wx = -viewport_x`) and the result is negated before being returned.
+///
+/// Pulled out into a free function so unit tests can exercise the snap-and-
+/// clamp arithmetic without constructing a full [`LevelScreen`] with a
+/// player entity in its object list.
+fn compute_viewport_scroll(player_bbox: Rect, viewport_x: i32, viewport_y: i32) -> (i32, i32) {
+    let map_w_px = BACKGROUND_GRID_WIDTH as i32 * BLOCK_SIZE_I;
+    let map_h_px = BACKGROUND_GRID_HEIGHT as i32 * BLOCK_SIZE_I;
+    let max_wx = (map_w_px - GAME_AREA_W as i32).max(0);
+    let max_wy = (map_h_px - GAME_AREA_H as i32).max(0);
+    let x_border = X_UPDATE_BORDER as i32;
+    let y_border = Y_UPDATE_BORDER as i32;
+
+    let mut wx = -viewport_x;
+    let mut wy = -viewport_y;
+
+    if player_bbox.x < wx + x_border {
+        wx = player_bbox.x - x_border;
+    } else if player_bbox.x + player_bbox.w > wx + GAME_AREA_W as i32 - x_border {
+        wx = player_bbox.x + player_bbox.w - GAME_AREA_W as i32 + x_border;
+    }
+    if player_bbox.y < wy + y_border {
+        wy = player_bbox.y - y_border;
+    } else if player_bbox.y + player_bbox.h > wy + GAME_AREA_H as i32 - y_border {
+        wy = player_bbox.y + player_bbox.h - GAME_AREA_H as i32 + y_border;
+    }
+
+    wx = wx.clamp(0, max_wx);
+    wy = wy.clamp(0, max_wy);
+
+    (-wx, -wy)
 }
 
 /// Locates the checkpoint object for `level_number` in `jn` and returns the
@@ -962,14 +1518,18 @@ fn parse_message_box_layout() -> MessageBoxLayout {
 mod tests {
     use super::{
         EPISODE_1_SKY_COLOR, LEVEL_MESSAGEBOX_JSON, LevelScreen, MESSAGE_LINE_HEIGHT,
-        MESSAGE_MAX_LINES, checkpoint_viewport, find_checkpoint, lookup_message_text,
-        render_message_box,
+        MESSAGE_MAX_LINES, checkpoint_viewport, compute_viewport_scroll, find_checkpoint,
+        lookup_message_text, render_message_box,
     };
-    use openjill_core::layout::LEVEL_MESSAGE_TICKS;
-    use openjill_core::runtime::RuntimeState;
+    use openjill_core::layout::{
+        GAME_AREA_H, GAME_AREA_W, INVENTORY_AREA_X, INVENTORY_AREA_Y, LEVEL_MESSAGE_TICKS,
+        MESSAGE_BAR_Y, X_UPDATE_BORDER, Y_UPDATE_BORDER,
+    };
+    use openjill_core::runtime::{InventoryObject, RuntimeState};
     use openjill_core::{
-        ActiveInput, ChangeLevelPayload, InputCommand, MessageDispatcher, MessagePayload,
-        MessageType, RenderCommand, ScreenHandler, ScreenTransition,
+        ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, ChangeLevelPayload,
+        InputCommand, MessageDispatcher, MessagePayload, MessageType, Rect, RenderCommand,
+        ScreenHandler, ScreenTransition,
     };
     use openjill_data::jn::JnFile;
 
@@ -1845,5 +2405,517 @@ mod tests {
         let jn = JnFile::from_bytes(bytes).expect("synthetic JN should parse");
         // 100_000 does not fit in i16; the lookup falls back to (0, 0).
         assert_eq!(checkpoint_viewport(&jn, 100_000), (0, 0));
+    }
+
+    /// Returns the world top-left X (in pixels) currently shown at the
+    /// viewport's left edge, derived from the OpenJill sign-flipped form
+    /// stored in `viewport_x`.
+    fn world_left(viewport_x: i32) -> i32 {
+        -viewport_x
+    }
+
+    /// Unit under test: [`compute_viewport_scroll`] when the player bounding
+    /// box sits comfortably inside the 96/48 px inner border.
+    ///
+    /// Preconditions: viewport starts at `(0, 0)` (world top-left = 0);
+    /// player bounding box at `(120, 80, 16, 16)` is well inside the border.
+    ///
+    /// Invariants asserted: the returned viewport equals the input, i.e. no
+    /// scroll is applied while the player stays inside the border.
+    #[test]
+    fn viewport_unchanged_when_player_inside_border() {
+        let player = Rect::new(120, 80, 16, 16);
+        let (vx, vy) = compute_viewport_scroll(player, 0, 0);
+        assert_eq!((vx, vy), (0, 0));
+    }
+
+    /// Unit under test: [`compute_viewport_scroll`] when the player's right
+    /// edge crosses the right inner border.
+    ///
+    /// Preconditions: viewport at `(0, 0)`; player at
+    /// `(GAME_AREA_W - X_UPDATE_BORDER, 80, 16, 16)`, so
+    /// `player.x + player.w` exceeds the right border by 16.
+    ///
+    /// Invariants asserted: the viewport scrolls right exactly enough to put
+    /// the player at the border (`world_left == 16`), matching the Java
+    /// reference's snap-to-border rule.
+    #[test]
+    fn viewport_scrolls_right_when_player_passes_right_border() {
+        let player_x = GAME_AREA_W as i32 - X_UPDATE_BORDER as i32; // 232 - 96 = 136
+        let player = Rect::new(player_x, 80, 16, 16);
+        let (vx, _vy) = compute_viewport_scroll(player, 0, 0);
+        // `player.x + player.w = 152`; right border at `0 + 232 - 96 = 136`;
+        // overshoot of 16 advances world_left to 16.
+        assert_eq!(world_left(vx), 16);
+    }
+
+    /// Unit under test: [`compute_viewport_scroll`] when the player's left
+    /// edge crosses the left inner border and the resulting scroll would go
+    /// past world X = 0.
+    ///
+    /// Preconditions: viewport at `(0, 0)` (already at the left edge);
+    /// player at `(0, 80, 16, 16)`, deep inside the left border.
+    ///
+    /// Invariants asserted: the viewport clamps at world X = 0 rather than
+    /// producing a negative world_left, matching the spec's "clamps at 0"
+    /// requirement.
+    #[test]
+    fn viewport_clamps_at_zero_when_player_near_left_edge() {
+        let player = Rect::new(0, 80, 16, 16);
+        let (vx, _vy) = compute_viewport_scroll(player, 0, 0);
+        assert_eq!(world_left(vx), 0);
+    }
+
+    /// Unit under test: [`compute_viewport_scroll`] when the player's right
+    /// edge would push the viewport past the map's scrollable maximum.
+    ///
+    /// Preconditions: player positioned near the map's right edge; viewport
+    /// already at the maximum scroll position.
+    ///
+    /// Invariants asserted: the viewport clamps at
+    /// `MAP_WIDTH * 16 - GAME_AREA_W` rather than allowing the world_left to
+    /// exceed the scrollable range.
+    #[test]
+    fn viewport_clamps_at_map_right_edge() {
+        let map_w_px = BACKGROUND_GRID_WIDTH as i32 * 16;
+        let max_world_left = map_w_px - GAME_AREA_W as i32;
+        let player = Rect::new(map_w_px - 16, 80, 16, 16);
+        let (vx, _vy) = compute_viewport_scroll(player, -max_world_left, 0);
+        assert_eq!(world_left(vx), max_world_left);
+    }
+
+    /// Unit under test: vertical clamp at the bottom of the map.
+    ///
+    /// Preconditions: player near the map's bottom edge; viewport already at
+    /// the maximum vertical scroll.
+    ///
+    /// Invariants asserted: world_top clamps at
+    /// `MAP_HEIGHT * 16 - GAME_AREA_H`.
+    #[test]
+    fn viewport_clamps_at_map_bottom_edge() {
+        let map_h_px = BACKGROUND_GRID_HEIGHT as i32 * 16;
+        let max_world_top = map_h_px - GAME_AREA_H as i32;
+        let player = Rect::new(100, map_h_px - 16, 16, 16);
+        let (_vx, vy) = compute_viewport_scroll(player, 0, -max_world_top);
+        assert_eq!(-vy, max_world_top);
+    }
+
+    /// Unit under test: vertical scroll when the player crosses the bottom
+    /// 48 px inner border.
+    ///
+    /// Preconditions: viewport at `(0, 0)`; player at
+    /// `(100, GAME_AREA_H - Y_UPDATE_BORDER, 16, 16)`, overshooting the
+    /// bottom border by 16 px.
+    ///
+    /// Invariants asserted: world_top scrolls down to exactly 16.
+    #[test]
+    fn viewport_scrolls_down_when_player_passes_bottom_border() {
+        let player_y = GAME_AREA_H as i32 - Y_UPDATE_BORDER as i32; // 160 - 48 = 112
+        let player = Rect::new(100, player_y, 16, 16);
+        let (_vx, vy) = compute_viewport_scroll(player, 0, 0);
+        assert_eq!(-vy, 16);
+    }
+
+    /// Test helper: returns the first `DrawText` command whose `(x, y)`
+    /// equals the score's expected framebuffer anchor, panicking when no
+    /// such command exists.
+    fn score_draw_text(commands: &[RenderCommand]) -> &RenderCommand {
+        let target_x = INVENTORY_AREA_X + super::SCORE_X_INV;
+        let target_y = INVENTORY_AREA_Y + super::SCORE_Y_INV;
+        commands
+            .iter()
+            .find(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::DrawText { x, y, .. } if *x == target_x && *y == target_y
+                )
+            })
+            .expect("expected a score DrawText command in the per-tick output")
+    }
+
+    /// Test helper: returns the first `DrawText` command whose `y` falls
+    /// inside the message bar band, panicking when none exists.
+    fn message_bar_draw_text(commands: &[RenderCommand]) -> Option<&RenderCommand> {
+        commands.iter().find(|cmd| {
+            matches!(
+                cmd,
+                RenderCommand::DrawText { y, .. } if *y >= MESSAGE_BAR_Y
+            )
+        })
+    }
+
+    /// Unit under test: dispatching an [`MessageType::InventoryPoint`]
+    /// message causes the next tick to emit a score `DrawText` containing
+    /// the new accumulated score.
+    ///
+    /// Preconditions: a fresh level screen subscribed to the dispatcher; a
+    /// single `InventoryPoint` message with delta +500 is sent before the
+    /// first tick.
+    ///
+    /// Invariants asserted: after the tick, `state.score` equals 500 and the
+    /// returned command list carries a `DrawText` at the score's framebuffer
+    /// anchor whose text is `"000500"` (zero-padded six-digit decimal).
+    #[test]
+    fn inventory_point_message_emits_score_draw_text_with_new_value() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(MessageType::InventoryPoint, MessagePayload::Count(500));
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+        assert_eq!(state.score, 500);
+        let cmd = score_draw_text(&result.commands);
+        let RenderCommand::DrawText { text, .. } = cmd else {
+            unreachable!("score_draw_text guarantees a DrawText variant");
+        };
+        assert_eq!(text, "000500");
+    }
+
+    /// Unit under test: [`MessageType::InventoryLife`] accumulates into the
+    /// shared [`RuntimeState::lives`] field across ticks.
+    ///
+    /// Preconditions: `RuntimeState::new()` starts at 3 lives; a -1
+    /// `InventoryLife` message is sent.
+    ///
+    /// Invariants asserted: after the tick, `state.lives == 2` and a lives
+    /// `DrawText` command appears whose text is `"2"`.
+    #[test]
+    fn inventory_life_message_decrements_lives_and_redraws_digit() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-1));
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+        assert_eq!(state.lives, 2);
+        let target_x = INVENTORY_AREA_X + super::LIVES_X_INV;
+        let target_y = INVENTORY_AREA_Y + super::LIVES_Y_INV;
+        let lives_cmd = result
+            .commands
+            .iter()
+            .find(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::DrawText { x, y, .. } if *x == target_x && *y == target_y
+                )
+            })
+            .expect("expected a lives DrawText command");
+        let RenderCommand::DrawText { text, .. } = lives_cmd else {
+            unreachable!("filter guarantees DrawText");
+        };
+        assert_eq!(text, "2");
+    }
+
+    /// Unit under test: [`MessageType::InventoryItem`] appends the carried
+    /// item to the shared inventory and triggers an item-grid Blit on the
+    /// same tick.
+    ///
+    /// Preconditions: empty inventory; a single `InventoryItem(Gem)`
+    /// message.
+    ///
+    /// Invariants asserted: `state.inventory` ends with one `Gem`; the
+    /// returned commands include a `Blit` at the grid's first cell carrying
+    /// the gem tileset / tile from `inventory_conf.json`.
+    #[test]
+    fn inventory_item_message_appends_and_emits_grid_blit() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(
+            MessageType::InventoryItem,
+            MessagePayload::InventoryItem(InventoryObject::Gem),
+        );
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+        assert_eq!(state.inventory, vec![InventoryObject::Gem]);
+        let target_x = INVENTORY_AREA_X + super::ITEM_GRID_X_INV;
+        let target_y = INVENTORY_AREA_Y + super::ITEM_GRID_Y_INV;
+        let grid_blit = result.commands.iter().find(|cmd| {
+            matches!(
+                cmd,
+                RenderCommand::Blit {
+                    tileset: 14,
+                    tile: 11,
+                    x,
+                    y,
+                    ..
+                } if *x == target_x && *y == target_y
+            )
+        });
+        assert!(
+            grid_blit.is_some(),
+            "expected a gem Blit at the inventory grid's top-left cell"
+        );
+    }
+
+    /// Unit under test: score saturates at [`super::SCORE_DISPLAY_MAX`] on
+    /// ingest so the rendered text always fits the six-digit erase band.
+    ///
+    /// Preconditions: a fresh level screen; a single `InventoryPoint`
+    /// message carrying a delta well past the six-digit ceiling.
+    ///
+    /// Invariants asserted: `state.score` clamps to
+    /// `SCORE_DISPLAY_MAX = 999_999`; the score `DrawText` carries exactly
+    /// six glyphs (`"999999"`), never seven.
+    #[test]
+    fn inventory_point_message_caps_score_at_six_digit_max() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(
+            MessageType::InventoryPoint,
+            MessagePayload::Count(2_000_000),
+        );
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+        assert_eq!(state.score, super::SCORE_DISPLAY_MAX);
+        let RenderCommand::DrawText { text, .. } = score_draw_text(&result.commands) else {
+            unreachable!("score_draw_text guarantees DrawText");
+        };
+        assert_eq!(text, "999999");
+    }
+
+    /// Unit under test: a negative `InventoryPoint` delta never drives the
+    /// rendered score below zero.
+    ///
+    /// Preconditions: fresh state (`score == 0`); an `InventoryPoint(-50)`
+    /// message.
+    ///
+    /// Invariants asserted: `state.score` stays at 0; the score `DrawText`
+    /// is `"000000"`.
+    #[test]
+    fn inventory_point_message_clamps_score_at_zero() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(MessageType::InventoryPoint, MessagePayload::Count(-50));
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+        assert_eq!(state.score, 0);
+        let RenderCommand::DrawText { text, .. } = score_draw_text(&result.commands) else {
+            unreachable!("score_draw_text guarantees DrawText");
+        };
+        assert_eq!(text, "000000");
+    }
+
+    /// Unit under test: the lives `DrawText` clamps to a single digit even
+    /// when the underlying `state.lives` counter exceeds
+    /// [`super::LIVES_DISPLAY_MAX`].
+    ///
+    /// Preconditions: fresh screen; `state.lives` pre-seeded above the
+    /// single-digit cap; one tick advances the overlay.
+    ///
+    /// Invariants asserted: the lives `DrawText` carries one glyph (`"9"`)
+    /// even though `state.lives` is left at its larger underlying value.
+    #[test]
+    fn lives_draw_text_clamps_to_single_digit_when_state_exceeds_cap() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        state.lives = 25;
+        let result = screen.tick(&input, &mut state);
+        let target_x = INVENTORY_AREA_X + super::LIVES_X_INV;
+        let target_y = INVENTORY_AREA_Y + super::LIVES_Y_INV;
+        let lives_cmd = result
+            .commands
+            .iter()
+            .find(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::DrawText { x, y, .. } if *x == target_x && *y == target_y
+                )
+            })
+            .expect("expected a lives DrawText command");
+        let RenderCommand::DrawText { text, .. } = lives_cmd else {
+            unreachable!("filter guarantees DrawText");
+        };
+        assert_eq!(text, "9");
+        assert_eq!(state.lives, 25, "underlying state must be left untouched");
+    }
+
+    /// Unit under test: a negative `InventoryLife` delta cannot drive
+    /// `state.lives` below zero.
+    ///
+    /// Preconditions: fresh `RuntimeState::new()` (3 lives); two
+    /// `InventoryLife(-5)` deltas applied across separate ticks.
+    ///
+    /// Invariants asserted: `state.lives` saturates at 0 rather than going
+    /// negative.
+    #[test]
+    fn inventory_life_message_clamps_lives_at_zero() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-5));
+        screen.tick(&input, &mut state);
+        assert_eq!(state.lives, 0);
+        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-1));
+        screen.tick(&input, &mut state);
+        assert_eq!(state.lives, 0);
+    }
+
+    /// Unit under test: every inventory grid `Blit` carries the inventory
+    /// area clip so the rightmost icon column's two-pixel overflow can
+    /// never bleed into the static status-bar frame.
+    ///
+    /// Preconditions: a fresh screen with four `InventoryItem(Gem)`
+    /// messages (one full row, so the last column gets exercised).
+    ///
+    /// Invariants asserted: every grid `Blit` reports
+    /// `clip == Some(INVENTORY_AREA_CLIP)`.
+    #[test]
+    fn inventory_grid_blits_carry_inventory_area_clip() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        for _ in 0..4 {
+            dispatcher.send(
+                MessageType::InventoryItem,
+                MessagePayload::InventoryItem(InventoryObject::Gem),
+            );
+        }
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+
+        let grid_blits: Vec<&RenderCommand> = result
+            .commands
+            .iter()
+            .filter(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::Blit {
+                        tileset: 14,
+                        tile: 11,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(grid_blits.len(), 4, "expected one Blit per inventory item");
+        for cmd in grid_blits {
+            let RenderCommand::Blit { clip, .. } = cmd else {
+                unreachable!("filter guarantees Blit");
+            };
+            assert_eq!(
+                *clip,
+                Some(super::INVENTORY_AREA_CLIP),
+                "inventory grid blits must carry the inventory-area clip"
+            );
+        }
+    }
+
+    /// Unit under test: the inventory grid erase `FillRect` is clamped to
+    /// the inventory area's interior.
+    ///
+    /// Preconditions: fresh screen; one tick.
+    ///
+    /// Invariants asserted: the grid erase `FillRect` does not extend past
+    /// `INVENTORY_AREA_X + INVENTORY_AREA_W` on the right, nor past
+    /// `INVENTORY_AREA_Y + INVENTORY_AREA_H` on the bottom.
+    #[test]
+    fn inventory_grid_erase_stays_inside_inventory_area() {
+        use openjill_core::layout::{INVENTORY_AREA_H, INVENTORY_AREA_W};
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+        let result = screen.tick(&input, &mut state);
+
+        let grid_x = INVENTORY_AREA_X + super::ITEM_GRID_X_INV;
+        let grid_y = INVENTORY_AREA_Y + super::ITEM_GRID_Y_INV;
+        let inv_right = INVENTORY_AREA_X + INVENTORY_AREA_W as i32;
+        let inv_bottom = INVENTORY_AREA_Y + INVENTORY_AREA_H as i32;
+        let erase = result
+            .commands
+            .iter()
+            .find(|cmd| {
+                matches!(
+                    cmd,
+                    RenderCommand::FillRect { x, y, .. } if *x == grid_x && *y == grid_y
+                )
+            })
+            .expect("expected a grid erase FillRect");
+        let RenderCommand::FillRect {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } = erase
+        else {
+            unreachable!("filter guarantees FillRect");
+        };
+        assert!(
+            x + *width as i32 <= inv_right,
+            "grid erase must not extend past the inventory right edge"
+        );
+        assert!(
+            y + *height as i32 <= inv_bottom,
+            "grid erase must not extend past the inventory bottom edge"
+        );
+    }
+
+    /// Unit under test: [`MessageType::StatusBarText`] writes a `DrawText`
+    /// inside the message bar (y >= 188) and clears the message exactly
+    /// [`LEVEL_MESSAGE_TICKS`] ticks later.
+    ///
+    /// Preconditions: a fresh screen; a `StatusBarText` message with payload
+    /// `"PICK UP THE GEM"`.
+    ///
+    /// Invariants asserted: tick 1 emits a message-bar `DrawText` carrying
+    /// the payload; ticks 2..=72 each still emit the same text; tick 73
+    /// emits no message-bar `DrawText` because the 72-tick countdown has
+    /// expired.
+    #[test]
+    fn status_bar_text_renders_then_clears_after_72_ticks() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
+        dispatcher.send(
+            MessageType::StatusBarText,
+            MessagePayload::Text(String::from("PICK UP THE GEM")),
+        );
+
+        let input = ActiveInput::new();
+        let mut state = RuntimeState::new();
+
+        // Tick 1: the text has just been queued; the overlay should render
+        // it inside the message bar.
+        let first = screen.tick(&input, &mut state);
+        let cmd = message_bar_draw_text(&first.commands)
+            .expect("expected a message-bar DrawText on the first tick");
+        let RenderCommand::DrawText { text, y, .. } = cmd else {
+            unreachable!("message_bar_draw_text guarantees DrawText");
+        };
+        assert_eq!(text, "PICK UP THE GEM");
+        assert!(*y >= MESSAGE_BAR_Y, "DrawText must land at y >= 188");
+
+        // Ticks 2..=72: the message-bar text persists for the full
+        // LEVEL_MESSAGE_TICKS window.
+        for _ in 1..LEVEL_MESSAGE_TICKS {
+            let result = screen.tick(&input, &mut state);
+            assert!(
+                message_bar_draw_text(&result.commands).is_some(),
+                "status-bar text must remain visible across the 72-tick window"
+            );
+        }
+
+        // Tick 73: the countdown has reached zero and the message-bar
+        // DrawText must no longer be emitted.
+        let after = screen.tick(&input, &mut state);
+        assert!(
+            message_bar_draw_text(&after.commands).is_none(),
+            "status-bar text must clear after LEVEL_MESSAGE_TICKS ticks"
+        );
     }
 }
