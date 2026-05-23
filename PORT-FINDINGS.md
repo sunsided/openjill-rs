@@ -87,6 +87,50 @@ _No findings yet._
 
 ---
 
+## Player physics
+
+### `FLAG_NOT_STAIR` is an opt-out bit - most tiles are stairs by default
+
+- **Symptom**: player on MAP.JN1 is in suspended animation - can run, climb,
+  and jump in place but never falls. Decorative shade tiles (BLSHADE1-8, map
+  codes 65-72) block all movement despite being marked passthrough.
+- **Root cause**: DMA `FLAG_NOT_STAIR = 0x02` is an opt-out flag. Tiles that
+  do not set this bit are stairs by default. BLSHADE tiles have `flags=0x0201`
+  (`FLAG_PLAYER_THRU | FLAG_STAIR_DEFAULT`), so `is_stair()` returns `true`
+  for them. All three collision probes (`has_floor_below`, `collides_vertical`,
+  `collides_horizontal`) had `|| cell.is_stair()` which made passthrough stair
+  tiles solid, overriding the passthrough flag.
+- **Resolution**: remove `|| cell.is_stair()` from all collision probes.
+  `cell.blocks_vertical(dy)` already encodes the correct semantics (passthrough
+  overrides stair); `is_stair()` must never be used standalone as a collision
+  predicate.
+- **Applies to**: every collision probe that tests `is_stair()` directly.
+  Use `blocks_vertical(dy)` / `is_passthrough()` instead.
+- **Reference**: map physics fix, commit after PR #95.
+
+### Vertical movement must snap to floor, not all-or-nothing
+
+- **Symptom**: run-fall-run-fall oscillation. When falling at speed > one
+  tile per tick, `try_move_vertical` rejects the whole step on collision and
+  leaves the player 1-15 px above the floor. `has_floor_below` probes at the
+  current feet position (not at the actual floor), so it returns `false`,
+  transitioning to Jumping. Sub-state resets to 0, gravity builds again, the
+  same collision fires, repeat.
+- **Root cause**: all-or-nothing vertical movement cannot land when the step
+  overshoots the floor. Java's `moveObjectDown` (in `UtilityObjectEntity`)
+  scans rows from current feet to destination feet and snaps
+  `y = blocking_row * BLOCK_SIZE - height` on the first solid row.
+- **Resolution**: `try_move_vertical` now uses a row-scan-and-snap approach
+  for downward motion (`dy > 0`). Upward motion (`dy < 0`) retains the
+  all-or-nothing check (matching Java `moveObjectUp` semantics where the snap
+  is to ceiling bottom, which is rarely reached).
+- **Applies to**: any physics step that moves an entity downward by more than
+  one pixel per tick. The same pattern is needed for enemy entities that use
+  gravity.
+- **Reference**: run-fall oscillation fix, commit after PR #95.
+
+---
+
 ## Data files (DMA, SHA, JN, MAC, CFG, VCL, CMF)
 
 _No findings yet._

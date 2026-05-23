@@ -1054,17 +1054,54 @@ fn collides_horizontal(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) ->
     false
 }
 
-/// Attempts a single all-or-nothing vertical step.
+/// Attempts a vertical step, snapping to floor/ceiling on collision.
 ///
-/// Returns `true` when the player moved, `false` when the target rectangle
-/// would overlap a cell that blocks motion in the `dy` direction.
+/// Falling (`dy > 0`): scans rows between current feet and destination feet;
+/// on the first blocking row snaps `y` so the player's feet sit exactly on
+/// that row's top edge (matching Java `moveObjectDown` behavior).
+/// Rising (`dy < 0`): all-or-nothing; returns `false` without moving when
+/// the destination overlaps a blocking cell.
+/// Returns `true` when the player's position changed.
 fn try_move_vertical(grid: &BackgroundGrid, x: i32, y: &mut i32, w: i32, h: i32, dy: i32) -> bool {
-    let new_y = *y + dy;
-    if collides_vertical(grid, x, new_y, w, h, dy) {
-        return false;
+    if dy > 0 {
+        let cx_l = x.div_euclid(BLOCK_SIZE_I).max(0) as usize;
+        let cx_r = ((x + w - 1).div_euclid(BLOCK_SIZE_I)).max(0) as usize;
+        let feet = *y + h;
+        let start_row = feet.div_euclid(BLOCK_SIZE_I);
+        let end_row = (feet + dy - 1).div_euclid(BLOCK_SIZE_I);
+        for row in start_row..=end_row {
+            if row < 0 {
+                continue;
+            }
+            let row_u = row as usize;
+            if row_u >= grid.height {
+                break;
+            }
+            let blocked = (cx_l..=cx_r).any(|cx| {
+                cx < grid.width
+                    && grid
+                        .get(cx, row_u)
+                        .map(|cell| cell.blocks_vertical(dy))
+                        .unwrap_or(false)
+            });
+            if blocked {
+                let snapped = row * BLOCK_SIZE_I - h;
+                if snapped != *y {
+                    *y = snapped;
+                }
+                return false;
+            }
+        }
+        *y += dy;
+        true
+    } else {
+        let new_y = *y + dy;
+        if collides_vertical(grid, x, new_y, w, h, dy) {
+            return false;
+        }
+        *y = new_y;
+        true
     }
-    *y = new_y;
-    true
 }
 
 /// Attempts a single all-or-nothing horizontal step.
