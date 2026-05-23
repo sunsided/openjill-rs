@@ -24,8 +24,8 @@ use openjill_core::layout::{
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
     ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundGrid, ChangeLevelPayload,
-    ClipRect, FontSize, InputCommand, InventoryObject, MessageDispatcher, MessageHandler,
-    MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
+    ClipRect, DeathKind, FontSize, InputCommand, InventoryObject, MessageDispatcher,
+    MessageHandler, MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
     ScreenTransition, TickResult,
 };
 use openjill_data::dma::DmaFile;
@@ -645,6 +645,13 @@ impl LevelScreen {
     /// `AbstractExecutingStdPlayerLevel`.  Pickup entities react inside
     /// `on_touch` by flipping their `should_remove` flag so
     /// [`Self::reap_removed_objects`] can purge them on the same tick.
+    ///
+    /// Hazard objects cannot reach the player from inside `on_touch`, so
+    /// after the touch dispatch each object is asked for any pending player
+    /// kill classification via [`ObjectEntity::take_player_kill`]; the first
+    /// non-`None` result is applied to the player as
+    /// `player.on_kill(1, kind)`, which arms the player's `Die` sub-state
+    /// (subsequent ticks then dispatch `DieRestartLevel` themselves).
     fn dispatch_player_touches(&mut self, state: &RuntimeState) {
         let Self {
             objects,
@@ -655,13 +662,20 @@ impl LevelScreen {
             return;
         };
         let player_bbox = objects[player_idx].bounding_box();
+        let mut pending_kill: Option<DeathKind> = None;
         for (idx, obj) in objects.iter_mut().enumerate() {
             if idx == player_idx {
                 continue;
             }
             if obj.bounding_box().intersects(&player_bbox) {
                 obj.on_touch(state, entity_dispatcher);
+                if pending_kill.is_none() {
+                    pending_kill = obj.take_player_kill();
+                }
             }
+        }
+        if let Some(kind) = pending_kill {
+            objects[player_idx].on_kill(1, kind);
         }
     }
 
