@@ -765,6 +765,17 @@ impl LevelScreen {
             first
         };
 
+        // Same-level checkpoint: a `CheckpointChangeLevel` whose target is
+        // this very level is a within-level save-point, not a screen
+        // transition.  Silently drop it so the player does not get sent into
+        // an infinite reload loop by passing through the level-entry
+        // checkpoint.
+        if let PendingRequest::ChangeLevel(payload) = &next
+            && payload.level_number == self.level_number
+        {
+            return;
+        }
+
         // A transition is already pending: drop the late-arriving request to
         // match the Java reference's single-shot behavior.
         if self.pending.is_some() {
