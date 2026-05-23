@@ -108,7 +108,11 @@ pub trait ObjectEntity: Send {
     fn draw(&self) -> Option<RenderCommand>;
 
     /// Called when the player's bounding box overlaps this object.
-    fn on_touch(&mut self, dispatcher: &mut MessageDispatcher);
+    ///
+    /// `state` is the shared [`RuntimeState`] so handlers can query the
+    /// inventory (for example, the locked-door entity tests whether the
+    /// player carries the matching key before opening).
+    fn on_touch(&mut self, state: &RuntimeState, dispatcher: &mut MessageDispatcher);
 
     /// Called when a weapon or hazard hits this object.
     fn on_kill(&mut self, damage: i32, death_kind: DeathKind);
@@ -130,6 +134,17 @@ pub trait ObjectEntity: Send {
 
     /// Returns `true` when this is the player object.
     fn is_player(&self) -> bool {
+        false
+    }
+
+    /// Returns `true` when this object has signalled that it should be removed
+    /// from the active object list.
+    ///
+    /// Pickup entities flip this from `false` to `true` inside their
+    /// [`ObjectEntity::on_touch`] handler so the level loop can purge them at
+    /// the end of the tick.  Mirrors the `ObjectListMessage(this, false)`
+    /// pattern in the Java reference's `AbstractKeyManager` and friends.
+    fn should_remove(&self) -> bool {
         false
     }
 }

@@ -284,8 +284,12 @@ enum StatusUpdate {
     Point(i32),
     /// Life-count delta from an `InventoryLife` message payload.
     Life(i32),
-    /// Inventory item added by an `InventoryItem` message payload.
-    Item(InventoryObject),
+    /// Inventory item added or removed by an `InventoryItem` message payload.
+    ///
+    /// The boolean mirrors `InventoryItemMessage.isAddObject` from the Java
+    /// reference: `true` appends a copy, `false` removes the first occurrence
+    /// (no-op when the inventory does not contain `item`).
+    Item(InventoryObject, bool),
     /// Status-bar text replacement from a `StatusBarText` message payload.
     Text(String),
 }
@@ -450,6 +454,38 @@ impl LevelScreen {
         let backgrounds = build_background_grid(&jn, cache);
         let dma = cache.dma.clone();
 
+        // Mirror the inbox subscriptions on the local `entity_dispatcher` so
+        // messages dispatched by per-object `on_touch` / `update` callbacks
+        // reach the same status and transition queues the orchestrator-side
+        // dispatcher already routes to.  The handlers share the underlying
+        // `Arc` inboxes so both dispatchers append into the same queue.
+        let mut entity_dispatcher = MessageDispatcher::new();
+        for msg_type in [
+            MessageType::CheckpointChangeLevel,
+            MessageType::CheckpointChangeLevelPrevious,
+            MessageType::DieRestartLevel,
+        ] {
+            entity_dispatcher.subscribe(
+                msg_type,
+                Box::new(InboxHandler {
+                    inbox: Arc::clone(&inbox),
+                }),
+            );
+        }
+        for msg_type in [
+            MessageType::InventoryPoint,
+            MessageType::InventoryLife,
+            MessageType::InventoryItem,
+            MessageType::StatusBarText,
+        ] {
+            entity_dispatcher.subscribe(
+                msg_type,
+                Box::new(StatusInboxHandler {
+                    inbox: Arc::clone(&status_inbox),
+                }),
+            );
+        }
+
         Self {
             jn,
             jn_bytes,
@@ -463,7 +499,7 @@ impl LevelScreen {
             inbox,
             objects,
             backgrounds,
-            entity_dispatcher: MessageDispatcher::new(),
+            entity_dispatcher,
             sky_color,
             status_inbox,
             status_text: None,
@@ -599,6 +635,43 @@ impl LevelScreen {
                 obj.update(input, state, &self.backgrounds, &mut self.entity_dispatcher);
             }
         }
+    }
+
+    /// Dispatches `on_touch` to every non-player object whose bounding box
+    /// overlaps the player.
+    ///
+    /// Mirrors the Java reference's per-frame "for each other object, when
+    /// rectangles intersect call `msgTouch`" pass in
+    /// `AbstractExecutingStdPlayerLevel`.  Pickup entities react inside
+    /// `on_touch` by flipping their `should_remove` flag so
+    /// [`Self::reap_removed_objects`] can purge them on the same tick.
+    fn dispatch_player_touches(&mut self, state: &RuntimeState) {
+        let Self {
+            objects,
+            entity_dispatcher,
+            ..
+        } = self;
+        let Some(player_idx) = objects.iter().position(|obj| obj.is_player()) else {
+            return;
+        };
+        let player_bbox = objects[player_idx].bounding_box();
+        for (idx, obj) in objects.iter_mut().enumerate() {
+            if idx == player_idx {
+                continue;
+            }
+            if obj.bounding_box().intersects(&player_bbox) {
+                obj.on_touch(state, entity_dispatcher);
+            }
+        }
+    }
+
+    /// Drops every object whose `should_remove` flag is set.
+    ///
+    /// Runs after the touch dispatch so pickups that mark themselves for
+    /// removal disappear before the draw pass.  Preserves the relative order
+    /// of the surviving objects so draw order remains stable.
+    fn reap_removed_objects(&mut self) {
+        self.objects.retain(|obj| !obj.should_remove());
     }
 
     /// Collects render commands for every object whose post-update bounding
@@ -765,8 +838,14 @@ impl LevelScreen {
                     // below zero in the shared state.
                     state.lives = state.lives.saturating_add(delta).max(0);
                 }
-                StatusUpdate::Item(item) => {
-                    state.inventory.push(item);
+                StatusUpdate::Item(item, add) => {
+                    if add {
+                        state.inventory.push(item);
+                    } else if let Some(idx) =
+                        state.inventory.iter().position(|carried| *carried == item)
+                    {
+                        state.inventory.remove(idx);
+                    }
                 }
                 StatusUpdate::Text(text) => {
                     self.status_text = Some(text);
@@ -900,13 +979,21 @@ impl LevelScreen {
         commands
     }
 
-    /// Discards any messages queued in [`Self::entity_dispatcher`].
+    /// Drops every message that has accumulated in
+    /// [`Self::entity_dispatcher`]'s pending queue this tick without
+    /// touching the subscriber list.
     ///
-    /// Issue 57 has no entity-dispatcher subscribers; future child issues
-    /// will replace this with the "drain object-removal messages" pass
-    /// described in `docs/port/06-episode-1-gameplay.md`.
+    /// Subscribers attached in [`LevelScreen::new`] receive their messages
+    /// immediately on `send`, but message types whose listener has not been
+    /// implemented yet (for example, [`MessageType::Trigger`] sent by
+    /// [`crate::entities::objects::touch_trigger::TouchTriggerEntity`] before
+    /// the toggle-wall entity from issue 63 lands) would otherwise grow the
+    /// pending queue every tick and deliver a stale burst the moment a
+    /// subscriber appears.  Clearing the queue at end-of-tick keeps memory
+    /// bounded and matches the Java reference's per-frame `MessageDispatcher`
+    /// flush.
     fn drain_entity_dispatcher(&mut self) {
-        self.entity_dispatcher.clear();
+        self.entity_dispatcher.clear_pending();
     }
 }
 
@@ -924,15 +1011,19 @@ impl ScreenHandler for LevelScreen {
 
         // Tick order each frame:
         // 1. Update every object entity (player moves on this tick).
-        // 2. Snap the viewport so the post-update player stays inside the
+        // 2. Dispatch player-vs-object touch callbacks, then drop entities
+        //    that flagged themselves for removal inside `on_touch`.
+        // 3. Snap the viewport so the post-update player stays inside the
         //    96/48 px update border, clamped to the map bounds.
-        // 3. Build the base frame using the freshly-snapped viewport.
-        // 4. Per-cell background tick + draw (also uses the new viewport).
-        // 5. Object draws (on top of backgrounds, matching the Java
+        // 4. Build the base frame using the freshly-snapped viewport.
+        // 5. Per-cell background tick + draw (also uses the new viewport).
+        // 6. Object draws (on top of backgrounds, matching the Java
         //    reference draw order).
-        // 6. Message-box overlay last so transitions paint over everything
+        // 7. Message-box overlay last so transitions paint over everything
         //    else.
         self.update_objects(input, state);
+        self.dispatch_player_touches(state);
+        self.reap_removed_objects();
         self.update_viewport();
 
         let mut commands = self.render_base_frame();
@@ -1045,8 +1136,8 @@ impl MessageHandler for StatusInboxHandler {
         let update = match (msg_type, payload) {
             (MessageType::InventoryPoint, MessagePayload::Count(n)) => StatusUpdate::Point(*n),
             (MessageType::InventoryLife, MessagePayload::Count(n)) => StatusUpdate::Life(*n),
-            (MessageType::InventoryItem, MessagePayload::InventoryItem(item)) => {
-                StatusUpdate::Item(*item)
+            (MessageType::InventoryItem, MessagePayload::InventoryItem(payload)) => {
+                StatusUpdate::Item(payload.item, payload.add)
             }
             (MessageType::StatusBarText, MessagePayload::Text(text)) => {
                 StatusUpdate::Text(text.clone())
@@ -1082,9 +1173,16 @@ fn pending_into_transition(request: PendingRequest) -> ScreenTransition {
 /// collision iteration follows the same order the Java reference uses for
 /// its object manager list.
 fn build_object_entities(jn: &JnFile, cache: &AssetCache) -> Vec<Box<dyn ObjectEntity>> {
+    let strings = jn.strings();
     jn.objects()
         .iter()
-        .map(|obj| make_object_entity(obj.object_type(), obj, cache))
+        .map(|obj| {
+            let string_entry = obj
+                .string_index()
+                .and_then(|idx| strings.get(idx))
+                .map(|entry| entry.value());
+            make_object_entity(obj.object_type(), obj, string_entry, cache)
+        })
         .collect()
 }
 
@@ -1531,8 +1629,8 @@ mod tests {
     use openjill_core::runtime::{InventoryObject, RuntimeState};
     use openjill_core::{
         ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, ChangeLevelPayload,
-        InputCommand, MessageDispatcher, MessagePayload, MessageType, Rect, RenderCommand,
-        ScreenHandler, ScreenTransition,
+        InputCommand, InventoryItemPayload, MessageDispatcher, MessagePayload, MessageType, Rect,
+        RenderCommand, ScreenHandler, ScreenTransition,
     };
     use openjill_data::jn::JnFile;
 
@@ -2627,7 +2725,7 @@ mod tests {
         let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
         dispatcher.send(
             MessageType::InventoryItem,
-            MessagePayload::InventoryItem(InventoryObject::Gem),
+            MessagePayload::InventoryItem(InventoryItemPayload::add(InventoryObject::Gem)),
         );
 
         let input = ActiveInput::new();
@@ -2782,7 +2880,7 @@ mod tests {
         for _ in 0..4 {
             dispatcher.send(
                 MessageType::InventoryItem,
-                MessagePayload::InventoryItem(InventoryObject::Gem),
+                MessagePayload::InventoryItem(InventoryItemPayload::add(InventoryObject::Gem)),
             );
         }
 

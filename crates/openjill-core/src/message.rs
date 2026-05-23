@@ -55,6 +55,32 @@ pub struct ChangeLevelPayload {
     pub level_number: i32,
 }
 
+/// Payload for an `InventoryItem` message: which item, and whether the
+/// dispatch adds or removes a copy from the player's inventory.
+///
+/// Mirrors the `add`/`remove` flag carried by `InventoryItemMessage`
+/// (`org.jill.openjill.core.api.message.statusbar.inventory`) in the Java
+/// reference implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InventoryItemPayload {
+    /// Item the message refers to.
+    pub item: InventoryObject,
+    /// `true` when the dispatch adds the item, `false` when it removes a copy.
+    pub add: bool,
+}
+
+impl InventoryItemPayload {
+    /// Builds a payload that adds `item` to the inventory.
+    pub const fn add(item: InventoryObject) -> Self {
+        Self { item, add: true }
+    }
+
+    /// Builds a payload that removes one `item` from the inventory.
+    pub const fn remove(item: InventoryObject) -> Self {
+        Self { item, add: false }
+    }
+}
+
 /// Data attached to one dispatched message.
 ///
 /// Each variant corresponds to the payload type expected by its [`MessageType`].
@@ -71,8 +97,8 @@ pub struct ChangeLevelPayload {
 pub enum MessagePayload {
     /// Level-change data.
     ChangeLevel(ChangeLevelPayload),
-    /// Inventory item carried in the message.
-    InventoryItem(InventoryObject),
+    /// Inventory item carried in the message, plus an add/remove flag.
+    InventoryItem(InventoryItemPayload),
     /// Integer count (lives delta, score delta, etc.).
     Count(i32),
     /// Text string (status bar text, message box content).
@@ -144,6 +170,21 @@ impl MessageDispatcher {
     /// Removes all subscribers and discards all pending queued messages.
     pub fn clear(&mut self) {
         self.subscribers.clear();
+        self.pending.clear();
+    }
+
+    /// Discards every queued-but-undelivered message without touching the
+    /// subscriber list.
+    ///
+    /// Used by callers that subscribe handlers once at construction and run
+    /// the dispatcher across many ticks: message types that have no
+    /// subscriber (for example, [`MessageType::Trigger`] events sent by
+    /// touch-triggers when no `ToggleWallEntity` listener is registered yet)
+    /// would otherwise accumulate in the `pending` queue forever and reach
+    /// any later subscriber as a stale burst.  Calling `clear_pending` at
+    /// end-of-tick mirrors the Java reference's per-frame `MessageDispatcher`
+    /// flush.
+    pub fn clear_pending(&mut self) {
         self.pending.clear();
     }
 }
@@ -342,6 +383,51 @@ mod tests {
         assert!(
             live_buf.lock().unwrap().is_empty(),
             "cleared subscriber must not receive post-clear messages"
+        );
+    }
+
+    /// Unit under test: `MessageDispatcher::clear_pending`.
+    ///
+    /// Preconditions: two messages are enqueued for a type with no
+    /// subscriber; a separate type has an active recording handler.
+    ///
+    /// Invariants asserted: after `clear_pending` a later subscribe for the
+    /// previously queued type receives nothing (queue dropped), and the
+    /// pre-existing subscriber still delivers freshly-sent messages
+    /// (subscribers retained).
+    #[test]
+    fn clear_pending_discards_queue_but_preserves_subscribers() {
+        let mut dispatcher = MessageDispatcher::new();
+
+        // Enqueue two messages for a type with no subscriber yet.
+        dispatcher.send(MessageType::Trigger, MessagePayload::Count(1));
+        dispatcher.send(MessageType::Trigger, MessagePayload::Count(2));
+
+        // Register a handler for an unrelated type.
+        let (live_handler, live_buf) = RecordingHandler::new();
+        dispatcher.subscribe(MessageType::InventoryLife, Box::new(live_handler));
+
+        dispatcher.clear_pending();
+
+        // Subscribe for the type whose queue was just dropped; must receive nothing.
+        let (post_handler, post_buf) = RecordingHandler::new();
+        dispatcher.subscribe(MessageType::Trigger, Box::new(post_handler));
+        assert!(
+            post_buf.lock().unwrap().is_empty(),
+            "queue must be dropped by clear_pending"
+        );
+
+        // Pre-existing subscriber still receives new messages.
+        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(7));
+        let received = live_buf.lock().unwrap();
+        assert_eq!(
+            received.len(),
+            1,
+            "subscribers retained across clear_pending"
+        );
+        assert_eq!(
+            received[0],
+            (MessageType::InventoryLife, MessagePayload::Count(7))
         );
     }
 }

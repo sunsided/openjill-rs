@@ -30,9 +30,10 @@ pub use objects::make_object_entity;
 pub fn make_object_entity_for(
     type_id: u8,
     item: &JnObject,
+    string_entry: Option<&str>,
     cache: &AssetCache,
 ) -> Box<dyn ObjectEntity> {
-    make_object_entity(type_id, item, cache)
+    make_object_entity(type_id, item, string_entry, cache)
 }
 
 /// Builds the correct [`BackgroundEntity`] implementation for a DMA cell.

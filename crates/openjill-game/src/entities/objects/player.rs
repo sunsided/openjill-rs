@@ -358,7 +358,7 @@ impl ObjectEntity for PlayerEntity {
 
     /// Player touch dispatch is handled by the touching object's `on_touch`
     /// path (enemies push `InventoryLifeMessage`); the player itself is inert.
-    fn on_touch(&mut self, _dispatcher: &mut MessageDispatcher) {}
+    fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {}
 
     /// Begins the die animation.
     ///
