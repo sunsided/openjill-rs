@@ -10,12 +10,16 @@ pub mod apple;
 pub mod blade;
 pub mod bonus;
 pub mod checkpoint;
+pub mod collapsing_ceiling;
+pub mod falling_spike;
+pub mod flame;
 pub mod knife;
 pub mod lock_door;
 pub mod player;
 pub mod point;
 pub mod red_key;
 pub mod rock_key;
+pub mod rolling_rock;
 pub mod stub;
 pub mod touch_trigger;
 
@@ -28,12 +32,16 @@ pub use apple::AppleEntity;
 pub use blade::BladeEntity;
 pub use bonus::BonusEntity;
 pub use checkpoint::CheckPointEntity;
+pub use collapsing_ceiling::CollapsingCeilingEntity;
+pub use falling_spike::FallingSpikeEntity;
+pub use flame::FlameEntity;
 pub use knife::KnifeEntity;
 pub use lock_door::LockedDoorEntity;
 pub use player::PlayerEntity;
 pub use point::PointEntity;
 pub use red_key::RedKeyEntity;
 pub use rock_key::RockKeyEntity;
+pub use rolling_rock::RollingRockEntity;
 pub use stub::StubObjectEntity;
 pub use touch_trigger::TouchTriggerEntity;
 
@@ -64,9 +72,13 @@ pub fn make_object_entity(
         14 => Box::new(RedKeyEntity::new(item, cache)),
         15 => Box::new(TouchTriggerEntity::new(item, cache)),
         24 => Box::new(LockedDoorEntity::new(item, cache)),
+        25 => Box::new(CollapsingCeilingEntity::new(item, cache)),
         27 => Box::new(PointEntity::new(item, cache)),
         28 => Box::new(BonusEntity::new(item, cache)),
+        31 => Box::new(FlameEntity::new(item, cache)),
         33 => Box::new(RockKeyEntity::new(item, cache)),
+        35 => Box::new(RollingRockEntity::new(item, cache)),
+        38 => Box::new(FallingSpikeEntity::new(item, cache)),
         50 => Box::new(BladeEntity::new(item, cache)),
         other => Box::new(StubObjectEntity::new(other, item)),
     }

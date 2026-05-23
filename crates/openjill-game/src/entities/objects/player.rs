@@ -405,6 +405,17 @@ impl PlayerEntity {
         self.zaphold
     }
 
+    /// Returns the recorded death classification, if [`Self::on_kill`] has
+    /// fired but the die-state transition has not yet run.
+    ///
+    /// Exposed for tests and debug overlays that need to observe which
+    /// hazard arming an on-kill was last seen; production code reads the
+    /// final classification off the player's `Die` sub-state once the
+    /// transition completes.
+    pub fn death_kind(&self) -> Option<DeathKind> {
+        self.death_kind
+    }
+
     /// Per-tick handler for the `Stand` and `Still` states.
     ///
     /// Mirrors `moveStdPlayerUpDownStand` + `moveStdPlayerLeftRightStand` from
