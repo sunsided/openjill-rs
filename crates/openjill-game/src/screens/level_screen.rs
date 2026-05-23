@@ -979,13 +979,22 @@ impl LevelScreen {
         commands
     }
 
-    /// Per-tick hook reserved for entity-dispatcher housekeeping.
+    /// Drops every message that has accumulated in
+    /// [`Self::entity_dispatcher`]'s pending queue this tick without
+    /// touching the subscriber list.
     ///
-    /// Subscribers attached in [`LevelScreen::new`] receive messages
-    /// immediately on `send`, so nothing queues up here; the method exists so
-    /// future child issues can interpose ordering or filtering without
-    /// touching the tick body.
-    fn drain_entity_dispatcher(&mut self) {}
+    /// Subscribers attached in [`LevelScreen::new`] receive their messages
+    /// immediately on `send`, but message types whose listener has not been
+    /// implemented yet (for example, [`MessageType::Trigger`] sent by
+    /// [`crate::entities::objects::touch_trigger::TouchTriggerEntity`] before
+    /// the toggle-wall entity from issue 63 lands) would otherwise grow the
+    /// pending queue every tick and deliver a stale burst the moment a
+    /// subscriber appears.  Clearing the queue at end-of-tick keeps memory
+    /// bounded and matches the Java reference's per-frame `MessageDispatcher`
+    /// flush.
+    fn drain_entity_dispatcher(&mut self) {
+        self.entity_dispatcher.clear_pending();
+    }
 }
 
 impl ScreenHandler for LevelScreen {
