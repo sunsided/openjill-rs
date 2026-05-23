@@ -1,11 +1,12 @@
 //! "Fake roof" jump-through background.
 //!
 //! Mirrors `org.jill.game.entities.back.FroofBackgroundEntity` from the Java
-//! reference: visually a ceiling that the player can jump up through.  The
-//! Rust port reports the cell as passthrough so it never blocks the player;
-//! the Java reference's direction-aware "solid from above" half lands as a
-//! follow-up once the physics hook is in place (see the parity-gap notes in
-//! `docs/port/06-episode-1-gameplay.md`).
+//! reference: visually a ceiling that the player rises through from below but
+//! stands on when falling from above.  [`Self::is_passthrough`] returns `true`
+//! so the generic solidity probes keep treating the cell as open air;
+//! [`Self::blocks_vertical`] then turns the cell into a one-way solid for
+//! falling motion only (`player_yd > 0`), so a falling player lands on top of
+//! the cell instead of sinking through it.
 
 use openjill_core::{BackgroundEntity, MessageDispatcher, ObjectEntity, RenderCommand};
 
@@ -44,9 +45,19 @@ impl BackgroundEntity for FroofBackground {
     ) {
     }
 
-    /// Always passable: the player rises through the cell from below.
+    /// Always passable for the generic solidity probe so horizontal collision
+    /// and stair checks keep treating the cell as open air.  Direction-aware
+    /// vertical motion goes through [`Self::blocks_vertical`] instead.
     fn is_passthrough(&self) -> bool {
         true
+    }
+
+    /// Blocks the player only while falling (`player_yd > 0`).  A rising or
+    /// stationary player rises through unimpeded; a falling player lands on
+    /// the cell's top edge.  Mirrors the original "land on roof, jump through
+    /// roof" semantics.
+    fn blocks_vertical(&self, player_yd: i32) -> bool {
+        player_yd > 0
     }
 
     /// `FROOF` cells are not climbable.

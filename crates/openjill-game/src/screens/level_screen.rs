@@ -629,7 +629,18 @@ impl LevelScreen {
     /// iteration order.
     fn update_objects(&mut self, input: &ActiveInput, state: &RuntimeState) {
         let update_rect = viewport_update_rect(self.viewport_x, self.viewport_y);
+        // Capture the player's current bounding box once so hazards that
+        // depend on it (collapsing ceilings, falling spikes, lifts later)
+        // observe the same player snapshot across the whole tick.  None when
+        // no player is in the object list yet (e.g. before object factories
+        // register the player).
+        let player_bbox = self.player_bounding_box();
         for obj in self.objects.iter_mut() {
+            if let Some(bbox) = player_bbox
+                && !obj.is_player()
+            {
+                obj.observe_player(bbox);
+            }
             let bbox = obj.bounding_box();
             if obj.always_active() || update_rect.intersects(&bbox) {
                 obj.update(input, state, &self.backgrounds, &mut self.entity_dispatcher);

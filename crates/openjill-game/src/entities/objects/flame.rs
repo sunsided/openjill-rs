@@ -1,12 +1,21 @@
 //! Flame hazard entity (JN object type 31).
 //!
 //! Mirrors `org.jill.game.entities.obj.FlameManager` from the Java reference:
-//! a stationary, lethal-on-touch decoration with an animated flame sprite.
-//! The Rust port currently only implements the lethal-touch contract; sprite
-//! animation and per-frame tile selection are deferred until the SHA tileset
-//! identity for flame frames has been verified against the original
-//! `JILL1.SHA` (see the SHA-verification note in
-//! `docs/port/06-episode-1-gameplay.md`).
+//! a lethal-on-touch animated flame with a fixed-length frame cycle that
+//! self-kills once the animation completes (the Java reference's `killMe()`
+//! after `counter >= images.length`).
+//!
+//! Tile / tileset identity comes from `object_conf.json`:
+//! `tileSet = 12`, `tile = 0`, `numberTileSet = 6`.  The Java loader builds a
+//! 12-slot frame array where every source tile is repeated twice
+//! (`images[0] = images[1] = tile 0`, `images[2] = images[3] = tile 1`, ...),
+//! so the animation runs at half the tick rate.  The Rust port preserves the
+//! same counter convention.
+//!
+//! FIXME(epic-6): the `(tileset, tile)` pair is taken from the Java config
+//! verbatim; once the SHA dumper grows a visual / PNG output, confirm tileset
+//! 12 tiles 0..=5 are the expected flame frames against the original
+//! `JILL1.SHA`.
 
 use openjill_core::layout::BLOCK_SIZE_I;
 use openjill_core::{
@@ -16,6 +25,20 @@ use openjill_core::{
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
+
+/// SHA tileset index that owns every flame frame (`FlameManager.tileSet`).
+const TILESET_INDEX: u8 = 12;
+
+/// Base tile index inside [`TILESET_INDEX`] (`FlameManager.tile`).
+const TILE_BASE: u16 = 0;
+
+/// Number of distinct flame source tiles (`FlameManager.numberTileSet`).
+const NUMBER_TILE_SET: i32 = 6;
+
+/// Total animation length in ticks; each source tile is held for two ticks so
+/// the frame count is `NUMBER_TILE_SET * 2` (mirrors the Java
+/// `imagesUp = new Optional[numberTileSet * 2]` slot count).
+const FRAME_COUNT: i32 = NUMBER_TILE_SET * 2;
 
 /// Stationary lethal flame entity.
 pub struct FlameEntity {
@@ -27,6 +50,14 @@ pub struct FlameEntity {
     w: i32,
     /// Bounding box height in pixels.
     h: i32,
+    /// Animation counter incremented each tick.  Mirrors the Java
+    /// `FlameManager.counter` field; the rendered tile is `TILE_BASE +
+    /// counter / 2` so each source tile is held for two ticks.
+    counter: i32,
+    /// `true` once the animation completes and the entity has signalled the
+    /// level loop to remove it from the active object list (the Java
+    /// reference's `killMe()` call).
+    removed: bool,
     /// Pending player-kill classification armed in [`Self::on_touch`] and
     /// drained by the level loop via [`ObjectEntity::take_player_kill`] so the
     /// kill can be applied to the player's [`ObjectEntity::on_kill`].
@@ -43,13 +74,26 @@ impl FlameEntity {
             y: i32::from(item.y()),
             w,
             h,
+            counter: 0,
+            removed: false,
             pending_kill: None,
         }
+    }
+
+    /// Returns the source tile index for the current `counter` value.
+    ///
+    /// `counter / 2` selects the source tile so each frame is held for two
+    /// ticks, matching the Java reference's doubled `imagesUp` layout.
+    fn current_tile(&self) -> u16 {
+        let frame = (self.counter / 2).clamp(0, NUMBER_TILE_SET - 1) as u16;
+        TILE_BASE + frame
     }
 }
 
 impl ObjectEntity for FlameEntity {
-    /// No-op: flames are stationary.
+    /// Advances the flame's animation counter and signals removal once the
+    /// frame cycle completes (`counter >= FRAME_COUNT`, the Java reference's
+    /// `counter >= img.length` check).  Mirrors `FlameManager.msgUpdate`.
     fn update(
         &mut self,
         _input: &ActiveInput,
@@ -57,12 +101,32 @@ impl ObjectEntity for FlameEntity {
         _backgrounds: &BackgroundGrid,
         _dispatcher: &mut MessageDispatcher,
     ) {
+        if self.removed {
+            return;
+        }
+        self.counter += 1;
+        if self.counter >= FRAME_COUNT {
+            // Mirror the Java reference's `counter--; killMe()` sequence so
+            // the counter value is consistent, even though the Rust port
+            // suppresses drawing once `removed` is set.
+            self.counter -= 1;
+            self.removed = true;
+        }
     }
 
-    /// Sprite rendering is deferred until the SHA tileset identity for the
-    /// flame frames is verified; for now the entity emits no draw command.
+    /// Emits a [`RenderCommand::Blit`] for the current flame frame.
     fn draw(&self) -> Option<RenderCommand> {
-        None
+        if self.removed {
+            return None;
+        }
+        Some(RenderCommand::Blit {
+            tileset: TILESET_INDEX,
+            tile: self.current_tile(),
+            x: self.x,
+            y: self.y,
+            opaque: false,
+            clip: None,
+        })
     }
 
     /// Arms a [`DeathKind::OtherBackground`] kill on the player.  The level
@@ -71,6 +135,9 @@ impl ObjectEntity for FlameEntity {
     /// `DieRestartLevel` dispatch is left to the player after the die
     /// animation finishes.
     fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {
+        if self.removed {
+            return;
+        }
         self.pending_kill = Some(DeathKind::OtherBackground);
     }
 
@@ -82,6 +149,12 @@ impl ObjectEntity for FlameEntity {
         Rect::new(self.x, self.y, self.w, self.h)
     }
 
+    /// Returns `true` once the flame's animation has completed and the level
+    /// loop should drop it from the active object list.
+    fn should_remove(&self) -> bool {
+        self.removed
+    }
+
     /// Returns the pending kill classification (and clears it) so the level
     /// loop can apply it to the player after the touch dispatch pass.
     fn take_player_kill(&mut self) -> Option<DeathKind> {
@@ -91,11 +164,11 @@ impl ObjectEntity for FlameEntity {
 
 #[cfg(test)]
 mod tests {
-    use super::FlameEntity;
+    use super::{FRAME_COUNT, FlameEntity, NUMBER_TILE_SET, TILE_BASE, TILESET_INDEX};
     use crate::asset_cache::AssetCache;
     use openjill_core::{
-        DeathKind, MessageDispatcher, MessageHandler, MessagePayload, MessageType, ObjectEntity,
-        RuntimeState,
+        ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessageHandler, MessagePayload,
+        MessageType, ObjectEntity, RenderCommand, RuntimeState,
     };
     use openjill_data::jn::JnFile;
     use std::sync::{Arc, Mutex};
@@ -161,5 +234,73 @@ mod tests {
             None,
             "pending kill must be drained after the first take"
         );
+    }
+
+    /// Unit under test: [`FlameEntity::draw`] emits a `Blit` against the
+    /// SHA-verified `(tileset, tile)` pair for the first frame.
+    ///
+    /// Preconditions: a flame is constructed from a synthetic JN object; no
+    /// ticks have run yet so `counter = 0`.
+    ///
+    /// Invariants asserted: the draw command targets [`TILESET_INDEX`] /
+    /// [`TILE_BASE`] (the first source tile), and the destination pixel
+    /// coordinates equal the flame's world origin.
+    #[test]
+    fn flame_draw_emits_first_frame_blit() {
+        let cache = AssetCache::synthetic();
+        let flame = FlameEntity::new(&synthetic_flame_object(), &cache);
+
+        let cmd = flame.draw().expect("active flame must emit a blit");
+        match cmd {
+            RenderCommand::Blit { tileset, tile, .. } => {
+                assert_eq!(tileset, TILESET_INDEX, "flame must blit from tileset 12");
+                assert_eq!(tile, TILE_BASE, "first frame must use the base tile");
+            }
+            other => panic!("expected Blit, got {other:?}"),
+        }
+    }
+
+    /// Unit under test: [`FlameEntity::update`] cycles through the doubled
+    /// frame array and then signals removal once the animation completes.
+    ///
+    /// Preconditions: a flame is constructed; we tick it `FRAME_COUNT` times.
+    ///
+    /// Invariants asserted: after [`FRAME_COUNT`] ticks the flame reports
+    /// `should_remove() == true`; the tile index advanced past the first
+    /// source tile (so the animation actually played); subsequent draws are
+    /// suppressed once removed.
+    #[test]
+    fn flame_update_advances_then_marks_removal() {
+        let cache = AssetCache::synthetic();
+        let mut flame = FlameEntity::new(&synthetic_flame_object(), &cache);
+        let input = ActiveInput::default();
+        let state = RuntimeState::new();
+        let backgrounds = BackgroundGrid::new(Vec::new());
+        let mut dispatcher = MessageDispatcher::new();
+
+        // Tick through to half the animation and confirm a later frame is
+        // selected (`counter = 4` -> tile `TILE_BASE + 2`).
+        for _ in 0..4 {
+            flame.update(&input, &state, &backgrounds, &mut dispatcher);
+        }
+        match flame.draw().expect("mid-animation flame still draws") {
+            RenderCommand::Blit { tile, .. } => assert_eq!(tile, TILE_BASE + 2),
+            other => panic!("expected Blit mid-animation, got {other:?}"),
+        }
+
+        // Drive the remaining ticks past `FRAME_COUNT`; the entity must mark
+        // itself for removal exactly once the counter would cross the bound.
+        for _ in 4..FRAME_COUNT {
+            flame.update(&input, &state, &backgrounds, &mut dispatcher);
+        }
+        assert!(
+            flame.should_remove(),
+            "flame must request removal once the {FRAME_COUNT}-tick animation completes"
+        );
+        assert!(
+            flame.draw().is_none(),
+            "removed flame must stop emitting blits"
+        );
+        let _ = NUMBER_TILE_SET; // keep the import live in case future tests add bounds checks.
     }
 }

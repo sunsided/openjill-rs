@@ -312,4 +312,46 @@ mod tests {
             "FROOF cells must be passable so the player can jump through them"
         );
     }
+
+    /// Unit under test: [`FFloorBackground::blocks_vertical`].
+    ///
+    /// Invariants asserted: `FFLOOR` blocks the player only while rising
+    /// (`player_yd < 0`); a falling or stationary player passes through so the
+    /// "fall-through floor" half of the original behaviour stays intact.
+    #[test]
+    fn ffloor_blocks_only_upward_motion() {
+        let cache = AssetCache::synthetic();
+        let cell = FFloorBackground::for_map_code(0, &cache);
+        assert!(
+            cell.blocks_vertical(-1),
+            "FFLOOR must block a rising player so the cell behaves like a floor from below"
+        );
+        assert!(
+            !cell.blocks_vertical(1),
+            "FFLOOR must let a falling player drop through"
+        );
+        assert!(
+            !cell.blocks_vertical(0),
+            "FFLOOR must let a stationary player rest on existing floor below"
+        );
+    }
+
+    /// Unit under test: [`FroofBackground::blocks_vertical`].
+    ///
+    /// Invariants asserted: `FROOF` blocks the player only while falling
+    /// (`player_yd > 0`); a rising or stationary player passes through so the
+    /// "jump up through roof" half of the original behaviour stays intact.
+    #[test]
+    fn froof_blocks_only_downward_motion() {
+        let cache = AssetCache::synthetic();
+        let cell = FroofBackground::for_map_code(0, &cache);
+        assert!(
+            cell.blocks_vertical(1),
+            "FROOF must catch a falling player so the cell behaves like a floor"
+        );
+        assert!(
+            !cell.blocks_vertical(-1),
+            "FROOF must let a rising player jump through"
+        );
+    }
 }

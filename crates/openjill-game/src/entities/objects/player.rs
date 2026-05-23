@@ -852,13 +852,15 @@ impl PlayerEntity {
 // ---------------------------------------------------------------------------
 
 /// Returns `true` when the cell directly below the player's bounding box is
-/// solid (`!is_passthrough`).
+/// solid for a falling player.
 ///
 /// Mirrors `UtilityObjectEntity.checkIfFloorUnderObject` from the Java
 /// reference: probe one pixel below the bottom edge and check every cell
 /// covered by the bounding box footprint at that row.  `is_stair` cells also
-/// count as floor; we coalesce this by treating stairs as `!is_passthrough`
-/// implicitly through the `BackgroundEntity` flag layout.
+/// count as floor.  Direction-aware cells (`FROOF` / `FFLOOR`) consult
+/// [`openjill_core::BackgroundEntity::blocks_vertical`] with a positive
+/// `player_yd` so a falling player lands on `FROOF` but still drops through
+/// `FFLOOR`.
 fn has_floor_below(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
     let probe_y = y + h;
     let cell_y = probe_y.div_euclid(BLOCK_SIZE_I);
@@ -875,7 +877,7 @@ fn has_floor_below(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> boo
     let cell_x_right = (cell_x_right as usize).min(grid.width.saturating_sub(1));
     for cx in cell_x_left..=cell_x_right {
         if let Some(cell) = grid.get(cx, cell_y)
-            && (!cell.is_passthrough() || cell.is_stair())
+            && (cell.blocks_vertical(1) || cell.is_stair())
         {
             return true;
         }
@@ -900,13 +902,56 @@ fn is_on_climbable(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> boo
 }
 
 /// Returns `true` when the rectangle `[x, x+w) x [y, y+h)` overlaps any cell
-/// that is not passable.
+/// that is not passable for a vertical step in the direction of `player_yd`.
 ///
 /// `is_stair` cells count as solid for the bounding-box collision test so the
 /// player cannot tunnel through a step diagonally, mirroring the Java
 /// reference's `UtilityObjectEntity.moveObject*` helpers which treat stair
 /// cells as blocking surfaces (`has_floor_below` applies the same rule).
-fn collides_solid(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
+/// Direction-aware cells (`FROOF` / `FFLOOR`) consult
+/// [`openjill_core::BackgroundEntity::blocks_vertical`] so a fake floor blocks
+/// only upward motion and a fake roof blocks only downward motion.
+fn collides_vertical(
+    grid: &BackgroundGrid,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    player_yd: i32,
+) -> bool {
+    let cx_l = x.div_euclid(BLOCK_SIZE_I);
+    let cx_r = (x + w - 1).div_euclid(BLOCK_SIZE_I);
+    let cy_t = y.div_euclid(BLOCK_SIZE_I);
+    let cy_b = (y + h - 1).div_euclid(BLOCK_SIZE_I);
+    let cx_l = cx_l.max(0) as usize;
+    let cx_r = cx_r.max(0) as usize;
+    let cy_t = cy_t.max(0) as usize;
+    let cy_b = cy_b.max(0) as usize;
+    for cy in cy_t..=cy_b {
+        if cy >= grid.height {
+            continue;
+        }
+        for cx in cx_l..=cx_r {
+            if cx >= grid.width {
+                continue;
+            }
+            if let Some(cell) = grid.get(cx, cy)
+                && (cell.blocks_vertical(player_yd) || cell.is_stair())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns `true` when the rectangle `[x, x+w) x [y, y+h)` overlaps any cell
+/// that blocks horizontal motion.
+///
+/// Direction-aware cells fall back to [`openjill_core::BackgroundEntity::is_passthrough`]
+/// here, because the one-way `FFLOOR` / `FROOF` cells are open along the
+/// horizontal axis; only the vertical step probes consult `blocks_vertical`.
+fn collides_horizontal(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
     let cx_l = x.div_euclid(BLOCK_SIZE_I);
     let cx_r = (x + w - 1).div_euclid(BLOCK_SIZE_I);
     let cy_t = y.div_euclid(BLOCK_SIZE_I);
@@ -936,10 +981,10 @@ fn collides_solid(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool
 /// Attempts a single all-or-nothing vertical step.
 ///
 /// Returns `true` when the player moved, `false` when the target rectangle
-/// would overlap a solid cell.
+/// would overlap a cell that blocks motion in the `dy` direction.
 fn try_move_vertical(grid: &BackgroundGrid, x: i32, y: &mut i32, w: i32, h: i32, dy: i32) -> bool {
     let new_y = *y + dy;
-    if collides_solid(grid, x, new_y, w, h) {
+    if collides_vertical(grid, x, new_y, w, h, dy) {
         return false;
     }
     *y = new_y;
@@ -958,7 +1003,7 @@ fn try_move_vertical_horizontal(
     dx: i32,
 ) -> bool {
     let new_x = *x + dx;
-    if collides_solid(grid, new_x, y, w, h) {
+    if collides_horizontal(grid, new_x, y, w, h) {
         return false;
     }
     *x = new_x;

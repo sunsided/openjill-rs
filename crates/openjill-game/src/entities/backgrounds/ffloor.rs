@@ -1,14 +1,14 @@
 //! "Fake floor" jump-through background.
 //!
 //! Mirrors `org.jill.game.entities.back.FFloorBackgroundEntity` from the Java
-//! reference: the cell renders as floor but the player passes through it from
-//! above (i.e. when falling) and the Java reference's
-//! `AbstractBaseBackgroundEntity.isPlayerThru` reports `true`.  The Rust port
-//! reports the cell as passthrough so it does not block the player; the
-//! direction-aware "solid from below" half of the Java behaviour requires
-//! plumbing the player's vertical velocity into the cell trait and lands as a
-//! follow-up once enemies and physics need the same hook (see the parity-gap
-//! notes in `docs/port/06-episode-1-gameplay.md`).
+//! reference: visually a floor that the player drops through from above when
+//! falling but bumps into from below when jumping up.  [`Self::is_passthrough`]
+//! returns `true` so the cell does not appear in the standard "is this cell
+//! solid?" probes, while [`Self::blocks_vertical`] reports `true` only for
+//! upward motion (`player_yd < 0`), turning the cell into a one-way solid for
+//! the player's jump path.  Floor-detection probes use `player_yd > 0` (the
+//! falling convention), where `FFLOOR` correctly reports passable and the
+//! player keeps falling through.
 
 use openjill_core::{BackgroundEntity, MessageDispatcher, ObjectEntity, RenderCommand};
 
@@ -47,12 +47,19 @@ impl BackgroundEntity for FFloorBackground {
     ) {
     }
 
-    /// Always passable: the player drops through the cell from above.  The
-    /// Java reference also blocks upward motion through the cell; that
-    /// direction-dependent half of the behaviour is a follow-up (see the
-    /// module-level doc comment).
+    /// Always passable for the generic solidity probe so callers that do not
+    /// pass a direction (horizontal collision, stair checks) keep treating the
+    /// cell as open air.  Direction-aware vertical motion goes through
+    /// [`Self::blocks_vertical`] instead.
     fn is_passthrough(&self) -> bool {
         true
+    }
+
+    /// Blocks the player only while rising (`player_yd < 0`); a falling or
+    /// stationary player drops through unimpeded.  Mirrors the original
+    /// "jump into floor, fall through floor" semantics.
+    fn blocks_vertical(&self, player_yd: i32) -> bool {
+        player_yd < 0
     }
 
     /// `FFLOOR` cells are not climbable.
