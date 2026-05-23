@@ -2,25 +2,36 @@
 //!
 //! Every concrete type listed in `objects_manager_mapping.json` of the Java
 //! reference is expected to eventually live as one submodule below.  The
-//! registry currently covers the player plus the pickup, key, door, trigger,
-//! and checkpoint entities required by epic 6 child issue 4; remaining types
-//! fall through to the catch-all [`stub::StubObjectEntity`].
+//! registry covers the player, pickups, keys, doors, triggers, checkpoints,
+//! projectiles, switches, lifts, and decoration entities required by epic 6;
+//! remaining types fall through to the catch-all [`stub::StubObjectEntity`].
 
 pub mod apple;
 pub mod blade;
 pub mod bonus;
+pub mod bubbles;
+pub mod bullet;
 pub mod checkpoint;
 pub mod collapsing_ceiling;
 pub mod falling_spike;
+pub mod firebird_player;
+pub mod firebird_weapon;
 pub mod flame;
+pub mod hit_fire;
+pub mod huge_letter_tile;
 pub mod knife;
+pub mod lift;
 pub mod lock_door;
 pub mod player;
 pub mod point;
 pub mod red_key;
 pub mod rock_key;
 pub mod rolling_rock;
+pub mod spark;
 pub mod stub;
+pub mod switch;
+pub mod text_tile;
+pub mod toggle_wall;
 pub mod touch_trigger;
 
 use openjill_core::ObjectEntity;
@@ -31,18 +42,29 @@ use crate::asset_cache::AssetCache;
 pub use apple::AppleEntity;
 pub use blade::BladeEntity;
 pub use bonus::BonusEntity;
+pub use bubbles::BubblesEntity;
+pub use bullet::BulletEntity;
 pub use checkpoint::CheckPointEntity;
 pub use collapsing_ceiling::CollapsingCeilingEntity;
 pub use falling_spike::FallingSpikeEntity;
+pub use firebird_player::FirebirdPlayerEntity;
+pub use firebird_weapon::FirebirdWeaponEntity;
 pub use flame::FlameEntity;
+pub use hit_fire::HitFireEntity;
+pub use huge_letter_tile::HugeLetterTileEntity;
 pub use knife::KnifeEntity;
+pub use lift::LiftEntity;
 pub use lock_door::LockedDoorEntity;
 pub use player::PlayerEntity;
 pub use point::PointEntity;
 pub use red_key::RedKeyEntity;
 pub use rock_key::RockKeyEntity;
 pub use rolling_rock::RollingRockEntity;
+pub use spark::SparkEntity;
 pub use stub::StubObjectEntity;
+pub use switch::SwitchEntity;
+pub use text_tile::TextTileEntity;
+pub use toggle_wall::ToggleWallEntity;
 pub use touch_trigger::TouchTriggerEntity;
 
 /// Builds the correct [`ObjectEntity`] implementation for a JN object record.
@@ -71,15 +93,26 @@ pub fn make_object_entity(
         12 => Box::new(CheckPointEntity::new(item, string_entry, cache)),
         14 => Box::new(RedKeyEntity::new(item, cache)),
         15 => Box::new(TouchTriggerEntity::new(item, cache)),
+        20 | 21 => Box::new(TextTileEntity::new(item, cache)),
         24 => Box::new(LockedDoorEntity::new(item, cache)),
         25 => Box::new(CollapsingCeilingEntity::new(item, cache)),
+        26 => Box::new(ToggleWallEntity::new(item, cache)),
         27 => Box::new(PointEntity::new(item, cache)),
         28 => Box::new(BonusEntity::new(item, cache)),
         31 => Box::new(FlameEntity::new(item, cache)),
+        32 => Box::new(SwitchEntity::new(item, cache)),
         33 => Box::new(RockKeyEntity::new(item, cache)),
         35 => Box::new(RollingRockEntity::new(item, cache)),
+        36 => Box::new(BulletEntity::new(item, cache)),
+        37 => Box::new(HitFireEntity::new(item, cache)),
         38 => Box::new(FallingSpikeEntity::new(item, cache)),
+        42 => Box::new(HugeLetterTileEntity::new(item, cache)),
         50 => Box::new(BladeEntity::new(item, cache)),
+        56 => Box::new(FirebirdPlayerEntity::new(item, cache)),
+        58 => Box::new(BubblesEntity::new(item, cache)),
+        61 => Box::new(LiftEntity::new(item, cache)),
+        62 => Box::new(FirebirdWeaponEntity::new(item, cache)),
+        65 => Box::new(SparkEntity::new(item, cache)),
         other => Box::new(StubObjectEntity::new(other, item)),
     }
 }

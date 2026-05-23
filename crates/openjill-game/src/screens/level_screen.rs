@@ -32,6 +32,7 @@ use openjill_data::dma::DmaFile;
 use openjill_data::jn::{JnFile, JnObject, JnReadError};
 
 use crate::asset_cache::AssetCache;
+use crate::entities::objects::BulletEntity;
 use crate::entities::{make_background_entity, make_object_entity};
 use crate::screens::map_screen::render_map_background;
 use crate::status_bar::GAME_AREA_CLIP;
@@ -297,6 +298,82 @@ enum StatusUpdate {
 /// Shared queue of status updates collected from the dispatcher subscribers.
 type StatusInbox = Arc<Mutex<Vec<StatusUpdate>>>;
 
+/// Shared queue of `Trigger` link identifiers dispatched during one tick.
+///
+/// Populated by [`TriggerInboxHandler`] and drained each tick by
+/// [`LevelScreen::route_triggers`] which forwards each link identifier to
+/// every object via [`ObjectEntity::receive_trigger`].
+type TriggerInbox = Arc<Mutex<Vec<i32>>>;
+
+/// Dispatcher handler that records arriving `Trigger` link identifiers.
+struct TriggerInboxHandler {
+    /// Shared inbox the level screen drains every tick.
+    inbox: TriggerInbox,
+}
+
+impl MessageHandler for TriggerInboxHandler {
+    /// Extracts the `Count` link identifier from a `Trigger` payload and
+    /// appends it to the inbox.  Other payload variants are silently ignored.
+    fn handle(&mut self, _msg_type: MessageType, payload: &MessagePayload) {
+        if let MessagePayload::Count(link_id) = payload
+            && let Ok(mut queue) = self.inbox.lock()
+        {
+            queue.push(*link_id);
+        }
+    }
+}
+
+/// Shared queue of `(dx, dy)` platform-move deltas dispatched during one tick.
+///
+/// Populated by [`PlayerMoveHandler`] and drained each tick by
+/// [`LevelScreen::apply_platform_moves`] which forwards each delta to the
+/// player entity via [`ObjectEntity::apply_platform_move`].
+type PlayerMoveInbox = Arc<Mutex<Vec<(i32, i32)>>>;
+
+/// Dispatcher handler that records arriving `PlayerMove` deltas.
+struct PlayerMoveHandler {
+    /// Shared inbox the level screen drains every tick.
+    inbox: PlayerMoveInbox,
+}
+
+impl MessageHandler for PlayerMoveHandler {
+    /// Extracts the `Move(dx, dy)` delta from a `PlayerMove` payload and
+    /// appends it to the inbox.  Other payload variants are silently ignored.
+    fn handle(&mut self, _msg_type: MessageType, payload: &MessagePayload) {
+        if let MessagePayload::Move(dx, dy) = payload
+            && let Ok(mut queue) = self.inbox.lock()
+        {
+            queue.push((*dx, *dy));
+        }
+    }
+}
+
+/// Shared queue of spawn parameters for bullets created during one tick.
+///
+/// Populated by [`CreateObjectHandler`] and drained each tick by
+/// [`LevelScreen::spawn_bullets`] which instantiates a [`BulletEntity`] for
+/// each entry and appends it to the active object list.
+type CreateObjectInbox = Arc<Mutex<Vec<(i32, i32, i32, i32)>>>;
+
+/// Dispatcher handler that records arriving `CreateObject` spawn requests.
+struct CreateObjectHandler {
+    /// Shared inbox the level screen drains every tick.
+    inbox: CreateObjectInbox,
+}
+
+impl MessageHandler for CreateObjectHandler {
+    /// Extracts `SpawnAt` fields from a `CreateObject` payload and appends
+    /// them to the inbox.  `None` payloads (e.g. die burst) are ignored until
+    /// that spawn path receives a structured payload.
+    fn handle(&mut self, _msg_type: MessageType, payload: &MessagePayload) {
+        if let MessagePayload::SpawnAt { x, y, xd, yd } = payload
+            && let Ok(mut queue) = self.inbox.lock()
+        {
+            queue.push((*x, *y, *xd, *yd));
+        }
+    }
+}
+
 /// Level screen handler.
 ///
 /// Owns a parsed level JN file plus the raw bytes for restart-level
@@ -380,6 +457,24 @@ pub struct LevelScreen {
     /// Seeded to [`LEVEL_MESSAGE_TICKS`] (72 ticks ≈ 4 s) on every new
     /// `StatusBarText` message; counted down each tick by [`Self::tick`].
     status_text_ticks: u32,
+    /// Shared queue of `Trigger` link identifiers dispatched during the
+    /// current tick by switches or touch triggers.
+    ///
+    /// Drained each tick by [`Self::route_triggers`] which forwards each
+    /// link identifier to every object via [`ObjectEntity::receive_trigger`].
+    trigger_inbox: TriggerInbox,
+    /// Shared queue of `(dx, dy)` platform-move deltas dispatched by lift
+    /// entities during the current tick.
+    ///
+    /// Drained each tick by [`Self::apply_platform_moves`] which translates
+    /// the player entity position by the accumulated delta.
+    player_move_inbox: PlayerMoveInbox,
+    /// Shared queue of `(x, y, xd, yd)` spawn parameters for bullets
+    /// requested via `CreateObject` during the current tick.
+    ///
+    /// Drained each tick by [`Self::spawn_bullets`] which appends a new
+    /// [`BulletEntity`] to the active object list for each entry.
+    create_object_inbox: CreateObjectInbox,
 }
 
 impl LevelScreen {
@@ -486,6 +581,30 @@ impl LevelScreen {
             );
         }
 
+        let trigger_inbox: TriggerInbox = Arc::new(Mutex::new(Vec::new()));
+        entity_dispatcher.subscribe(
+            MessageType::Trigger,
+            Box::new(TriggerInboxHandler {
+                inbox: Arc::clone(&trigger_inbox),
+            }),
+        );
+
+        let player_move_inbox: PlayerMoveInbox = Arc::new(Mutex::new(Vec::new()));
+        entity_dispatcher.subscribe(
+            MessageType::PlayerMove,
+            Box::new(PlayerMoveHandler {
+                inbox: Arc::clone(&player_move_inbox),
+            }),
+        );
+
+        let create_object_inbox: CreateObjectInbox = Arc::new(Mutex::new(Vec::new()));
+        entity_dispatcher.subscribe(
+            MessageType::CreateObject,
+            Box::new(CreateObjectHandler {
+                inbox: Arc::clone(&create_object_inbox),
+            }),
+        );
+
         Self {
             jn,
             jn_bytes,
@@ -504,6 +623,9 @@ impl LevelScreen {
             status_inbox,
             status_text: None,
             status_text_ticks: 0,
+            trigger_inbox,
+            player_move_inbox,
+            create_object_inbox,
         }
     }
 
@@ -687,6 +809,83 @@ impl LevelScreen {
         }
         if let Some(kind) = pending_kill {
             objects[player_idx].on_kill(1, kind);
+        }
+    }
+
+    /// Drains the trigger inbox and forwards each link identifier to every
+    /// object via [`ObjectEntity::receive_trigger`].
+    ///
+    /// Called once per tick after [`Self::update_objects`] so that `Trigger`
+    /// messages dispatched by switches and touch triggers during `update`
+    /// are delivered to toggle walls and other trigger-sensitive objects
+    /// on the same tick.
+    fn route_triggers(&mut self) {
+        let link_ids: Vec<i32> = {
+            let mut queue = self
+                .trigger_inbox
+                .lock()
+                .expect("trigger inbox mutex poisoned");
+            std::mem::take(&mut *queue)
+        };
+        if link_ids.is_empty() {
+            return;
+        }
+        for obj in self.objects.iter_mut() {
+            for &link_id in &link_ids {
+                obj.receive_trigger(link_id);
+            }
+        }
+    }
+
+    /// Applies accumulated `PlayerMove` deltas to the player entity.
+    ///
+    /// Drains the `player_move_inbox` and calls
+    /// [`ObjectEntity::apply_platform_move`] on every entity that reports
+    /// `is_player()`.  Non-player entities have a no-op default, so the
+    /// filter on `is_player` is an optimisation rather than a correctness
+    /// requirement.
+    fn apply_platform_moves(&mut self) {
+        let moves: Vec<(i32, i32)> = {
+            let mut queue = self
+                .player_move_inbox
+                .lock()
+                .expect("player move inbox mutex poisoned");
+            std::mem::take(&mut *queue)
+        };
+        if moves.is_empty() {
+            return;
+        }
+        for obj in self.objects.iter_mut().filter(|o| o.is_player()) {
+            for &(dx, dy) in &moves {
+                obj.apply_platform_move(dx, dy);
+            }
+        }
+    }
+
+    /// Instantiates bullets requested via `CreateObject` during this tick.
+    ///
+    /// Drains the `create_object_inbox` and appends a [`BulletEntity`] built
+    /// from each `(x, y, xd, yd)` tuple to the active object list.  New
+    /// bullets join the scene on the same tick they were requested, meaning
+    /// they participate in the draw pass but not in the touch-detection pass
+    /// (which has already run by the time `spawn_bullets` is called).
+    fn spawn_bullets(&mut self) {
+        let spawns: Vec<(i32, i32, i32, i32)> = {
+            let mut queue = self
+                .create_object_inbox
+                .lock()
+                .expect("create object inbox mutex poisoned");
+            std::mem::take(&mut *queue)
+        };
+        for (x, y, xd, yd) in spawns {
+            self.objects.push(Box::new(BulletEntity::with_velocity(
+                x,
+                y,
+                BLOCK_SIZE_I,
+                BLOCK_SIZE_I,
+                xd,
+                yd,
+            )));
         }
     }
 
@@ -1035,20 +1234,29 @@ impl ScreenHandler for LevelScreen {
         self.pump_status_inbox(state);
 
         // Tick order each frame:
-        // 1. Update every object entity (player moves on this tick).
-        // 2. Dispatch player-vs-object touch callbacks, then drop entities
-        //    that flagged themselves for removal inside `on_touch`.
-        // 3. Snap the viewport so the post-update player stays inside the
+        // 1. Update every object entity (player moves, lifts dispatch
+        //    PlayerMove, player dispatches CreateObject on fire).
+        // 2. Apply platform-move deltas from lifts to the player position.
+        // 3. Dispatch player-vs-object touch callbacks; switches and touch
+        //    triggers dispatch Trigger messages here.
+        // 4. Route trigger messages to all objects (after the touch pass so
+        //    switches touched this tick activate on the same tick).
+        // 5. Drop entities that flagged themselves for removal.
+        // 6. Spawn bullets requested via CreateObject this tick.
+        // 7. Snap the viewport so the post-update player stays inside the
         //    96/48 px update border, clamped to the map bounds.
-        // 4. Build the base frame using the freshly-snapped viewport.
-        // 5. Per-cell background tick + draw (also uses the new viewport).
-        // 6. Object draws (on top of backgrounds, matching the Java
-        //    reference draw order).
-        // 7. Message-box overlay last so transitions paint over everything
-        //    else.
+        // 8. Build the base frame using the freshly-snapped viewport.
+        // 9. Per-cell background tick + draw (also uses the new viewport).
+        // 10. Object draws (on top of backgrounds, matching the Java
+        //     reference draw order).
+        // 11. Message-box overlay last so transitions paint over everything
+        //     else.
         self.update_objects(input, state);
+        self.apply_platform_moves();
         self.dispatch_player_touches(state);
+        self.route_triggers();
         self.reap_removed_objects();
+        self.spawn_bullets();
         self.update_viewport();
 
         let mut commands = self.render_base_frame();

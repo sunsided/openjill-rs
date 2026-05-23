@@ -19,6 +19,17 @@ use openjill_core::{
     ActiveInput, BackgroundGrid, DeathKind, InputCommand, MessageDispatcher, MessagePayload,
     MessageType, ObjectEntity, Rect, RenderCommand, RuntimeState,
 };
+
+/// Ticks between successive player shots.
+///
+/// Mirrors `PlayerStandConst.FIRE_COOLDOWN` from the Java reference: the
+/// player can fire once every 8 ticks at the standard rate.
+const FIRE_COOLDOWN_TICKS: i32 = 8;
+
+/// Horizontal speed of a player-fired bullet in pixels per tick.
+///
+/// Matches the speed used by `BulletManager` in the Java reference.
+const BULLET_SPEED_PX: i32 = 8;
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
@@ -222,6 +233,12 @@ pub struct PlayerEntity {
     /// `true` when [`PlayerEntity::on_kill`] has set up the die transition but
     /// the matching die-state update has not yet emitted the bullet burst.
     die_pending: bool,
+    /// Ticks remaining before the player may fire again.
+    ///
+    /// Set to [`FIRE_COOLDOWN_TICKS`] after each shot; decremented once per
+    /// tick.  Prevents holding the fire key from creating a bullet every
+    /// tick, matching the Java reference's rate-limiting behavior.
+    fire_cooldown: i32,
 }
 
 impl PlayerEntity {
@@ -247,6 +264,7 @@ impl PlayerEntity {
             zaphold: 0,
             death_kind: None,
             die_pending: false,
+            fire_cooldown: 0,
         }
     }
 
@@ -292,6 +310,18 @@ impl PlayerEntity {
     pub fn set_y_speed(&mut self, value: i32) {
         self.y_speed = value;
     }
+
+    /// Returns `true` when the player's current state allows firing a weapon.
+    ///
+    /// Mirrors `AbstractPlayerInteractionManager.canFire` from the Java
+    /// reference: firing is permitted in `Stand`, `Still`, and `Jumping`
+    /// states but not while `Climbing` (both hands on the vine) or `Die`.
+    pub fn can_fire(&self) -> bool {
+        matches!(
+            self.state,
+            PlayerStateKind::Stand | PlayerStateKind::Still | PlayerStateKind::Jumping
+        )
+    }
 }
 
 impl ObjectEntity for PlayerEntity {
@@ -311,6 +341,33 @@ impl ObjectEntity for PlayerEntity {
     ) {
         if self.zaphold > 0 {
             self.zaphold -= 1;
+        }
+
+        if self.fire_cooldown > 0 {
+            self.fire_cooldown -= 1;
+        }
+
+        // Fire: dispatch a CreateObject request when the throw/fire key is
+        // pressed, the player state allows it, and the cooldown is clear.
+        // `info1` holds the last facing direction (-1 left, 0/+1 right); a
+        // zero value is treated as right-facing for the bullet origin.
+        if input.contains(&InputCommand::ThrowItem) && self.can_fire() && self.fire_cooldown == 0 {
+            let dir = if self.info1 < 0 { -1 } else { 1 };
+            let bullet_x = if dir > 0 {
+                self.x + self.w
+            } else {
+                self.x - BLOCK_SIZE_I
+            };
+            dispatcher.send(
+                MessageType::CreateObject,
+                MessagePayload::SpawnAt {
+                    x: bullet_x,
+                    y: self.y,
+                    xd: dir * BULLET_SPEED_PX,
+                    yd: 0,
+                },
+            );
+            self.fire_cooldown = FIRE_COOLDOWN_TICKS;
         }
 
         // Promote a pending die request before any state-specific handlers run
@@ -387,6 +444,27 @@ impl ObjectEntity for PlayerEntity {
     /// Returns `true`: this entity represents the controllable player.
     fn is_player(&self) -> bool {
         true
+    }
+
+    /// Applies a platform-driven position delta without collision checking.
+    fn apply_platform_move(&mut self, dx: i32, dy: i32) {
+        self.x += dx;
+        self.y += dy;
+    }
+}
+
+impl PlayerEntity {
+    /// Applies a `PlayerMove` delta dispatched by a lift or other moving
+    /// platform.
+    ///
+    /// Called by the level loop when a [`MessageType::PlayerMove`] message
+    /// arrives with a [`MessagePayload::Move`] payload.  The delta is applied
+    /// directly to the player's world position without collision checking,
+    /// matching the Java reference's `AbstractPlayerManager.msgPlayerMove`
+    /// behavior where the lift guarantees the move is within open space.
+    pub fn apply_platform_move(&mut self, dx: i32, dy: i32) {
+        self.x += dx;
+        self.y += dy;
     }
 }
 
@@ -1325,6 +1403,41 @@ mod tests {
         assert!(
             restart_count >= 1,
             "DieRestartLevel must be dispatched after STATECOUNT_MAX_TO_RESTART_GAME ticks; saw {restart_count}"
+        );
+    }
+
+    /// Unit under test: `can_fire` returns `true` in the `Stand` state and
+    /// `false` in the `Die` state.
+    ///
+    /// Preconditions: fresh player (starts in `Stand`); then forced into `Die`.
+    ///
+    /// Invariants asserted: `can_fire()` is `true` for `Stand` and `false`
+    /// for `Die`.
+    #[test]
+    fn can_fire_true_in_stand_false_in_die() {
+        let player = make_player(16, 16);
+        assert!(
+            player.can_fire(),
+            "player in Stand state must be able to fire"
+        );
+        let mut player = make_player(16, 16);
+        player.set_state(PlayerStateKind::Die);
+        assert!(
+            !player.can_fire(),
+            "player in Die state must not be able to fire"
+        );
+    }
+
+    /// Unit under test: `can_fire` returns `false` in the `Climbing` state.
+    ///
+    /// Invariants asserted: `can_fire()` is `false` for `Climbing`.
+    #[test]
+    fn can_fire_false_in_climbing() {
+        let mut player = make_player(16, 16);
+        player.set_state(PlayerStateKind::Climbing);
+        assert!(
+            !player.can_fire(),
+            "player in Climbing state must not be able to fire"
         );
     }
 

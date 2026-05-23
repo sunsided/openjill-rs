@@ -90,8 +90,10 @@ impl InventoryItemPayload {
 /// |---------|---------|
 /// | `ChangeLevel` | `CheckpointChangeLevel`, `CheckpointChangeLevelPrevious` |
 /// | `InventoryItem` | `InventoryItem` |
-/// | `Count` | `InventoryLife`, `InventoryPoint` |
+/// | `Count` | `InventoryLife`, `InventoryPoint`, `Trigger` |
 /// | `Text` | `StatusBarText`, `MessageBox` |
+/// | `Move` | `PlayerMove` |
+/// | `SpawnAt` | `CreateObject` |
 /// | `None` | `DieRestartLevel` and other stateless messages |
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MessagePayload {
@@ -103,6 +105,24 @@ pub enum MessagePayload {
     Count(i32),
     /// Text string (status bar text, message box content).
     Text(String),
+    /// Signed pixel delta `(dx, dy)` for movement messages such as `PlayerMove`.
+    Move(i32, i32),
+    /// Spawn-position and initial velocity for a `CreateObject` request.
+    ///
+    /// `x` and `y` are the world-space top-left of the new object in pixels.
+    /// `xd` and `yd` are the per-tick pixel velocity.  Used by `PlayerEntity`
+    /// to request bullet spawning via `MessageType::CreateObject`; the level
+    /// loop reads these fields to instantiate a `BulletEntity`.
+    SpawnAt {
+        /// World X of the spawn origin in pixels.
+        x: i32,
+        /// World Y of the spawn origin in pixels.
+        y: i32,
+        /// Horizontal velocity in pixels per tick.
+        xd: i32,
+        /// Vertical velocity in pixels per tick.
+        yd: i32,
+    },
     /// No payload; used by stateless messages such as `DieRestartLevel`.
     None,
 }
