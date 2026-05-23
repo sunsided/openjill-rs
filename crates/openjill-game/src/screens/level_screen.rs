@@ -204,6 +204,42 @@ const ITEM_GRID_COLS: usize = 4;
 /// Pixel pitch between adjacent inventory item grid cells.
 const ITEM_GRID_PITCH: i32 = 16;
 
+/// Inventory-area-local X of the "health" static label.
+/// Sourced from `inventory_conf.json` `text[0].x`.
+const HEALTH_LABEL_X_INV: i32 = 2;
+/// Inventory-area-local Y of the "health" static label.
+/// Sourced from `inventory_conf.json` `text[0].y`.
+const HEALTH_LABEL_Y_INV: i32 = 2;
+/// EGA color index for the "health" label.
+const HEALTH_LABEL_COLOR: u8 = 5;
+
+/// Inventory-area-local X of the "level" static label.
+/// Sourced from `inventory_conf.json` `text[1].x`.
+const LEVEL_LABEL_X_INV: i32 = 1;
+/// Inventory-area-local Y of the "level" static label.
+/// Sourced from `inventory_conf.json` `text[1].y`.
+const LEVEL_LABEL_Y_INV: i32 = 10;
+/// EGA color index for the "level" label.
+const LEVEL_LABEL_COLOR: u8 = 2;
+
+/// Inventory-area-local X of the "map" static label.
+/// Sourced from `inventory_conf.json` `text[2].x`.
+const MAP_LABEL_X_INV: i32 = 1;
+/// Inventory-area-local Y of the "map" static label.
+/// Sourced from `inventory_conf.json` `text[2].y`.
+const MAP_LABEL_Y_INV: i32 = 16;
+/// EGA color index for the "map" label.
+const MAP_LABEL_COLOR: u8 = 2;
+
+/// Inventory-area-local X of the "score" static label.
+/// Sourced from `inventory_conf.json` `text[3].x`.
+const SCORE_LABEL_X_INV: i32 = 33;
+/// Inventory-area-local Y of the "score" static label.
+/// Sourced from `inventory_conf.json` `text[3].y`.
+const SCORE_LABEL_Y_INV: i32 = 10;
+/// EGA color index for the "score" label.
+const SCORE_LABEL_COLOR: u8 = 4;
+
 /// Framebuffer clip rectangle that confines dynamic-overlay output to the
 /// inventory area (origin `(INVENTORY_AREA_X, INVENTORY_AREA_Y)`, size
 /// `INVENTORY_AREA_W × INVENTORY_AREA_H` from `openjill_core::layout`).
@@ -1107,6 +1143,39 @@ impl LevelScreen {
     /// `InventoryPointMessage` / `InventoryLifeMessage` / `InventoryItemMessage`.
     fn render_dynamic_status(&self, state: &RuntimeState) -> Vec<RenderCommand> {
         let mut commands = Vec::new();
+
+        // Static inventory-area labels from inventory_conf.json `text` array.
+        // These are level-screen-specific: drawn on top of the Jill portrait
+        // but not shown on Map or Start-Menu screens.
+        for (text, x_inv, y_inv, color) in [
+            (
+                "health",
+                HEALTH_LABEL_X_INV,
+                HEALTH_LABEL_Y_INV,
+                HEALTH_LABEL_COLOR,
+            ),
+            (
+                "level",
+                LEVEL_LABEL_X_INV,
+                LEVEL_LABEL_Y_INV,
+                LEVEL_LABEL_COLOR,
+            ),
+            ("map", MAP_LABEL_X_INV, MAP_LABEL_Y_INV, MAP_LABEL_COLOR),
+            (
+                "score",
+                SCORE_LABEL_X_INV,
+                SCORE_LABEL_Y_INV,
+                SCORE_LABEL_COLOR,
+            ),
+        ] {
+            commands.push(RenderCommand::DrawText {
+                text: text.to_string(),
+                x: INVENTORY_AREA_X + x_inv,
+                y: INVENTORY_AREA_Y + y_inv,
+                color_index: color,
+                font: FontSize::Small,
+            });
+        }
 
         // Score: zero-padded six-digit decimal, clamped to
         // `[0, SCORE_DISPLAY_MAX]` so externally-mutated `state.score`

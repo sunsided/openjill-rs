@@ -1,12 +1,19 @@
 //! Static VGA status bar render commands and game-area offset helpers.
 
-use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
+use openjill_core::layout::{
+    CONTROL_AREA_W, CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y, INVENTORY_AREA_X,
+    INVENTORY_AREA_Y,
+};
 use openjill_core::{FontSize, RenderCommand};
 use std::sync::LazyLock;
 
 /// Embedded JSON describing the static VGA status bar tile layout.
 pub(crate) const STATUS_BAR_JSON: &str =
     include_str!("../../../OpenJill/src/main/resources/status_bar_vga.json");
+
+/// Embedded JSON describing the control area text and key-binding labels.
+pub(crate) const CONTROL_AREA_JSON: &str =
+    include_str!("../../../OpenJill/src/main/resources/control_area.json");
 
 /// Cached static VGA status bar commands parsed from [`STATUS_BAR_JSON`].
 static STATUS_BAR_COMMANDS: LazyLock<Vec<RenderCommand>> = LazyLock::new(parse_status_bar_commands);
@@ -20,23 +27,74 @@ pub fn status_bar_commands() -> Vec<RenderCommand> {
     STATUS_BAR_COMMANDS.clone()
 }
 
-/// Parses the embedded `status_bar_vga.json` into static status bar render commands.
+/// Parses the embedded JSON resources into static status bar render commands.
 ///
-/// Returns an empty `Vec` only when the top-level JSON itself fails to parse. Each of the
-/// three optional top-level arrays (`images`, `text`, `bigtext`) is consumed independently:
-/// a missing or non-array value contributes nothing rather than discarding the other
-/// arrays, and individual entries that omit required fields or carry out-of-range numeric
-/// values are silently skipped. Emits commands in the order: `images` blits, then `text`
-/// `DrawText`, then `bigtext` `DrawText`.
+/// Sources three JSON files:
+/// - `status_bar_vga.json`: frame/border tiles (`images`), the Jill face portrait
+///   (`imagesInvenroy`), and the "CONTROLS" / "INVENTORY" labels.
+/// - `inventory_conf.json`: "health", "level", "map", "score" labels drawn in the
+///   inventory area.
+/// - `control_area.json`: the control-panel text content (movement hint, SHIFT/ALT/F1
+///   labels, N/Q/S/R/T key bindings, and the horizontal separator line).
+///
+/// Returns an empty `Vec` only when `status_bar_vga.json` itself fails to parse.
+/// Missing or structurally invalid entries in any of the three files are silently
+/// skipped without discarding the other entries.
+///
+/// Emit order: all `Blit` commands first (frame tiles, then Jill face), then the
+/// control-area separator `FillRect`, then all `DrawText` commands so text always
+/// paints over tiles.
 fn parse_status_bar_commands() -> Vec<RenderCommand> {
     let value: serde_json::Value = match serde_json::from_str(STATUS_BAR_JSON) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
     let mut commands = Vec::new();
+
+    // Frame / border tiles (absolute framebuffer coordinates).
     if let Some(images) = value.get("images").and_then(|v| v.as_array()) {
         commands.extend(images.iter().filter_map(parse_blit_entry));
     }
+
+    // Jill face portrait: 4×4 tile mosaic placed in the inventory area.
+    // Coordinates in `imagesInvenroy` are relative to the inventory area origin.
+    if let Some(images_inv) = value.get("imagesInvenroy").and_then(|v| v.as_array()) {
+        commands.extend(
+            images_inv
+                .iter()
+                .filter_map(|img| parse_blit_entry_offset(img, INVENTORY_AREA_X, INVENTORY_AREA_Y)),
+        );
+    }
+
+    // Control-area horizontal separator line (separates controls from key bindings).
+    // Rendered before the text commands so the line sits behind any overlapping glyphs.
+    if let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(CONTROL_AREA_JSON)
+        && let Some(lines) = ctrl.get("lines").and_then(|v| v.as_array())
+    {
+        for line in lines {
+            let Some(y_rel) = line
+                .get("y")
+                .and_then(|v| v.as_i64())
+                .and_then(|v| i32::try_from(v).ok())
+            else {
+                continue;
+            };
+            let color = line
+                .get("color")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u8::try_from(v).ok())
+                .unwrap_or(0);
+            commands.push(RenderCommand::FillRect {
+                x: CONTROL_AREA_X,
+                y: CONTROL_AREA_Y + y_rel,
+                width: CONTROL_AREA_W,
+                height: 1,
+                color,
+            });
+        }
+    }
+
+    // status_bar_vga.json text labels ("CONTROLS", "INVENTORY") - absolute coords.
     if let Some(text) = value.get("text").and_then(|v| v.as_array()) {
         commands.extend(
             text.iter()
@@ -50,6 +108,29 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
                 .filter_map(|entry| parse_text_entry(entry, FontSize::Big)),
         );
     }
+
+    // control_area.json labels - coordinates are relative to the control area origin.
+    if let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(CONTROL_AREA_JSON) {
+        // SHIFT / ALT / F1 key labels.
+        if let Some(special) = ctrl.get("specialKey").and_then(|v| v.as_array()) {
+            commands.extend(special.iter().filter_map(|entry| {
+                parse_text_entry_offset(entry, FontSize::Small, CONTROL_AREA_X, CONTROL_AREA_Y)
+            }));
+        }
+        // Movement hint and key-binding description text (small font).
+        if let Some(text) = ctrl.get("text").and_then(|v| v.as_array()) {
+            commands.extend(text.iter().filter_map(|entry| {
+                parse_text_entry_offset(entry, FontSize::Small, CONTROL_AREA_X, CONTROL_AREA_Y)
+            }));
+        }
+        // N / Q / S / R / T single-character bindings (big font).
+        if let Some(big) = ctrl.get("bigText").and_then(|v| v.as_array()) {
+            commands.extend(big.iter().filter_map(|entry| {
+                parse_text_entry_offset(entry, FontSize::Big, CONTROL_AREA_X, CONTROL_AREA_Y)
+            }));
+        }
+    }
+
     commands
 }
 
@@ -68,6 +149,49 @@ fn parse_blit_entry(img: &serde_json::Value) -> Option<RenderCommand> {
         y,
         opaque: false,
         clip: None,
+    })
+}
+
+/// Parses one blit entry with a framebuffer coordinate offset applied to `x` and `y`.
+///
+/// Used for arrays whose coordinates are relative to a sub-area origin (e.g.
+/// `imagesInvenroy` entries are relative to the inventory area top-left).
+fn parse_blit_entry_offset(img: &serde_json::Value, dx: i32, dy: i32) -> Option<RenderCommand> {
+    let tileset = u8::try_from(img.get("tileset")?.as_u64()?).ok()?;
+    let tile = u16::try_from(img.get("tile")?.as_u64()?).ok()?;
+    let x = i32::try_from(img.get("x")?.as_i64()?).ok()? + dx;
+    let y = i32::try_from(img.get("y")?.as_i64()?).ok()? + dy;
+    Some(RenderCommand::Blit {
+        tileset,
+        tile,
+        x,
+        y,
+        opaque: false,
+        clip: None,
+    })
+}
+
+/// Parses one text entry with a framebuffer coordinate offset applied to `x` and `y`.
+///
+/// Used for arrays whose coordinates are relative to a sub-area origin (e.g.
+/// `inventory_conf.json` text labels are relative to the inventory area top-left,
+/// and `control_area.json` labels are relative to the control area top-left).
+fn parse_text_entry_offset(
+    entry: &serde_json::Value,
+    font: FontSize,
+    dx: i32,
+    dy: i32,
+) -> Option<RenderCommand> {
+    let text = entry.get("text")?.as_str()?.to_string();
+    let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
+    let x = i32::try_from(entry.get("x")?.as_i64()?).ok()? + dx;
+    let y = i32::try_from(entry.get("y")?.as_i64()?).ok()? + dy;
+    Some(RenderCommand::DrawText {
+        text,
+        x,
+        y,
+        color_index,
+        font,
     })
 }
 
@@ -134,38 +258,47 @@ mod tests {
     use openjill_core::RenderCommand;
     use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
 
-    /// Unit under test: `status_bar_commands` Blit count against the JSON `images` array.
+    /// Unit under test: `status_bar_commands` Blit count against the JSON `images` and
+    /// `imagesInvenroy` arrays.
     ///
-    /// Preconditions: `STATUS_BAR_JSON` is the embedded `status_bar_vga.json` with a valid
-    /// top-level `images` array.
+    /// Preconditions: `STATUS_BAR_JSON` is the embedded `status_bar_vga.json` with valid
+    /// top-level `images` and `imagesInvenroy` arrays.
     ///
     /// Invariants asserted: the number of `Blit` commands returned equals the number of entries
-    /// in the JSON `images` array.
+    /// in both arrays combined (`images` frame tiles + `imagesInvenroy` Jill portrait tiles).
     #[test]
     fn status_bar_commands_blit_count_matches_json_images() {
         let commands = status_bar_commands();
         let json: serde_json::Value =
             serde_json::from_str(STATUS_BAR_JSON).expect("STATUS_BAR_JSON must be valid JSON");
-        let expected = json["images"]
+        let images_len = json["images"]
             .as_array()
             .expect("images must be an array")
             .len();
+        let images_inv_len = json["imagesInvenroy"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let expected = images_len + images_inv_len;
         let blit_count = commands
             .iter()
             .filter(|cmd| matches!(cmd, RenderCommand::Blit { .. }))
             .count();
         assert_eq!(
             blit_count, expected,
-            "Blit count must match images array length"
+            "Blit count must match images + imagesInvenroy array lengths"
         );
     }
 
-    /// Unit under test: `status_bar_commands` `DrawText` count against `text` + `bigtext`.
+    /// Unit under test: `status_bar_commands` `DrawText` count includes `text` + `bigtext` at
+    /// minimum, plus additional labels from `inventory_conf.json` and `control_area.json`.
     ///
     /// Preconditions: `STATUS_BAR_JSON` is the embedded `status_bar_vga.json` with `text` and
     /// `bigtext` arrays at the top level.
     ///
-    /// Invariants asserted: every entry in both arrays produces one `DrawText` command.
+    /// Invariants asserted: the total `DrawText` count is at least `text_len + bigtext_len`
+    /// (the status-bar labels from `status_bar_vga.json`). Extra commands from the inventory
+    /// and control-area JSON files are allowed.
     #[test]
     fn status_bar_commands_drawtext_count_matches_text_arrays() {
         let commands = status_bar_commands();
@@ -183,24 +316,26 @@ mod tests {
             .iter()
             .filter(|cmd| matches!(cmd, RenderCommand::DrawText { .. }))
             .count();
-        assert_eq!(
-            drawtext_count,
-            text_len + bigtext_len,
-            "DrawText count must equal text + bigtext lengths"
+        assert!(
+            drawtext_count >= text_len + bigtext_len,
+            "DrawText count ({drawtext_count}) must be at least text + bigtext lengths ({min})",
+            min = text_len + bigtext_len,
         );
     }
 
-    /// Unit under test: `status_bar_commands` ordering and contents — blits first, then `text`
-    /// entries, then `bigtext` entries, each preserving JSON array order with verbatim
-    /// `(text, x, y, color)` values.
+    /// Unit under test: `status_bar_commands` ordering — all blits before all `DrawText`
+    /// commands, and the first `DrawText` commands are the `text` then `bigtext` entries from
+    /// `status_bar_vga.json` in JSON order.
     ///
     /// Preconditions: `STATUS_BAR_JSON` has at least one entry in `images`, `text`, and
     /// `bigtext`.
     ///
-    /// Invariants asserted: every `Blit` command appears before every `DrawText` command; the
-    /// emitted `DrawText` sequence is exactly the concatenation `text ++ bigtext` from the
-    /// JSON, both in length and in per-entry `(text, x, y, color)`. Deriving the expectation
-    /// from the JSON keeps the test stable if `status_bar_vga.json` gains additional labels.
+    /// Invariants asserted:
+    /// - Every `Blit` command appears before every `DrawText` command.
+    /// - The first `text_len + bigtext_len` `DrawText` commands match the concatenation
+    ///   `text ++ bigtext` from `status_bar_vga.json` in `(text, x, y, color)` order.
+    ///   Additional `DrawText` commands from `inventory_conf.json` / `control_area.json`
+    ///   are allowed to follow.
     #[test]
     fn status_bar_commands_emit_blits_then_text_then_bigtext() {
         let commands = status_bar_commands();
@@ -259,9 +394,16 @@ mod tests {
             })
             .collect();
 
+        assert!(
+            actual.len() >= expected.len(),
+            "fewer DrawText commands ({}) than expected status-bar labels ({})",
+            actual.len(),
+            expected.len(),
+        );
         assert_eq!(
-            actual, expected,
-            "DrawText sequence must equal JSON `text` followed by `bigtext`, in order"
+            &actual[..expected.len()],
+            expected.as_slice(),
+            "first DrawText commands must be JSON `text` followed by `bigtext`, in order"
         );
     }
 
