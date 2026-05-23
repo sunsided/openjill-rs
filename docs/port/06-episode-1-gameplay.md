@@ -641,3 +641,13 @@ Implement in order. Each issue must reference this subplan file.
   covers.
 - Add doc comments for every new module, type, field, function, and method per
   `AGENTS.md`.
+
+## Episode 1 parity gaps
+
+_Populated during the issue #64 playthrough. Run the game with `OPENJILL_DATA_DIR` set to
+a valid episode 1 DOS data directory and record any behavioral differences versus the
+original OpenJill Java reference below._
+
+| Level | Observation | Java reference behavior | Rust behavior | Severity |
+|-------|-------------|------------------------|---------------|----------|
+| - | _(none observed yet - playthrough pending)_ | - | - | - |
