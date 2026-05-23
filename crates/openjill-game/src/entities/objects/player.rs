@@ -935,9 +935,10 @@ impl PlayerEntity {
 ///
 /// Mirrors `UtilityObjectEntity.checkIfFloorUnderObject` from the Java
 /// reference: probe one pixel below the bottom edge and check every cell
-/// covered by the bounding box footprint at that row.  `is_stair` cells also
-/// count as floor.  Direction-aware cells (`FROOF` / `FFLOOR`) consult
-/// [`openjill_core::BackgroundEntity::blocks_vertical`] with a positive
+/// covered by the bounding box footprint at that row.  Only cells that report
+/// `blocks_vertical(1)` are treated as floor; passthrough cells never count
+/// even when `is_stair` is set.  Direction-aware cells (`FROOF` / `FFLOOR`)
+/// consult [`openjill_core::BackgroundEntity::blocks_vertical`] with a positive
 /// `player_yd` so a falling player lands on `FROOF` but still drops through
 /// `FFLOOR`.
 fn has_floor_below(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
@@ -956,7 +957,7 @@ fn has_floor_below(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> boo
     let cell_x_right = (cell_x_right as usize).min(grid.width.saturating_sub(1));
     for cx in cell_x_left..=cell_x_right {
         if let Some(cell) = grid.get(cx, cell_y)
-            && (cell.blocks_vertical(1) || cell.is_stair())
+            && cell.blocks_vertical(1)
         {
             return true;
         }
@@ -983,13 +984,10 @@ fn is_on_climbable(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> boo
 /// Returns `true` when the rectangle `[x, x+w) x [y, y+h)` overlaps any cell
 /// that is not passable for a vertical step in the direction of `player_yd`.
 ///
-/// `is_stair` cells count as solid for the bounding-box collision test so the
-/// player cannot tunnel through a step diagonally, mirroring the Java
-/// reference's `UtilityObjectEntity.moveObject*` helpers which treat stair
-/// cells as blocking surfaces (`has_floor_below` applies the same rule).
 /// Direction-aware cells (`FROOF` / `FFLOOR`) consult
 /// [`openjill_core::BackgroundEntity::blocks_vertical`] so a fake floor blocks
-/// only upward motion and a fake roof blocks only downward motion.
+/// only upward motion and a fake roof blocks only downward motion. Passthrough
+/// cells never collide regardless of `is_stair`.
 fn collides_vertical(
     grid: &BackgroundGrid,
     x: i32,
@@ -1015,7 +1013,7 @@ fn collides_vertical(
                 continue;
             }
             if let Some(cell) = grid.get(cx, cy)
-                && (cell.blocks_vertical(player_yd) || cell.is_stair())
+                && cell.blocks_vertical(player_yd)
             {
                 return true;
             }
@@ -1027,9 +1025,8 @@ fn collides_vertical(
 /// Returns `true` when the rectangle `[x, x+w) x [y, y+h)` overlaps any cell
 /// that blocks horizontal motion.
 ///
-/// Direction-aware cells fall back to [`openjill_core::BackgroundEntity::is_passthrough`]
-/// here, because the one-way `FFLOOR` / `FROOF` cells are open along the
-/// horizontal axis; only the vertical step probes consult `blocks_vertical`.
+/// Passthrough cells (including passthrough stair tiles like `BLSHADE*`) never
+/// block horizontal motion.
 fn collides_horizontal(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
     let cx_l = x.div_euclid(BLOCK_SIZE_I);
     let cx_r = (x + w - 1).div_euclid(BLOCK_SIZE_I);
@@ -1048,7 +1045,7 @@ fn collides_horizontal(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) ->
                 continue;
             }
             if let Some(cell) = grid.get(cx, cy)
-                && (!cell.is_passthrough() || cell.is_stair())
+                && !cell.is_passthrough()
             {
                 return true;
             }
