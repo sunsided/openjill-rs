@@ -32,7 +32,7 @@ use openjill_data::dma::DmaFile;
 use openjill_data::jn::{JnFile, JnObject, JnReadError};
 
 use crate::asset_cache::AssetCache;
-use crate::entities::objects::BulletEntity;
+use crate::entities::objects::{BeesEntity, BulletEntity};
 use crate::entities::{make_background_entity, make_object_entity};
 use crate::screens::map_screen::render_map_background;
 use crate::status_bar::GAME_AREA_CLIP;
@@ -348,12 +348,13 @@ impl MessageHandler for PlayerMoveHandler {
     }
 }
 
-/// Shared queue of spawn parameters for bullets created during one tick.
+/// Shared queue of spawn parameters for objects created during one tick.
 ///
-/// Populated by [`CreateObjectHandler`] and drained each tick by
-/// [`LevelScreen::spawn_bullets`] which instantiates a [`BulletEntity`] for
-/// each entry and appends it to the active object list.
-type CreateObjectInbox = Arc<Mutex<Vec<(i32, i32, i32, i32)>>>;
+/// Each entry is `(object_type, x, y, xd, yd)`.  Populated by
+/// [`CreateObjectHandler`] and drained each tick by
+/// [`LevelScreen::spawn_objects`] which routes to the correct factory
+/// constructor based on `object_type`.
+type CreateObjectInbox = Arc<Mutex<Vec<(u8, i32, i32, i32, i32)>>>;
 
 /// Dispatcher handler that records arriving `CreateObject` spawn requests.
 struct CreateObjectHandler {
@@ -366,10 +367,16 @@ impl MessageHandler for CreateObjectHandler {
     /// them to the inbox.  `None` payloads (e.g. die burst) are ignored until
     /// that spawn path receives a structured payload.
     fn handle(&mut self, _msg_type: MessageType, payload: &MessagePayload) {
-        if let MessagePayload::SpawnAt { x, y, xd, yd } = payload
+        if let MessagePayload::SpawnAt {
+            object_type,
+            x,
+            y,
+            xd,
+            yd,
+        } = payload
             && let Ok(mut queue) = self.inbox.lock()
         {
-            queue.push((*x, *y, *xd, *yd));
+            queue.push((*object_type, *x, *y, *xd, *yd));
         }
     }
 }
@@ -472,7 +479,7 @@ pub struct LevelScreen {
     /// Shared queue of `(x, y, xd, yd)` spawn parameters for bullets
     /// requested via `CreateObject` during the current tick.
     ///
-    /// Drained each tick by [`Self::spawn_bullets`] which appends a new
+    /// Drained each tick by [`Self::spawn_objects`] which appends a new
     /// [`BulletEntity`] to the active object list for each entry.
     create_object_inbox: CreateObjectInbox,
 }
@@ -862,30 +869,38 @@ impl LevelScreen {
         }
     }
 
-    /// Instantiates bullets requested via `CreateObject` during this tick.
+    /// Instantiates objects requested via `CreateObject` during this tick.
     ///
-    /// Drains the `create_object_inbox` and appends a [`BulletEntity`] built
-    /// from each `(x, y, xd, yd)` tuple to the active object list.  New
-    /// bullets join the scene on the same tick they were requested, meaning
-    /// they participate in the draw pass but not in the touch-detection pass
-    /// (which has already run by the time `spawn_bullets` is called).
-    fn spawn_bullets(&mut self) {
-        let spawns: Vec<(i32, i32, i32, i32)> = {
+    /// Drains the `create_object_inbox` and routes each `(object_type, x, y,
+    /// xd, yd)` entry to the appropriate factory constructor.  New objects
+    /// join the scene on the same tick they were requested, meaning they
+    /// participate in the draw pass but not in the touch-detection pass (which
+    /// has already run by the time `spawn_objects` is called).
+    ///
+    /// Supported `object_type` values:
+    /// - `36` ([`BulletEntity`]): player-fired projectile.
+    /// - `46` ([`BeesEntity`]): bee swarm spawned by a hive.
+    fn spawn_objects(&mut self) {
+        let spawns: Vec<(u8, i32, i32, i32, i32)> = {
             let mut queue = self
                 .create_object_inbox
                 .lock()
                 .expect("create object inbox mutex poisoned");
             std::mem::take(&mut *queue)
         };
-        for (x, y, xd, yd) in spawns {
-            self.objects.push(Box::new(BulletEntity::with_velocity(
-                x,
-                y,
-                BLOCK_SIZE_I,
-                BLOCK_SIZE_I,
-                xd,
-                yd,
-            )));
+        for (object_type, x, y, xd, yd) in spawns {
+            let entity: Box<dyn ObjectEntity> = match object_type {
+                46 => Box::new(BeesEntity::spawn_at(x, y)),
+                _ => Box::new(BulletEntity::with_velocity(
+                    x,
+                    y,
+                    BLOCK_SIZE_I,
+                    BLOCK_SIZE_I,
+                    xd,
+                    yd,
+                )),
+            };
+            self.objects.push(entity);
         }
     }
 
@@ -1242,7 +1257,7 @@ impl ScreenHandler for LevelScreen {
         // 4. Route trigger messages to all objects (after the touch pass so
         //    switches touched this tick activate on the same tick).
         // 5. Drop entities that flagged themselves for removal.
-        // 6. Spawn bullets requested via CreateObject this tick.
+        // 6. Spawn objects requested via CreateObject this tick.
         // 7. Snap the viewport so the post-update player stays inside the
         //    96/48 px update border, clamped to the map bounds.
         // 8. Build the base frame using the freshly-snapped viewport.
@@ -1256,7 +1271,7 @@ impl ScreenHandler for LevelScreen {
         self.dispatch_player_touches(state);
         self.route_triggers();
         self.reap_removed_objects();
-        self.spawn_bullets();
+        self.spawn_objects();
         self.update_viewport();
 
         let mut commands = self.render_base_frame();
