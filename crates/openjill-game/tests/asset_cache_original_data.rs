@@ -5,6 +5,7 @@
 
 use assert2::check;
 use openjill_data::DataDirectory;
+use openjill_data::episode;
 use openjill_game::asset_cache::AssetCache;
 use std::path::{Path, PathBuf};
 
@@ -53,7 +54,7 @@ fn loads_all_assets_from_original_episode_1_data() {
     );
 
     let directory = DataDirectory::new(&data_dir);
-    let cache = AssetCache::load(&directory)
+    let cache = AssetCache::load(&directory, &episode::JILL1)
         .unwrap_or_else(|err| panic!("AssetCache::load should succeed with real data: {err}"));
 
     check!(

@@ -7,6 +7,7 @@ use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{ActiveInput, InputCommand, ScreenHandler, ScreenTransition};
 use openjill_data::DataDirectory;
+use openjill_data::episode;
 use openjill_game::asset_cache::AssetCache;
 use openjill_game::screens::start_menu::StartMenuScreen;
 use std::path::{Path, PathBuf};
@@ -83,7 +84,7 @@ fn start_menu_constructs_and_renders_with_original_data() {
     };
 
     let directory = DataDirectory::new(&data_dir);
-    let cache = AssetCache::load(&directory)
+    let cache = AssetCache::load(&directory, &episode::JILL1)
         .unwrap_or_else(|err| panic!("AssetCache::load should succeed with real data: {err}"));
 
     let mut screen = StartMenuScreen::new(

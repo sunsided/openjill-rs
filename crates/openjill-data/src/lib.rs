@@ -3,16 +3,24 @@
 
 #![forbid(unsafe_code)]
 
-/// Parser for `JILL1.CFG` high scores, save slots, and setup data.
+/// Parser for the episode-specific configuration (high scores, save slots,
+/// setup data) file - `JILL1.CFG`, `JILL2.CFG`, or `JILL3.CFG`.
 pub mod cfg;
-/// Parser for `JILL.DMA` tile-metadata files.
+/// Parser for `JILL.DMA` tile-metadata files (shared across episodes).
 pub mod dma;
-/// Parser for `*.JN1` level, map, save, and string-stack data.
+/// Episode descriptor used to address per-episode file names without
+/// hardcoding `JILL1`-specific literals.
+pub mod episode;
+/// Parser for `*.JN<episode>` level, map, save, and string-stack data.
 pub mod jn;
-/// Parser for `JILL1.SHA` shape/tile/font/picture data.
+/// Parser for the episode-specific shape/tile/font/picture file -
+/// `JILL1.SHA`, `JILL2.SHA`, or `JILL3.SHA`.
 pub mod sha;
-/// Parser for the text-entry portion of `JILL1.VCL`.
+/// Parser for the text-entry portion of the episode-specific VCL file -
+/// `JILL1.VCL`, `JILL2.VCL`, or `JILL3.VCL`.
 pub mod vcl;
+
+pub use episode::Episode;
 
 use std::error::Error;
 use std::ffi::OsStr;

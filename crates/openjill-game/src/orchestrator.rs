@@ -5,6 +5,7 @@ use openjill_core::{
     ActiveInput, MessageDispatcher, RenderCommand, RuntimeState, ScreenHandler, ScreenTransition,
 };
 use openjill_data::dma::DmaFile;
+use openjill_data::episode::Episode;
 use openjill_data::jn::JnReadError;
 use openjill_data::{DataDirectory, DataDirectoryError};
 use thiserror::Error;
@@ -27,14 +28,20 @@ fn make_start_menu(cache: &AssetCache) -> StartMenuScreen {
     )
 }
 
-/// Loads `MAP.JN1` from `data_dir` and constructs a [`MapScreen`].
+/// Loads the active episode's world-map JN file ([`Episode::map_jn`]) from
+/// `data_dir` and constructs a [`MapScreen`].
 ///
 /// Reads the file bytes through the case-insensitive resolver so the screen
 /// keeps both the parsed JN structure for rendering and the raw bytes for
 /// [`openjill_core::ScreenHandler::map_jn_bytes`] save/restore round-trips.
-fn load_map_screen(data_dir: &DataDirectory, dma: DmaFile) -> Result<MapScreen, MapLoadError> {
+fn load_map_screen(
+    data_dir: &DataDirectory,
+    episode: &Episode,
+    dma: DmaFile,
+) -> Result<MapScreen, MapLoadError> {
+    let map_file = episode.map_jn();
     let path = data_dir
-        .resolve_path_case_insensitive("MAP.JN1")
+        .resolve_path_case_insensitive(&map_file)
         .map_err(MapLoadError::Resolve)?;
     let bytes = std::fs::read(&path).map_err(MapLoadError::Read)?;
     MapScreen::from_bytes(bytes, dma).map_err(MapLoadError::Parse)
@@ -79,6 +86,9 @@ pub struct GameOrchestrator {
     /// and `LevelScreen`, which must load their respective JN files from disk.
     #[allow(dead_code)]
     data_dir: DataDirectory,
+    /// Active episode descriptor used to address per-episode JN filenames
+    /// during screen transitions.
+    episode: &'static Episode,
     /// Serialized world-map JN bytes preserved for save and restore operations.
     ///
     /// Populated from the outgoing handler's [`ScreenHandler::map_jn_bytes`]
@@ -123,18 +133,23 @@ pub struct GameOrchestrator {
 }
 
 impl GameOrchestrator {
-    /// Constructs the orchestrator, loads assets, and boots [`StartMenuScreen`].
+    /// Constructs the orchestrator, loads assets, and boots [`StartMenuScreen`]
+    /// for `episode`.
     ///
     /// Returns [`OrchestratorError`] if any required asset file is missing or
     /// fails to parse.
-    pub fn new(data_dir: DataDirectory) -> Result<Self, OrchestratorError> {
-        let cache = AssetCache::load(&data_dir)?;
+    pub fn new(
+        data_dir: DataDirectory,
+        episode: &'static Episode,
+    ) -> Result<Self, OrchestratorError> {
+        let cache = AssetCache::load(&data_dir, episode)?;
         let handler: Box<dyn ScreenHandler> = Box::new(make_start_menu(&cache));
         Ok(Self {
             cache,
             state: RuntimeState::new(),
             handler,
             data_dir,
+            episode,
             map_jn_bytes: None,
             level_jn_bytes: None,
             level_jn_file: None,
@@ -257,12 +272,13 @@ impl GameOrchestrator {
             }
             ScreenTransition::Map => {
                 self.dispatcher.clear();
+                let map_file = self.episode.map_jn();
                 // Prefer the in-memory map JN bytes captured from a previous
                 // visit; only reach to disk on the first transition to Map.
                 let map_result = match self.map_jn_bytes.clone() {
                     Some(bytes) => MapScreen::from_bytes(bytes, self.cache.dma.clone())
                         .map_err(MapLoadError::Parse),
-                    None => load_map_screen(&self.data_dir, self.cache.dma.clone()),
+                    None => load_map_screen(&self.data_dir, self.episode, self.cache.dma.clone()),
                 };
                 match map_result {
                     Ok(screen) => {
@@ -270,7 +286,7 @@ impl GameOrchestrator {
                     }
                     Err(err) => {
                         eprintln!(
-                            "openjill-game: failed to load MAP.JN1 ({err}); falling back to start menu"
+                            "openjill-game: failed to load {map_file} ({err}); falling back to start menu"
                         );
                         self.handler = Box::new(make_start_menu(&self.cache));
                     }
@@ -360,17 +376,21 @@ pub enum OrchestratorError {
     AssetLoad(#[from] AssetError),
 }
 
-/// Error returned when loading `MAP.JN1` during a screen transition fails.
+/// Error returned when loading the episode's world-map JN file during a
+/// screen transition fails.
+///
+/// The episode-specific file name is supplied by the call site (which always
+/// has [`Episode::map_jn`] in scope) and is not duplicated into each variant.
 #[derive(Debug, Error)]
 enum MapLoadError {
-    /// Case-insensitive lookup of `MAP.JN1` failed.
-    #[error("failed to resolve MAP.JN1: {0}")]
+    /// Case-insensitive lookup of the map JN file failed.
+    #[error("failed to resolve map JN file: {0}")]
     Resolve(#[source] DataDirectoryError),
-    /// Reading the resolved `MAP.JN1` bytes from disk failed.
-    #[error("failed to read MAP.JN1: {0}")]
+    /// Reading the resolved map JN bytes from disk failed.
+    #[error("failed to read map JN file: {0}")]
     Read(#[source] std::io::Error),
-    /// Parsing the `MAP.JN1` bytes into a `JnFile` failed.
-    #[error("failed to parse MAP.JN1: {0}")]
+    /// Parsing the map JN bytes into a `JnFile` failed.
+    #[error("failed to parse map JN file: {0}")]
     Parse(#[source] JnReadError),
 }
 
@@ -397,6 +417,7 @@ mod tests {
     use openjill_data::DataDirectory;
     use openjill_data::cfg::CfgFile;
     use openjill_data::dma::DmaFile;
+    use openjill_data::episode;
     use openjill_data::jn::JnFile;
     use openjill_data::sha::ShaFile;
     use openjill_data::vcl::VclFile;
@@ -432,8 +453,8 @@ mod tests {
         let sha =
             ShaFile::from_bytes(vec![0u8; SHA_HEADER_BYTES]).expect("zero SHA header should parse");
         let vcl = VclFile::from_bytes(vec![0u8; VCL_MIN_BYTES]).expect("zero VCL should parse");
-        let cfg =
-            CfgFile::from_bytes(vec![0u8; CFG_MIN_BYTES], "JN1").expect("zero CFG should parse");
+        let cfg = CfgFile::from_bytes(vec![0u8; CFG_MIN_BYTES], episode::JILL1.jn_ext)
+            .expect("zero CFG should parse");
         let intro_jn = JnFile::from_bytes(vec![0u8; JN_MIN_BYTES]).expect("zero JN should parse");
         AssetCache {
             dma,
@@ -454,6 +475,7 @@ mod tests {
             state: RuntimeState::new(),
             handler,
             data_dir: DataDirectory::new(std::env::temp_dir()),
+            episode: &episode::JILL1,
             map_jn_bytes: None,
             level_jn_bytes: None,
             level_jn_file: None,

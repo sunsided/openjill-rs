@@ -6,6 +6,7 @@
 use assert2::check;
 use openjill_core::RenderCommand;
 use openjill_data::DataDirectory;
+use openjill_data::episode;
 use openjill_render::ShaFontTiles;
 use std::path::{Path, PathBuf};
 
@@ -51,7 +52,7 @@ fn sha_tileset_3_exists_in_original_data() {
     };
 
     let directory = DataDirectory::new(&data_dir);
-    let cache = openjill_game::asset_cache::AssetCache::load(&directory)
+    let cache = openjill_game::asset_cache::AssetCache::load(&directory, &episode::JILL1)
         .unwrap_or_else(|err| panic!("AssetCache::load should succeed with real data: {err}"));
 
     check!(
@@ -109,7 +110,7 @@ fn status_bar_text_labels_resolve_against_original_font() {
     };
 
     let directory = DataDirectory::new(&data_dir);
-    let cache = openjill_game::asset_cache::AssetCache::load(&directory)
+    let cache = openjill_game::asset_cache::AssetCache::load(&directory, &episode::JILL1)
         .unwrap_or_else(|err| panic!("AssetCache::load should succeed with real data: {err}"));
 
     let font_tileset = cache

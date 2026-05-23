@@ -41,9 +41,12 @@ const LEVEL_MESSAGEBOX_JSON: &str =
     include_str!("../../../../OpenJill/src/main/resources/level_messagebox_vga.json");
 
 /// Save prefix for the episode 1 messages table inside
-/// [`LEVEL_MESSAGEBOX_JSON`]; the JSON also carries `JN2` and `JN3` entries that
-/// are not yet exercised.
-const EPISODE_SAVE_PREFIX: &str = "JN1";
+/// [`LEVEL_MESSAGEBOX_JSON`]; the JSON also carries `JN2` and `JN3` entries
+/// that are not yet exercised by the runtime.
+///
+/// Sourced from [`openjill_data::episode::JILL1`] so the episode identity is
+/// expressed through the canonical descriptor rather than a bare literal.
+const EPISODE_SAVE_PREFIX: &str = openjill_data::episode::JILL1.jn_ext;
 
 /// Sky / game-area background color for episode 1 levels, as a VGA palette
 /// index.
