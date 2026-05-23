@@ -238,7 +238,7 @@ mod tests {
     /// background cell.
     ///
     /// Preconditions: bullet at `(16, 16)` moving right; solid cell at grid
-    /// cell `(2, 1)` which the bullet enters after moving.
+    /// cell `(1, 1)` which the bullet enters after moving.
     ///
     /// Invariants asserted: after one tick the bullet reports `should_remove`.
     #[test]

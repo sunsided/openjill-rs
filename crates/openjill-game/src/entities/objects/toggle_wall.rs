@@ -12,6 +12,20 @@
 //! drains any `Trigger` messages dispatched during that tick and calls
 //! [`ObjectEntity::receive_trigger`] on every object.  This entity overrides
 //! that hook and toggles when the link identifier matches.
+//!
+//! # Collision note
+//!
+//! In the Java reference, `ToggleWallManager` is part of the
+//! `open-jill-object-background` package and acts as both an object entity
+//! and a background tile.  The Rust port models it as a pure object entity,
+//! so the `active` flag is tracked correctly but currently has no effect on
+//! player movement collision.  Player movement checks the `BackgroundGrid`
+//! only; toggle wall bboxes are not yet consulted.  Full collision integration
+//! requires extending `PlayerEntity::update` (or the movement sub-routines) to
+//! also test blocking-object bboxes exposed via a future `is_solid_blocker()`
+//! trait hook.  Until that follow-up lands, the toggle state is observable
+//! through [`ToggleWallEntity::is_active`] but does not prevent the player
+//! from passing through the wall.
 
 use openjill_core::layout::BLOCK_SIZE_I;
 use openjill_core::{

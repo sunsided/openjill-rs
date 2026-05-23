@@ -184,12 +184,23 @@ pub trait ObjectEntity: Send {
     /// object.
     ///
     /// Called by the level loop after each tick when a [`crate::message::MessageType::Trigger`]
-    /// message was dispatched during that tick (typically by a
-    /// [`crate::message::MessageType::Object`] or touch-triggered switch).
+    /// message was dispatched during that tick (typically by a touch-triggered
+    /// switch via [`crate::message::MessageType::Trigger`]).
     /// Objects that respond to triggers (e.g. `ToggleWallEntity`) compare
     /// `link_id` against their own stored link identifier and act accordingly;
     /// all other objects use this no-op default.
     fn receive_trigger(&mut self, _link_id: i32) {}
+
+    /// Applies a platform-driven position delta to this object.
+    ///
+    /// Called by the level loop after the update pass when a
+    /// [`crate::message::MessageType::PlayerMove`] message with a
+    /// [`crate::message::MessagePayload::Move`] payload was dispatched by a
+    /// lift entity.  The player entity overrides this to translate its
+    /// bounding box without collision checking, matching the Java reference's
+    /// `AbstractPlayerManager.msgPlayerMove` behavior; all other objects use
+    /// this no-op default.
+    fn apply_platform_move(&mut self, _dx: i32, _dy: i32) {}
 }
 
 /// One background cell handler.

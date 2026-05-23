@@ -25,6 +25,11 @@ use openjill_core::{
 /// Mirrors `PlayerStandConst.FIRE_COOLDOWN` from the Java reference: the
 /// player can fire once every 8 ticks at the standard rate.
 const FIRE_COOLDOWN_TICKS: i32 = 8;
+
+/// Horizontal speed of a player-fired bullet in pixels per tick.
+///
+/// Matches the speed used by `BulletManager` in the Java reference.
+const BULLET_SPEED_PX: i32 = 8;
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
@@ -344,8 +349,24 @@ impl ObjectEntity for PlayerEntity {
 
         // Fire: dispatch a CreateObject request when the throw/fire key is
         // pressed, the player state allows it, and the cooldown is clear.
+        // `info1` holds the last facing direction (-1 left, 0/+1 right); a
+        // zero value is treated as right-facing for the bullet origin.
         if input.contains(&InputCommand::ThrowItem) && self.can_fire() && self.fire_cooldown == 0 {
-            dispatcher.send(MessageType::CreateObject, MessagePayload::None);
+            let dir = if self.info1 < 0 { -1 } else { 1 };
+            let bullet_x = if dir > 0 {
+                self.x + self.w
+            } else {
+                self.x - BLOCK_SIZE_I
+            };
+            dispatcher.send(
+                MessageType::CreateObject,
+                MessagePayload::SpawnAt {
+                    x: bullet_x,
+                    y: self.y,
+                    xd: dir * BULLET_SPEED_PX,
+                    yd: 0,
+                },
+            );
             self.fire_cooldown = FIRE_COOLDOWN_TICKS;
         }
 
@@ -423,6 +444,12 @@ impl ObjectEntity for PlayerEntity {
     /// Returns `true`: this entity represents the controllable player.
     fn is_player(&self) -> bool {
         true
+    }
+
+    /// Applies a platform-driven position delta without collision checking.
+    fn apply_platform_move(&mut self, dx: i32, dy: i32) {
+        self.x += dx;
+        self.y += dy;
     }
 }
 
