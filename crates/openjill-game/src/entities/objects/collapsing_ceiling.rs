@@ -12,8 +12,8 @@
 
 use openjill_core::layout::BLOCK_SIZE_I;
 use openjill_core::{
-    ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
-    ObjectEntity, Rect, RenderCommand, RuntimeState,
+    ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, ObjectEntity, Rect, RenderCommand,
+    RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
@@ -29,6 +29,9 @@ pub struct CollapsingCeilingEntity {
     w: i32,
     /// Bounding box height in pixels.
     h: i32,
+    /// Pending player-kill classification armed in [`Self::on_touch`] and
+    /// drained by the level loop via [`ObjectEntity::take_player_kill`].
+    pending_kill: Option<DeathKind>,
 }
 
 impl CollapsingCeilingEntity {
@@ -41,6 +44,7 @@ impl CollapsingCeilingEntity {
             y: i32::from(item.y()),
             w,
             h,
+            pending_kill: None,
         }
     }
 }
@@ -63,9 +67,12 @@ impl ObjectEntity for CollapsingCeilingEntity {
         None
     }
 
-    /// Kills the player on touch by dispatching [`MessageType::DieRestartLevel`].
-    fn on_touch(&mut self, _state: &RuntimeState, dispatcher: &mut MessageDispatcher) {
-        dispatcher.send(MessageType::DieRestartLevel, MessagePayload::None);
+    /// Arms a [`DeathKind::OtherBackground`] kill that the level loop drains
+    /// via [`Self::take_player_kill`] and applies to the player.  No direct
+    /// `DieRestartLevel` dispatch: the player's `Die` sub-state fires it once
+    /// the die animation finishes.
+    fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {
+        self.pending_kill = Some(DeathKind::OtherBackground);
     }
 
     /// Collapsing ceilings are indestructible; weapons leave them untouched.
@@ -74,5 +81,11 @@ impl ObjectEntity for CollapsingCeilingEntity {
     /// Returns the entity's bounding box for collision tests.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
+    }
+
+    /// Returns the pending kill classification (and clears it) so the level
+    /// loop can apply it to the player after the touch dispatch pass.
+    fn take_player_kill(&mut self) -> Option<DeathKind> {
+        self.pending_kill.take()
     }
 }

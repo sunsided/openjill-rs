@@ -188,14 +188,17 @@ mod tests {
     /// Unit under test: [`KillLavaBackground::on_player_touch`].
     ///
     /// Preconditions: a lava cell built from a zero-DMA `map_code` so the
-    /// inner cell is transparent; a dispatcher recording
-    /// [`MessageType::DieRestartLevel`]; a fresh player.
+    /// inner cell is transparent; a dispatcher subscribed to
+    /// [`MessageType::DieRestartLevel`] so the test can verify the cell
+    /// does **not** send it directly; a fresh player.
     ///
-    /// Invariants asserted: exactly one `DieRestartLevel` message is
-    /// dispatched and the player's recorded death classification is
-    /// [`DeathKind::OtherBackground`].
+    /// Invariants asserted: the player's recorded death classification is
+    /// [`DeathKind::OtherBackground`]; the cell does not dispatch
+    /// `DieRestartLevel` directly (the player's `Die` sub-state drives that
+    /// after the die animation completes, so the level transition overlay
+    /// waits for the death animation instead of starting on the touch frame).
     #[test]
-    fn kill_lava_on_player_touch_dispatches_die_with_other_background() {
+    fn kill_lava_on_player_touch_arms_other_background_kill() {
         let cache = AssetCache::synthetic();
         let mut cell = KillLavaBackground::for_map_code(0, &cache);
         let mut player = make_player_at(0, 0);
@@ -203,14 +206,9 @@ mod tests {
 
         cell.on_player_touch(&mut player, &mut dispatcher);
 
-        assert_eq!(
-            buffer.lock().unwrap().len(),
-            1,
-            "lava on_player_touch must dispatch exactly one DieRestartLevel"
-        );
-        assert_eq!(
-            buffer.lock().unwrap()[0],
-            (MessageType::DieRestartLevel, MessagePayload::None)
+        assert!(
+            buffer.lock().unwrap().is_empty(),
+            "lava on_player_touch must not dispatch DieRestartLevel itself"
         );
         assert_eq!(
             player.death_kind(),
@@ -221,10 +219,10 @@ mod tests {
 
     /// Unit under test: [`KillWaterBackground::on_player_touch`].
     ///
-    /// Invariants asserted: dispatches `DieRestartLevel` and classifies the
-    /// player's death as [`DeathKind::Water`].
+    /// Invariants asserted: classifies the player's death as
+    /// [`DeathKind::Water`] and does not dispatch `DieRestartLevel` itself.
     #[test]
-    fn kill_water_on_player_touch_dispatches_die_with_water() {
+    fn kill_water_on_player_touch_arms_water_kill() {
         let cache = AssetCache::synthetic();
         let mut cell = KillWaterBackground::for_map_code(0, &cache);
         let mut player = make_player_at(0, 0);
@@ -232,16 +230,16 @@ mod tests {
 
         cell.on_player_touch(&mut player, &mut dispatcher);
 
-        assert_eq!(buffer.lock().unwrap().len(), 1);
+        assert!(buffer.lock().unwrap().is_empty());
         assert_eq!(player.death_kind(), Some(DeathKind::Water));
     }
 
     /// Unit under test: [`SpikeBackground::on_player_touch`].
     ///
-    /// Invariants asserted: dispatches `DieRestartLevel`; player records the
-    /// `OtherBackground` death classification.
+    /// Invariants asserted: player records the `OtherBackground` death
+    /// classification; the cell does not dispatch `DieRestartLevel` itself.
     #[test]
-    fn spike_on_player_touch_dispatches_die() {
+    fn spike_on_player_touch_arms_other_background_kill() {
         let cache = AssetCache::synthetic();
         let mut cell = SpikeBackground::for_map_code(0, &cache);
         let mut player = make_player_at(0, 0);
@@ -249,17 +247,18 @@ mod tests {
 
         cell.on_player_touch(&mut player, &mut dispatcher);
 
-        assert_eq!(buffer.lock().unwrap().len(), 1);
+        assert!(buffer.lock().unwrap().is_empty());
         assert_eq!(player.death_kind(), Some(DeathKind::OtherBackground));
     }
 
     /// Unit under test: [`Kill2Background::on_player_touch`].
     ///
-    /// Invariants asserted: dispatches `DieRestartLevel`; the player's
-    /// recorded death classification is `OtherBackground`, distinguishing the
-    /// thorn/stalactite hazards from water but matching the lava family.
+    /// Invariants asserted: player records the `OtherBackground` death
+    /// classification, distinguishing the thorn/stalactite hazards from water
+    /// but matching the lava family; cell does not dispatch `DieRestartLevel`
+    /// itself.
     #[test]
-    fn kill_two_on_player_touch_dispatches_die_with_other_background() {
+    fn kill_two_on_player_touch_arms_other_background_kill() {
         let cache = AssetCache::synthetic();
         let mut cell = Kill2Background::for_map_code(0, &cache);
         let mut player = make_player_at(0, 0);
@@ -267,7 +266,7 @@ mod tests {
 
         cell.on_player_touch(&mut player, &mut dispatcher);
 
-        assert_eq!(buffer.lock().unwrap().len(), 1);
+        assert!(buffer.lock().unwrap().is_empty());
         assert_eq!(player.death_kind(), Some(DeathKind::OtherBackground));
     }
 

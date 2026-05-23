@@ -4,10 +4,7 @@
 //! reference (`background_manager_mapping.properties` binds the `SPIKE` DMA
 //! name to this class).  Lethal on overlap; renders the DMA-supplied tile.
 
-use openjill_core::{
-    BackgroundEntity, DeathKind, MessageDispatcher, MessagePayload, MessageType, ObjectEntity,
-    RenderCommand,
-};
+use openjill_core::{BackgroundEntity, DeathKind, MessageDispatcher, ObjectEntity, RenderCommand};
 
 use crate::asset_cache::AssetCache;
 use crate::entities::backgrounds::standard::StdBackgroundEntity;
@@ -37,14 +34,16 @@ impl BackgroundEntity for SpikeBackground {
     fn update(&mut self, _cell_x: i32, _cell_y: i32, _dispatcher: &mut MessageDispatcher) {}
 
     /// Kills the player on contact with the [`DeathKind::OtherBackground`]
-    /// classification used for non-water hazards.
+    /// classification used for non-water hazards.  The player's `Die`
+    /// sub-state dispatches `DieRestartLevel` once the die animation has
+    /// finished, so the level transition overlay does not start on the touch
+    /// frame.
     fn on_player_touch(
         &mut self,
         player: &mut dyn ObjectEntity,
-        dispatcher: &mut MessageDispatcher,
+        _dispatcher: &mut MessageDispatcher,
     ) {
         player.on_kill(1, DeathKind::OtherBackground);
-        dispatcher.send(MessageType::DieRestartLevel, MessagePayload::None);
     }
 
     /// Inherits the DMA-derived passthrough flag from the inner handler.

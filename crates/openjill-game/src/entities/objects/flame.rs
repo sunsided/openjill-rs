@@ -10,8 +10,8 @@
 
 use openjill_core::layout::BLOCK_SIZE_I;
 use openjill_core::{
-    ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
-    ObjectEntity, Rect, RenderCommand, RuntimeState,
+    ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, ObjectEntity, Rect, RenderCommand,
+    RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
@@ -27,6 +27,10 @@ pub struct FlameEntity {
     w: i32,
     /// Bounding box height in pixels.
     h: i32,
+    /// Pending player-kill classification armed in [`Self::on_touch`] and
+    /// drained by the level loop via [`ObjectEntity::take_player_kill`] so the
+    /// kill can be applied to the player's [`ObjectEntity::on_kill`].
+    pending_kill: Option<DeathKind>,
 }
 
 impl FlameEntity {
@@ -39,6 +43,7 @@ impl FlameEntity {
             y: i32::from(item.y()),
             w,
             h,
+            pending_kill: None,
         }
     }
 }
@@ -60,17 +65,13 @@ impl ObjectEntity for FlameEntity {
         None
     }
 
-    /// Kills the player on touch by dispatching [`MessageType::DieRestartLevel`].
-    ///
-    /// The object trait does not expose a mutable reference to the player, so
-    /// the death classification cannot be threaded into the player's
-    /// [`ObjectEntity::on_kill`] from here.  The level loop will still
-    /// restart the level on the next pending-request drain, which matches the
-    /// issue scope's "dispatches DieRestartLevel" contract; tightening the
-    /// classification path lands together with the rest of the enemy /
-    /// hazard kill plumbing in epic 6 child issue 6.
-    fn on_touch(&mut self, _state: &RuntimeState, dispatcher: &mut MessageDispatcher) {
-        dispatcher.send(MessageType::DieRestartLevel, MessagePayload::None);
+    /// Arms a [`DeathKind::OtherBackground`] kill on the player.  The level
+    /// loop drains this through [`Self::take_player_kill`] and applies it via
+    /// `player.on_kill`, so the player enters its `Die` sub-state and the
+    /// `DieRestartLevel` dispatch is left to the player after the die
+    /// animation finishes.
+    fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {
+        self.pending_kill = Some(DeathKind::OtherBackground);
     }
 
     /// Flames are indestructible: weapons leave them untouched.
@@ -80,6 +81,12 @@ impl ObjectEntity for FlameEntity {
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
     }
+
+    /// Returns the pending kill classification (and clears it) so the level
+    /// loop can apply it to the player after the touch dispatch pass.
+    fn take_player_kill(&mut self) -> Option<DeathKind> {
+        self.pending_kill.take()
+    }
 }
 
 #[cfg(test)]
@@ -87,7 +94,8 @@ mod tests {
     use super::FlameEntity;
     use crate::asset_cache::AssetCache;
     use openjill_core::{
-        MessageDispatcher, MessageHandler, MessagePayload, MessageType, ObjectEntity, RuntimeState,
+        DeathKind, MessageDispatcher, MessageHandler, MessagePayload, MessageType, ObjectEntity,
+        RuntimeState,
     };
     use openjill_data::jn::JnFile;
     use std::sync::{Arc, Mutex};
@@ -117,16 +125,19 @@ mod tests {
         jn.objects()[0].clone()
     }
 
-    /// Unit under test: [`FlameEntity::on_touch`].
+    /// Unit under test: [`FlameEntity::on_touch`] + [`FlameEntity::take_player_kill`].
     ///
     /// Preconditions: a flame is constructed from a synthetic JN object; a
     /// recording handler is subscribed to [`MessageType::DieRestartLevel`].
     ///
-    /// Invariants asserted: `on_touch` dispatches exactly one
-    /// `DieRestartLevel` message with the empty payload, matching the issue
-    /// scope's lethal-touch contract.
+    /// Invariants asserted: `on_touch` arms a [`DeathKind::OtherBackground`]
+    /// kill on the flame (drained via `take_player_kill`) but does **not**
+    /// dispatch `DieRestartLevel` directly; the level loop is responsible for
+    /// applying the kill to the player whose `Die` sub-state then drives
+    /// `DieRestartLevel` after the die animation completes.  A second
+    /// `take_player_kill` returns `None`, confirming the slot is drained.
     #[test]
-    fn flame_on_touch_dispatches_die_restart_level() {
+    fn flame_on_touch_arms_player_kill_without_dispatching_restart() {
         let cache = AssetCache::synthetic();
         let mut flame = FlameEntity::new(&synthetic_flame_object(), &cache);
         let buffer: Arc<Mutex<Vec<(MessageType, MessagePayload)>>> =
@@ -140,11 +151,15 @@ mod tests {
         let state = RuntimeState::new();
         flame.on_touch(&state, &mut dispatcher);
 
-        let received = buffer.lock().unwrap();
-        assert_eq!(received.len(), 1, "exactly one DieRestartLevel dispatched");
+        assert!(
+            buffer.lock().unwrap().is_empty(),
+            "on_touch must not dispatch DieRestartLevel directly"
+        );
+        assert_eq!(flame.take_player_kill(), Some(DeathKind::OtherBackground));
         assert_eq!(
-            received[0],
-            (MessageType::DieRestartLevel, MessagePayload::None)
+            flame.take_player_kill(),
+            None,
+            "pending kill must be drained after the first take"
         );
     }
 }

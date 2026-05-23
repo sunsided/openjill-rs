@@ -4,14 +4,12 @@
 //! Java reference, which `background_manager_mapping.properties` maps onto the
 //! large family of `WATERTL`/`WATERTR`/`WATERRD`/`WATERLD`/`WATERML`/`WATERMR`
 //! cells (plus their `*2`-`*4` animation siblings).  Cells render their
-//! DMA-defined tile and, when the player overlaps the cell, classify the
-//! death as [`DeathKind::Water`] and dispatch [`MessageType::DieRestartLevel`]
-//! so the level restarts.
+//! DMA-defined tile and, when the player overlaps the cell, arm the player
+//! die state with [`DeathKind::Water`].  The player's `Die` sub-state then
+//! dispatches `DieRestartLevel` once the drowning animation has finished, so
+//! the level transition overlay does not start on the touch frame.
 
-use openjill_core::{
-    BackgroundEntity, DeathKind, MessageDispatcher, MessagePayload, MessageType, ObjectEntity,
-    RenderCommand,
-};
+use openjill_core::{BackgroundEntity, DeathKind, MessageDispatcher, ObjectEntity, RenderCommand};
 
 use crate::asset_cache::AssetCache;
 use crate::entities::backgrounds::standard::StdBackgroundEntity;
@@ -41,14 +39,15 @@ impl BackgroundEntity for KillWaterBackground {
     fn update(&mut self, _cell_x: i32, _cell_y: i32, _dispatcher: &mut MessageDispatcher) {}
 
     /// Drowns the player on contact: classifies the death as
-    /// [`DeathKind::Water`] and dispatches [`MessageType::DieRestartLevel`].
+    /// [`DeathKind::Water`].  The player's `Die` sub-state dispatches
+    /// `DieRestartLevel` once the drowning animation has finished, so the
+    /// level transition overlay does not start on the touch frame.
     fn on_player_touch(
         &mut self,
         player: &mut dyn ObjectEntity,
-        dispatcher: &mut MessageDispatcher,
+        _dispatcher: &mut MessageDispatcher,
     ) {
         player.on_kill(1, DeathKind::Water);
-        dispatcher.send(MessageType::DieRestartLevel, MessagePayload::None);
     }
 
     /// Inherits the DMA-derived passthrough flag from the inner handler.

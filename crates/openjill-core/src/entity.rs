@@ -147,6 +147,26 @@ pub trait ObjectEntity: Send {
     fn should_remove(&self) -> bool {
         false
     }
+
+    /// Drains a pending player-kill classification armed during
+    /// [`ObjectEntity::on_touch`].
+    ///
+    /// Hazard objects (e.g. flame, rolling rock, falling spike) cannot reach
+    /// the player object from inside `on_touch` because the trait's signature
+    /// does not pass a player reference.  Instead they record a
+    /// [`DeathKind`] inside themselves when the player touch arms the kill,
+    /// and the level loop calls this method once per touch dispatch to
+    /// retrieve it.  When `Some`, the level loop applies
+    /// `player.on_kill(1, kind)` so the player enters its `Die` sub-state and
+    /// drives `DieRestartLevel` from there after the animation completes.
+    ///
+    /// Default implementation returns `None`; only hazard objects need to
+    /// override.  The method is mutable on purpose: the implementation should
+    /// take the pending classification with `Option::take`, so each touch
+    /// only arms one kill.
+    fn take_player_kill(&mut self) -> Option<DeathKind> {
+        None
+    }
 }
 
 /// One background cell handler.
