@@ -297,6 +297,31 @@ enum StatusUpdate {
 /// Shared queue of status updates collected from the dispatcher subscribers.
 type StatusInbox = Arc<Mutex<Vec<StatusUpdate>>>;
 
+/// Shared queue of `Trigger` link identifiers dispatched during one tick.
+///
+/// Populated by [`TriggerInboxHandler`] and drained each tick by
+/// [`LevelScreen::route_triggers`] which forwards each link identifier to
+/// every object via [`ObjectEntity::receive_trigger`].
+type TriggerInbox = Arc<Mutex<Vec<i32>>>;
+
+/// Dispatcher handler that records arriving `Trigger` link identifiers.
+struct TriggerInboxHandler {
+    /// Shared inbox the level screen drains every tick.
+    inbox: TriggerInbox,
+}
+
+impl MessageHandler for TriggerInboxHandler {
+    /// Extracts the `Count` link identifier from a `Trigger` payload and
+    /// appends it to the inbox.  Other payload variants are silently ignored.
+    fn handle(&mut self, _msg_type: MessageType, payload: &MessagePayload) {
+        if let MessagePayload::Count(link_id) = payload
+            && let Ok(mut queue) = self.inbox.lock()
+        {
+            queue.push(*link_id);
+        }
+    }
+}
+
 /// Level screen handler.
 ///
 /// Owns a parsed level JN file plus the raw bytes for restart-level
@@ -380,6 +405,12 @@ pub struct LevelScreen {
     /// Seeded to [`LEVEL_MESSAGE_TICKS`] (72 ticks ≈ 4 s) on every new
     /// `StatusBarText` message; counted down each tick by [`Self::tick`].
     status_text_ticks: u32,
+    /// Shared queue of `Trigger` link identifiers dispatched during the
+    /// current tick by switches or touch triggers.
+    ///
+    /// Drained each tick by [`Self::route_triggers`] which forwards each
+    /// link identifier to every object via [`ObjectEntity::receive_trigger`].
+    trigger_inbox: TriggerInbox,
 }
 
 impl LevelScreen {
@@ -486,6 +517,14 @@ impl LevelScreen {
             );
         }
 
+        let trigger_inbox: TriggerInbox = Arc::new(Mutex::new(Vec::new()));
+        entity_dispatcher.subscribe(
+            MessageType::Trigger,
+            Box::new(TriggerInboxHandler {
+                inbox: Arc::clone(&trigger_inbox),
+            }),
+        );
+
         Self {
             jn,
             jn_bytes,
@@ -504,6 +543,7 @@ impl LevelScreen {
             status_inbox,
             status_text: None,
             status_text_ticks: 0,
+            trigger_inbox,
         }
     }
 
@@ -687,6 +727,31 @@ impl LevelScreen {
         }
         if let Some(kind) = pending_kill {
             objects[player_idx].on_kill(1, kind);
+        }
+    }
+
+    /// Drains the trigger inbox and forwards each link identifier to every
+    /// object via [`ObjectEntity::receive_trigger`].
+    ///
+    /// Called once per tick after [`Self::update_objects`] so that `Trigger`
+    /// messages dispatched by switches and touch triggers during `update`
+    /// are delivered to toggle walls and other trigger-sensitive objects
+    /// on the same tick.
+    fn route_triggers(&mut self) {
+        let link_ids: Vec<i32> = {
+            let mut queue = self
+                .trigger_inbox
+                .lock()
+                .expect("trigger inbox mutex poisoned");
+            std::mem::take(&mut *queue)
+        };
+        if link_ids.is_empty() {
+            return;
+        }
+        for obj in self.objects.iter_mut() {
+            for &link_id in &link_ids {
+                obj.receive_trigger(link_id);
+            }
         }
     }
 
@@ -1047,6 +1112,7 @@ impl ScreenHandler for LevelScreen {
         // 7. Message-box overlay last so transitions paint over everything
         //    else.
         self.update_objects(input, state);
+        self.route_triggers();
         self.dispatch_player_touches(state);
         self.reap_removed_objects();
         self.update_viewport();

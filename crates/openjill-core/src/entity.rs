@@ -179,6 +179,17 @@ pub trait ObjectEntity: Send {
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         None
     }
+
+    /// Routes an inbound `Trigger` message with the supplied `link_id` to this
+    /// object.
+    ///
+    /// Called by the level loop after each tick when a [`crate::message::MessageType::Trigger`]
+    /// message was dispatched during that tick (typically by a
+    /// [`crate::message::MessageType::Object`] or touch-triggered switch).
+    /// Objects that respond to triggers (e.g. `ToggleWallEntity`) compare
+    /// `link_id` against their own stored link identifier and act accordingly;
+    /// all other objects use this no-op default.
+    fn receive_trigger(&mut self, _link_id: i32) {}
 }
 
 /// One background cell handler.

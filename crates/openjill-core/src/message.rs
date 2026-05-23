@@ -92,6 +92,7 @@ impl InventoryItemPayload {
 /// | `InventoryItem` | `InventoryItem` |
 /// | `Count` | `InventoryLife`, `InventoryPoint` |
 /// | `Text` | `StatusBarText`, `MessageBox` |
+/// | `Move` | `PlayerMove` |
 /// | `None` | `DieRestartLevel` and other stateless messages |
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MessagePayload {
@@ -103,6 +104,8 @@ pub enum MessagePayload {
     Count(i32),
     /// Text string (status bar text, message box content).
     Text(String),
+    /// Signed pixel delta `(dx, dy)` for movement messages such as `PlayerMove`.
+    Move(i32, i32),
     /// No payload; used by stateless messages such as `DieRestartLevel`.
     None,
 }
