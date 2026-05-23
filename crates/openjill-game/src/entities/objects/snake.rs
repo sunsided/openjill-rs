@@ -38,7 +38,10 @@ pub struct SnakeEntity {
 impl SnakeEntity {
     pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
-        let h = i32::from(item.height()).max(BLOCK_SIZE_I);
+        let h = {
+            let v = i32::from(item.height());
+            if v > 0 { v } else { BLOCK_SIZE_I }
+        };
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()),

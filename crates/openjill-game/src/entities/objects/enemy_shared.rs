@@ -8,6 +8,12 @@ use openjill_core::{BackgroundGrid, layout::BLOCK_SIZE_I};
 /// `true` when the column directly ahead of the entity is occupied by a
 /// solid (non-passthrough) cell.  `x_speed` sign selects which side is
 /// "ahead".
+///
+/// Only `!is_passthrough()` is used; `is_stair()` is intentionally excluded
+/// because the DMA flag for "not a stair" is an opt-out bit, so nearly every
+/// tile (including passthrough shade tiles like BLSHADE) reports `is_stair`
+/// true.  Using it as a blocking criterion would treat transparent shade tiles
+/// as walls.
 pub(crate) fn blocked_ahead(
     backgrounds: &BackgroundGrid,
     x: i32,
@@ -29,7 +35,7 @@ pub(crate) fn blocked_ahead(
         .min((backgrounds.height as i32) - 1) as usize;
     for cy in cy_top..=cy_bot {
         if let Some(cell) = backgrounds.get(cell_x, cy)
-            && (!cell.is_passthrough() || cell.is_stair())
+            && !cell.is_passthrough()
         {
             return true;
         }
@@ -61,7 +67,7 @@ pub(crate) fn floor_under_next(
     let cell_y = cell_y as usize;
     backgrounds
         .get(cell_x, cell_y)
-        .map(|c| c.blocks_vertical(1) || c.is_stair())
+        .map(|c| c.blocks_vertical(1))
         .unwrap_or(false)
 }
 
@@ -80,7 +86,7 @@ pub(crate) fn floor_below(backgrounds: &BackgroundGrid, x: i32, y: i32, w: i32, 
         .min((backgrounds.width as i32) - 1) as usize;
     for cx in cx_left..=cx_right {
         if let Some(cell) = backgrounds.get(cx, cell_y)
-            && (cell.blocks_vertical(1) || cell.is_stair())
+            && cell.blocks_vertical(1)
         {
             return true;
         }
