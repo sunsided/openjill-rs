@@ -32,6 +32,7 @@ use openjill_data::dma::DmaFile;
 use openjill_data::jn::{JnFile, JnObject, JnReadError};
 
 use crate::asset_cache::AssetCache;
+use crate::entities::backgrounds::standard::StdBackgroundEntity;
 use crate::entities::objects::{BeesEntity, BulletEntity};
 use crate::entities::{make_background_entity, make_object_entity};
 use crate::screens::map_screen::render_map_background;
@@ -417,6 +418,34 @@ impl MessageHandler for CreateObjectHandler {
     }
 }
 
+/// Shared queue of `(cell_x, cell_y)` background-clear requests dispatched
+/// during one tick.
+///
+/// Populated by [`BackgroundClearHandler`] and drained each tick by
+/// [`LevelScreen::apply_background_clears`], which replaces the named cells
+/// with transparent passable entries so a door that just opened no longer
+/// blocks the player physically.
+type BackgroundClearInbox = Arc<Mutex<Vec<(i32, i32)>>>;
+
+/// Dispatcher handler that records arriving `Background` clear requests.
+struct BackgroundClearHandler {
+    /// Shared inbox the level screen drains every tick.
+    inbox: BackgroundClearInbox,
+}
+
+impl MessageHandler for BackgroundClearHandler {
+    /// Extracts `ClearBackground { cell_x, cell_y }` from a `Background`
+    /// payload and appends the pair to the inbox.  Other payload variants are
+    /// silently ignored.
+    fn handle(&mut self, _msg_type: MessageType, payload: &MessagePayload) {
+        if let MessagePayload::ClearBackground { cell_x, cell_y } = payload
+            && let Ok(mut queue) = self.inbox.lock()
+        {
+            queue.push((*cell_x, *cell_y));
+        }
+    }
+}
+
 /// Level screen handler.
 ///
 /// Owns a parsed level JN file plus the raw bytes for restart-level
@@ -518,6 +547,13 @@ pub struct LevelScreen {
     /// Drained each tick by [`Self::spawn_objects`] which appends a new
     /// [`BulletEntity`] to the active object list for each entry.
     create_object_inbox: CreateObjectInbox,
+    /// Shared queue of `(cell_x, cell_y)` background-clear requests dispatched
+    /// by door entities when they open.
+    ///
+    /// Drained each tick by [`Self::apply_background_clears`] which replaces
+    /// the named cells with transparent passable entries so the opened doorway
+    /// no longer blocks the player.
+    background_clear_inbox: BackgroundClearInbox,
 }
 
 impl LevelScreen {
@@ -648,6 +684,14 @@ impl LevelScreen {
             }),
         );
 
+        let background_clear_inbox: BackgroundClearInbox = Arc::new(Mutex::new(Vec::new()));
+        entity_dispatcher.subscribe(
+            MessageType::Background,
+            Box::new(BackgroundClearHandler {
+                inbox: Arc::clone(&background_clear_inbox),
+            }),
+        );
+
         Self {
             jn,
             jn_bytes,
@@ -669,6 +713,7 @@ impl LevelScreen {
             trigger_inbox,
             player_move_inbox,
             create_object_inbox,
+            background_clear_inbox,
         }
     }
 
@@ -937,6 +982,30 @@ impl LevelScreen {
                 )),
             };
             self.objects.push(entity);
+        }
+    }
+
+    /// Drains the background-clear inbox and replaces each named cell with a
+    /// transparent passable [`StdBackgroundEntity`].
+    ///
+    /// Called after [`Self::spawn_objects`] and before
+    /// [`Self::update_viewport`] so the cleared cell is absent from the
+    /// collision grid on the same tick the door opens.
+    fn apply_background_clears(&mut self) {
+        let clears: Vec<(i32, i32)> = {
+            let mut queue = self
+                .background_clear_inbox
+                .lock()
+                .expect("background clear inbox mutex poisoned");
+            std::mem::take(&mut *queue)
+        };
+        for (cx, cy) in clears {
+            if cx < 0 || cy < 0 {
+                continue;
+            }
+            if let Some(cell) = self.backgrounds.get_mut(cx as usize, cy as usize) {
+                *cell = Box::new(StdBackgroundEntity::transparent());
+            }
         }
     }
 
@@ -1327,13 +1396,14 @@ impl ScreenHandler for LevelScreen {
         //    switches touched this tick activate on the same tick).
         // 5. Drop entities that flagged themselves for removal.
         // 6. Spawn objects requested via CreateObject this tick.
-        // 7. Snap the viewport so the post-update player stays inside the
+        // 7. Apply background-clear requests so opened doors are passable.
+        // 8. Snap the viewport so the post-update player stays inside the
         //    96/48 px update border, clamped to the map bounds.
-        // 8. Build the base frame using the freshly-snapped viewport.
-        // 9. Per-cell background tick + draw (also uses the new viewport).
-        // 10. Object draws (on top of backgrounds, matching the Java
+        // 9. Build the base frame using the freshly-snapped viewport.
+        // 10. Per-cell background tick + draw (also uses the new viewport).
+        // 11. Object draws (on top of backgrounds, matching the Java
         //     reference draw order).
-        // 11. Message-box overlay last so transitions paint over everything
+        // 12. Message-box overlay last so transitions paint over everything
         //     else.
         self.update_objects(input, state);
         self.apply_platform_moves();
@@ -1341,6 +1411,7 @@ impl ScreenHandler for LevelScreen {
         self.route_triggers();
         self.reap_removed_objects();
         self.spawn_objects();
+        self.apply_background_clears();
         self.update_viewport();
 
         let mut commands = self.render_base_frame();

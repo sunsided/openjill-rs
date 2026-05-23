@@ -24,10 +24,11 @@ pub struct StdBackgroundEntity {
     tile: Option<u16>,
     /// `true` when the player passes through the cell vertically.
     passthrough: bool,
-    /// `true` when the player can climb the cell (vine/tree).
-    climbable: bool,
     /// `true` when the cell behaves as a stair or slope.
     stair: bool,
+    /// DMA map code for this cell, used by entities that need to identify the
+    /// tile type at their grid position (e.g. `LockedDoorEntity`).
+    map_code: Option<u16>,
 }
 
 impl StdBackgroundEntity {
@@ -48,8 +49,8 @@ impl StdBackgroundEntity {
             tileset: Some(entry.tileset()),
             tile: Some(u16::from(entry.tile())),
             passthrough: entry.is_player_thru(),
-            climbable: entry.is_vine(),
             stair: entry.is_stair(),
+            map_code: Some(entry.map_code()),
         }
     }
 
@@ -60,8 +61,8 @@ impl StdBackgroundEntity {
             tileset: None,
             tile: None,
             passthrough: true,
-            climbable: false,
             stair: false,
+            map_code: None,
         }
     }
 }
@@ -104,13 +105,22 @@ impl BackgroundEntity for StdBackgroundEntity {
         self.passthrough
     }
 
-    /// Returns the vine flag derived from the DMA entry.
+    /// Standard cells are never climbable; only [`super::base_tree::BaseTreeBackground`]
+    /// (the BASETREE entity) returns `true`.  The DMA `is_vine()` opt-out flag
+    /// defaults to vine for nearly every tile in JILL.DMA, so reading it here
+    /// would incorrectly mark shade and decoration tiles as climbable.
     fn is_climbable(&self) -> bool {
-        self.climbable
+        false
     }
 
     /// Returns the stair flag derived from the DMA entry.
     fn is_stair(&self) -> bool {
         self.stair
+    }
+
+    /// Returns the DMA map code for this cell, when one was set at
+    /// construction via [`Self::from_dma_entry`] or [`Self::for_map_code`].
+    fn dma_map_code(&self) -> Option<u16> {
+        self.map_code
     }
 }

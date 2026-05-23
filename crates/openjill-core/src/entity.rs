@@ -262,6 +262,15 @@ pub trait BackgroundEntity: Send {
     fn needs_update(&self) -> bool {
         false
     }
+
+    /// Returns the DMA map code for this cell, or `None` when unavailable.
+    ///
+    /// Used by entities that need to identify the background tile type at
+    /// their grid position (e.g. `LockedDoorEntity` resolving `MAPDOOR` vs
+    /// `DOORT` to pick the correct required inventory item).
+    fn dma_map_code(&self) -> Option<u16> {
+        None
+    }
 }
 
 /// Full background layer for the current level.

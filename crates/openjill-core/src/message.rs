@@ -127,6 +127,18 @@ pub enum MessagePayload {
         /// Vertical velocity in pixels per tick.
         yd: i32,
     },
+    /// Background cell replacement: replace the cell at `(cell_x, cell_y)` with
+    /// a transparent passable cell.
+    ///
+    /// Dispatched by door entities when they open, so the background cell that
+    /// was physically blocking the player is removed from the grid on the same
+    /// tick the door opens.  Routed via [`MessageType::Background`].
+    ClearBackground {
+        /// Grid X index of the cell to clear.
+        cell_x: i32,
+        /// Grid Y index of the cell to clear.
+        cell_y: i32,
+    },
     /// No payload; used by stateless messages such as `DieRestartLevel`.
     None,
 }
