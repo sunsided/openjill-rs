@@ -93,12 +93,20 @@ impl Episode {
     /// matching descriptor when exactly one is present.
     ///
     /// Returns `None` when zero, more than one, or no readable SHA files
-    /// match. Callers should fall back to their own default in that case
-    /// rather than treating ambiguity as a failure.
+    /// match. Only regular files participate in the match so a directory
+    /// (or other non-file entry) whose name happens to look like a SHA file
+    /// cannot cause a false detection. Callers should fall back to their own
+    /// default in that case rather than treating ambiguity as a failure.
     pub fn detect_from_dir(data_dir: &Path) -> Option<&'static Self> {
         let entries = fs::read_dir(data_dir).ok()?;
         let mut matched: Option<&'static Self> = None;
         for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_file() {
+                continue;
+            }
             let file_name = entry.file_name();
             let name = file_name.to_string_lossy();
             for episode in ALL {
@@ -255,6 +263,23 @@ mod tests {
         fs::write(ambiguous.path().join("JILL1.SHA"), [0u8; 4]).expect("write jill1.sha");
         fs::write(ambiguous.path().join("JILL2.SHA"), [0u8; 4]).expect("write jill2.sha");
         check!(Episode::detect_from_dir(ambiguous.path()).is_none());
+    }
+
+    /// Unit under test: [`Episode::detect_from_dir`] file-type filtering.
+    ///
+    /// Preconditions: a temporary directory contains a subdirectory whose
+    /// name matches a SHA filename pattern but no regular SHA files.
+    ///
+    /// Invariants asserted: only regular files participate in detection so a
+    /// directory named like `JILL1.SHA` does not register a false match.
+    #[test]
+    fn detect_from_dir_ignores_directories_named_like_sha_files() {
+        let temp = TempDirGuard::new("openjill-data-episode-dir-decoy");
+        fs::create_dir_all(temp.path().join("JILL1.SHA")).expect("create JILL1.SHA dir");
+        check!(Episode::detect_from_dir(temp.path()).is_none());
+
+        fs::write(temp.path().join("JILL2.SHA"), [0u8; 4]).expect("write real JILL2.SHA");
+        check!(Episode::detect_from_dir(temp.path()) == Some(&JILL2));
     }
 
     /// Unit under test: [`Episode::has_jn_extension`] case-insensitive matching.

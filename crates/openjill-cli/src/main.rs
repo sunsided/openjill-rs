@@ -92,18 +92,27 @@ struct DumpArgs {
     kind: DumpKind,
 }
 
+/// Validates an explicit `--episode <N>` value into a static descriptor.
+///
+/// Returns `Ok(None)` when no flag was supplied so callers can fall back to
+/// auto-detection later, and an error only when the caller supplied an
+/// unknown episode number.
+fn explicit_episode_from_flag(explicit: Option<u8>) -> Result<Option<&'static Episode>> {
+    match explicit {
+        None => Ok(None),
+        Some(number) => Episode::from_number(number).map(Some).ok_or_else(|| {
+            anyhow::anyhow!("unknown episode number {number} (expected 1, 2, or 3)")
+        }),
+    }
+}
+
 /// Resolves the descriptor for the episode targeted by the current command.
 ///
-/// Honors an explicit `--episode <N>` flag first, then auto-detects from the
-/// data directory contents, and finally falls back to episode 1. Returns an
-/// error only when the caller supplied an unknown episode number.
-fn resolve_episode(explicit: Option<u8>, data_dir: &Path) -> Result<&'static Episode> {
-    if let Some(number) = explicit {
-        return Episode::from_number(number).ok_or_else(|| {
-            anyhow::anyhow!("unknown episode number {number} (expected 1, 2, or 3)")
-        });
-    }
-    Ok(Episode::detect_from_dir(data_dir).unwrap_or(&episode::JILL1))
+/// Honors an already-validated explicit flag first, then auto-detects from
+/// the resolved data directory contents, and finally falls back to
+/// [`episode::JILL1`].
+fn resolve_episode(explicit: Option<&'static Episode>, data_dir: &Path) -> &'static Episode {
+    explicit.unwrap_or_else(|| Episode::detect_from_dir(data_dir).unwrap_or(&episode::JILL1))
 }
 
 #[derive(Debug, Subcommand)]
@@ -171,14 +180,16 @@ fn dispatch(command: Command) -> Result<()> {
 
 /// Runs the interactive game loop using the configured data directory.
 fn run_command(args: RunArgs) -> Result<()> {
-    let data_dir = resolve_run_data_dir(&args);
-    let episode = resolve_episode(args.common.episode, &data_dir)?;
+    let explicit_episode = explicit_episode_from_flag(args.common.episode)?;
+    let data_dir = resolve_run_data_dir(&args, explicit_episode);
+    let episode = resolve_episode(explicit_episode, &data_dir);
     run_game(data_dir, episode).map_err(Into::into)
 }
 
 fn data_verify_command(args: VerifyArgs) -> Result<()> {
-    let data_dir = resolve_verify_data_dir(&args);
-    let episode = resolve_episode(args.episode, &data_dir)?;
+    let explicit_episode = explicit_episode_from_flag(args.episode)?;
+    let data_dir = resolve_verify_data_dir(&args, explicit_episode);
+    let episode = resolve_episode(explicit_episode, &data_dir);
     let report = verify_data_directory(data_dir, episode)?;
     print_verification_report(&report, episode);
     if report.ok() {
@@ -325,16 +336,24 @@ impl VerificationReport {
 }
 
 /// Resolves the data directory for `data verify` using CLI flag, environment, and fallback order.
-fn resolve_verify_data_dir(args: &VerifyArgs) -> PathBuf {
+fn resolve_verify_data_dir(
+    args: &VerifyArgs,
+    explicit_episode: Option<&'static Episode>,
+) -> PathBuf {
     resolve_data_dir_with_env(
         args.data_dir.clone(),
         nonempty_env_os(DATA_DIR_ENV).or_else(|| nonempty_env_os(OPENJILL_DATA_DIR_ENV)),
+        explicit_episode,
     )
 }
 
 /// Resolves the data directory for `run` using CLI flag, environment, and fallback order.
-fn resolve_run_data_dir(args: &RunArgs) -> PathBuf {
-    resolve_run_data_dir_with_env(args, nonempty_env_os(OPENJILL_DATA_DIR_ENV))
+fn resolve_run_data_dir(args: &RunArgs, explicit_episode: Option<&'static Episode>) -> PathBuf {
+    resolve_run_data_dir_with_env(
+        args,
+        nonempty_env_os(OPENJILL_DATA_DIR_ENV),
+        explicit_episode,
+    )
 }
 
 /// Resolves the data directory for `run` from explicit args plus an injected env override.
@@ -344,15 +363,20 @@ fn resolve_run_data_dir(args: &RunArgs) -> PathBuf {
 fn resolve_run_data_dir_with_env(
     args: &RunArgs,
     env_override: Option<std::ffi::OsString>,
+    explicit_episode: Option<&'static Episode>,
 ) -> PathBuf {
-    resolve_data_dir_with_env(args.common.data_dir.clone(), env_override)
+    resolve_data_dir_with_env(args.common.data_dir.clone(), env_override, explicit_episode)
 }
 
 /// Resolves the data directory for `dump` using CLI flag, environment, and fallback order.
-fn resolve_dump_data_dir(args: &DumpCommandArgs) -> PathBuf {
+fn resolve_dump_data_dir(
+    args: &DumpCommandArgs,
+    explicit_episode: Option<&'static Episode>,
+) -> PathBuf {
     resolve_data_dir_with_env(
         args.data_dir.clone(),
         nonempty_env_os(DATA_DIR_ENV).or_else(|| nonempty_env_os(OPENJILL_DATA_DIR_ENV)),
+        explicit_episode,
     )
 }
 
@@ -363,12 +387,15 @@ fn nonempty_env_os(key: &str) -> Option<std::ffi::OsString> {
 
 /// Resolves data-directory overrides shared by data utility commands.
 ///
-/// Falls back to [`episode::JILL1`]'s default directory when neither the
-/// explicit flag nor the environment override is supplied, matching the
-/// historical episode-1-only behaviour for fresh checkouts.
+/// Falls back to [`Episode::default_dir`] of the supplied `explicit_episode`
+/// when neither the explicit flag nor the environment override is supplied,
+/// so `--episode 2` without `--data-dir` resolves to `data/original/JILL2`
+/// rather than the episode-1 default. Falls back to [`episode::JILL1`] when
+/// no episode flag was supplied either.
 fn resolve_data_dir_with_env(
     explicit: Option<PathBuf>,
     env_override: Option<std::ffi::OsString>,
+    explicit_episode: Option<&'static Episode>,
 ) -> PathBuf {
     if let Some(path) = explicit {
         return path;
@@ -378,7 +405,7 @@ fn resolve_data_dir_with_env(
         return PathBuf::from(path);
     }
 
-    PathBuf::from(episode::JILL1.default_dir)
+    PathBuf::from(explicit_episode.unwrap_or(&episode::JILL1).default_dir)
 }
 
 /// Supported dump framework kinds.
@@ -463,8 +490,9 @@ impl DumpRequest {
 
     /// Converts one dump subcommand into a resolved request.
     fn from_command(kind: DumpFrameworkKind, command: DumpCommandArgs) -> Result<Self> {
-        let data_dir = resolve_dump_data_dir(&command);
-        let episode = resolve_episode(command.episode, &data_dir)?;
+        let explicit_episode = explicit_episode_from_flag(command.episode)?;
+        let data_dir = resolve_dump_data_dir(&command, explicit_episode);
+        let episode = resolve_episode(explicit_episode, &data_dir);
         let output = command
             .output
             .unwrap_or_else(|| kind.default_output(episode));
@@ -1628,7 +1656,7 @@ mod tests {
     /// verify data directory.
     #[test]
     fn data_verify_uses_environment_fallback_when_flag_is_omitted() {
-        let resolved = resolve_data_dir_with_env(None, Some("/tmp/openjill-fixture".into()));
+        let resolved = resolve_data_dir_with_env(None, Some("/tmp/openjill-fixture".into()), None);
         check!(resolved == PathBuf::from("/tmp/openjill-fixture"));
     }
 
@@ -1641,7 +1669,7 @@ mod tests {
     /// data directory.
     #[test]
     fn dump_uses_environment_fallback_when_flag_is_omitted() {
-        let resolved = resolve_data_dir_with_env(None, Some("/tmp/openjill-fixture".into()));
+        let resolved = resolve_data_dir_with_env(None, Some("/tmp/openjill-fixture".into()), None);
         check!(resolved == PathBuf::from("/tmp/openjill-fixture"));
     }
 
@@ -1660,7 +1688,8 @@ mod tests {
                 episode: None,
             },
         };
-        let resolved = resolve_run_data_dir_with_env(&args, Some("/tmp/openjill-run-env".into()));
+        let resolved =
+            resolve_run_data_dir_with_env(&args, Some("/tmp/openjill-run-env".into()), None);
         check!(resolved == PathBuf::from("/tmp/openjill-run-explicit"));
     }
 
@@ -1679,7 +1708,8 @@ mod tests {
                 episode: None,
             },
         };
-        let resolved = resolve_run_data_dir_with_env(&args, Some("/tmp/openjill-run-env".into()));
+        let resolved =
+            resolve_run_data_dir_with_env(&args, Some("/tmp/openjill-run-env".into()), None);
         check!(resolved == PathBuf::from("/tmp/openjill-run-env"));
     }
 
@@ -1698,8 +1728,52 @@ mod tests {
                 episode: None,
             },
         };
-        let resolved = resolve_run_data_dir_with_env(&args, None);
+        let resolved = resolve_run_data_dir_with_env(&args, None, None);
         check!(resolved == PathBuf::from(episode::JILL1.default_dir));
+    }
+
+    /// Unit under test: episode-aware fallback in run data-dir resolution.
+    ///
+    /// Preconditions: neither `--data-dir` nor an environment override is
+    /// provided, and an explicit `--episode 2` descriptor is supplied.
+    ///
+    /// Invariants asserted: the resolved data directory uses the explicit
+    /// episode's [`Episode::default_dir`] rather than the episode-1 default,
+    /// so `--episode 2` without `--data-dir` resolves to `data/original/JILL2`.
+    #[test]
+    fn run_uses_explicit_episode_default_dir_when_flag_and_env_are_absent() {
+        let args = RunArgs {
+            common: DataDirArgs {
+                data_dir: None,
+                episode: Some(2),
+            },
+        };
+        let resolved = resolve_run_data_dir_with_env(&args, None, Some(&episode::JILL2));
+        check!(resolved == PathBuf::from(episode::JILL2.default_dir));
+    }
+
+    /// Unit under test: env override still wins over explicit episode default.
+    ///
+    /// Preconditions: no `--data-dir`, an environment override, and an
+    /// explicit `--episode 2` descriptor are supplied together.
+    ///
+    /// Invariants asserted: the environment value wins over the explicit
+    /// episode's default directory so user-controlled overrides remain
+    /// authoritative.
+    #[test]
+    fn run_env_override_wins_over_explicit_episode_default_dir() {
+        let args = RunArgs {
+            common: DataDirArgs {
+                data_dir: None,
+                episode: Some(2),
+            },
+        };
+        let resolved = resolve_run_data_dir_with_env(
+            &args,
+            Some("/tmp/openjill-run-env".into()),
+            Some(&episode::JILL2),
+        );
+        check!(resolved == PathBuf::from("/tmp/openjill-run-env"));
     }
 
     /// Unit under test: failing exit status from `data verify`.
