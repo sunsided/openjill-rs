@@ -2,9 +2,9 @@
 //! transition loop.
 
 use openjill_core::{
-    ActiveInput, MessageDispatcher, RenderCommand, RuntimeState, ScreenHandler, ScreenTransition,
+    ActiveInput, MAP_LEVEL, MessageDispatcher, RenderCommand, RuntimeState, ScreenHandler,
+    ScreenTransition,
 };
-use openjill_data::dma::DmaFile;
 use openjill_data::episode::Episode;
 use openjill_data::jn::JnReadError;
 use openjill_data::{DataDirectory, DataDirectoryError};
@@ -15,7 +15,6 @@ use crate::screens::intro_screens::{
     credits_screen, noisemaker_screen, ordering_info_screen, story_screen,
 };
 use crate::screens::level_screen::{EPISODE_1_SKY_COLOR, LevelScreen};
-use crate::screens::map_screen::MapScreen;
 use crate::screens::start_menu::StartMenuScreen;
 
 /// Constructs a fresh [`StartMenuScreen`] from the given asset cache.
@@ -29,22 +28,25 @@ fn make_start_menu(cache: &AssetCache) -> StartMenuScreen {
 }
 
 /// Loads the active episode's world-map JN file ([`Episode::map_jn`]) from
-/// `data_dir` and constructs a [`MapScreen`].
+/// `data_dir` and constructs a [`LevelScreen`] with [`MAP_LEVEL`] as the level
+/// number.
 ///
-/// Reads the file bytes through the case-insensitive resolver so the screen
-/// keeps both the parsed JN structure for rendering and the raw bytes for
-/// [`openjill_core::ScreenHandler::map_jn_bytes`] save/restore round-trips.
+/// Using `LevelScreen` for the map matches the Java reference `MapLevelHandler`
+/// which inherits `AbstractExecutingStdLevel` - the same entity update loop as
+/// regular levels, giving the map full player physics and input.
 fn load_map_screen(
     data_dir: &DataDirectory,
     episode: &Episode,
-    dma: DmaFile,
-) -> Result<MapScreen, MapLoadError> {
+    cache: &AssetCache,
+    dispatcher: &mut MessageDispatcher,
+) -> Result<LevelScreen, LevelLoadError> {
     let map_file = episode.map_jn();
     let path = data_dir
         .resolve_path_case_insensitive(&map_file)
-        .map_err(MapLoadError::Resolve)?;
-    let bytes = std::fs::read(&path).map_err(MapLoadError::Read)?;
-    MapScreen::from_bytes(bytes, dma).map_err(MapLoadError::Parse)
+        .map_err(LevelLoadError::Resolve)?;
+    let bytes = std::fs::read(&path).map_err(LevelLoadError::Read)?;
+    LevelScreen::from_bytes(bytes, cache, MAP_LEVEL, dispatcher, EPISODE_1_SKY_COLOR)
+        .map_err(LevelLoadError::Parse)
 }
 
 /// Loads a level JN file from `data_dir` and constructs a [`LevelScreen`].
@@ -174,13 +176,9 @@ impl GameOrchestrator {
     /// Applies `transition` immediately, bypassing the message-dispatcher
     /// pipeline.
     ///
-    /// Intended for developer tooling that needs to drop the orchestrator
-    /// into a specific screen without first standing up a full gameplay
-    /// loop: at the time of writing, [`crate::screens::map_screen::MapScreen`]
-    /// has no subscribers on the dispatcher, so a queued
-    /// `CheckpointChangeLevel` will never reach a handler until a
-    /// [`LevelScreen`] has already been constructed.  Calling this method
-    /// builds the destination screen directly.
+    /// Intended for developer tooling (e.g. the debug `L` key) that needs to
+    /// drop the orchestrator into a specific screen without standing up a full
+    /// gameplay loop first.
     pub fn force_transition(&mut self, transition: ScreenTransition) {
         self.apply_transition(transition);
     }
@@ -275,10 +273,24 @@ impl GameOrchestrator {
                 let map_file = self.episode.map_jn();
                 // Prefer the in-memory map JN bytes captured from a previous
                 // visit; only reach to disk on the first transition to Map.
+                // LevelScreen with MAP_LEVEL gives the map the full entity
+                // update loop (player physics, input, viewport scrolling),
+                // matching the Java reference MapLevelHandler.
                 let map_result = match self.map_jn_bytes.clone() {
-                    Some(bytes) => MapScreen::from_bytes(bytes, self.cache.dma.clone())
-                        .map_err(MapLoadError::Parse),
-                    None => load_map_screen(&self.data_dir, self.episode, self.cache.dma.clone()),
+                    Some(bytes) => LevelScreen::from_bytes(
+                        bytes,
+                        &self.cache,
+                        MAP_LEVEL,
+                        &mut self.dispatcher,
+                        EPISODE_1_SKY_COLOR,
+                    )
+                    .map_err(LevelLoadError::Parse),
+                    None => load_map_screen(
+                        &self.data_dir,
+                        self.episode,
+                        &self.cache,
+                        &mut self.dispatcher,
+                    ),
                 };
                 match map_result {
                     Ok(screen) => {
@@ -376,25 +388,7 @@ pub enum OrchestratorError {
     AssetLoad(#[from] AssetError),
 }
 
-/// Error returned when loading the episode's world-map JN file during a
-/// screen transition fails.
-///
-/// The episode-specific file name is supplied by the call site (which always
-/// has [`Episode::map_jn`] in scope) and is not duplicated into each variant.
-#[derive(Debug, Error)]
-enum MapLoadError {
-    /// Case-insensitive lookup of the map JN file failed.
-    #[error("failed to resolve map JN file: {0}")]
-    Resolve(#[source] DataDirectoryError),
-    /// Reading the resolved map JN bytes from disk failed.
-    #[error("failed to read map JN file: {0}")]
-    Read(#[source] std::io::Error),
-    /// Parsing the map JN bytes into a `JnFile` failed.
-    #[error("failed to parse map JN file: {0}")]
-    Parse(#[source] JnReadError),
-}
-
-/// Error returned when loading a level JN file during a screen transition fails.
+/// Error returned when loading a map or level JN file during a screen transition fails.
 #[derive(Debug, Error)]
 enum LevelLoadError {
     /// Case-insensitive lookup of the level file failed.

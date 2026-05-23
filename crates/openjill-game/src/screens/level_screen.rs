@@ -24,7 +24,7 @@ use openjill_core::layout::{
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
     ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundGrid, ChangeLevelPayload,
-    ClipRect, DeathKind, FontSize, InputCommand, InventoryObject, MessageDispatcher,
+    ClipRect, DeathKind, FontSize, InputCommand, InventoryObject, MAP_LEVEL, MessageDispatcher,
     MessageHandler, MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
     ScreenTransition, TickResult,
 };
@@ -1400,10 +1400,30 @@ impl ScreenHandler for LevelScreen {
         }
     }
 
-    /// Returns the raw level JN bytes preserved at construction so the
-    /// orchestrator can reload the level from memory on restart.
+    /// Returns the raw JN bytes when this screen is acting as the world map
+    /// (`level_number == MAP_LEVEL`), so the orchestrator can reconstruct the
+    /// map screen from memory on the next `ScreenTransition::Map`.
+    ///
+    /// Returns `None` for regular levels; those bytes are surfaced via
+    /// [`level_jn_bytes`] instead.
+    fn map_jn_bytes(&self) -> Option<Vec<u8>> {
+        if self.level_number == MAP_LEVEL {
+            Some(self.jn_bytes.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Returns the raw JN bytes for regular levels so the orchestrator can
+    /// restart from memory.  Returns `None` when this screen is acting as the
+    /// world map to avoid polluting the orchestrator's level-byte cache with
+    /// `MAP.JN1` bytes.
     fn level_jn_bytes(&self) -> Option<Vec<u8>> {
-        Some(self.jn_bytes.clone())
+        if self.level_number == MAP_LEVEL {
+            None
+        } else {
+            Some(self.jn_bytes.clone())
+        }
     }
 }
 
@@ -2375,6 +2395,31 @@ mod tests {
         bytes[0..2].copy_from_slice(&0x0042u16.to_le_bytes());
         let (screen, _dispatcher) = screen_with_dispatcher(bytes.clone(), 1);
         assert_eq!(screen.level_jn_bytes(), Some(bytes));
+    }
+
+    /// Unit under test: when `LevelScreen` is constructed with [`MAP_LEVEL`]
+    /// (acting as the world-map screen), `map_jn_bytes` returns the JN bytes
+    /// and `level_jn_bytes` returns `None`.
+    ///
+    /// Invariants asserted:
+    /// - `map_jn_bytes()` returns the bytes passed to `from_bytes`
+    /// - `level_jn_bytes()` returns `None` (MAP.JN1 bytes must not pollute
+    ///   the orchestrator's level-byte cache)
+    #[test]
+    fn map_level_surfaces_map_jn_bytes_not_level_jn_bytes() {
+        let mut bytes = jn_bytes_with_objects(&[]);
+        bytes[0..2].copy_from_slice(&0x0099u16.to_le_bytes());
+        let (screen, _dispatcher) = screen_with_dispatcher(bytes.clone(), openjill_core::MAP_LEVEL);
+        assert_eq!(
+            screen.map_jn_bytes(),
+            Some(bytes),
+            "map_jn_bytes must return the JN bytes when level_number == MAP_LEVEL"
+        );
+        assert_eq!(
+            screen.level_jn_bytes(),
+            None,
+            "level_jn_bytes must return None when level_number == MAP_LEVEL"
+        );
     }
 
     /// Unit under test: pressing Escape with no pending transition returns
