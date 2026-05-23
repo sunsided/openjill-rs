@@ -211,7 +211,8 @@ pub trait BackgroundEntity: Send {
     fn is_passthrough(&self) -> bool;
 
     /// Returns `true` when this cell blocks vertical motion at the supplied
-    /// player vertical velocity `player_yd` (positive = falling).
+    /// player vertical velocity `player_yd` (positive = falling, negative =
+    /// rising).
     ///
     /// The default implementation mirrors [`Self::is_passthrough`]: regular
     /// solid cells block in both directions, regular passable cells block in
@@ -221,9 +222,10 @@ pub trait BackgroundEntity: Send {
     /// blocks downward motion only so the player lands on its top edge while
     /// still being free to jump up through it from below.
     ///
-    /// A `player_yd == 0` probe (used by floor-detection helpers that ask
-    /// "is there a floor below me right now?") follows the falling convention
-    /// and treats the cell as solid when it blocks the falling direction.
+    /// Callers must supply a non-zero signed direction.  A `player_yd` of `0`
+    /// is not a valid probe value for one-way cells and returns pass-through
+    /// from those overrides; floor-detection helpers must pass `1` (falling
+    /// convention) to ask "is there a floor below me?".
     fn blocks_vertical(&self, _player_yd: i32) -> bool {
         !self.is_passthrough()
     }

@@ -93,9 +93,9 @@ impl FallingSpikeEntity {
         Rect::new(self.x, self.y + self.h, self.w, i32::MAX / 2)
     }
 
-    /// Returns `true` if any cell covered by `rect` (one pixel below the
-    /// spike's bottom edge) blocks the player vertically; mirrors
-    /// `UtilityObjectEntity.moveObjectDown`'s landing check.
+    /// Returns `true` if any cell in the row immediately below the spike's
+    /// bottom edge is solid; mirrors `UtilityObjectEntity.moveObjectDown`'s
+    /// landing check.
     fn floor_below(&self, backgrounds: &BackgroundGrid) -> bool {
         let probe_y = self.y + self.h;
         let cell_y = probe_y.div_euclid(BLOCK_SIZE_I);

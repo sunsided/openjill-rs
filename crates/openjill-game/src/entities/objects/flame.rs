@@ -106,8 +106,9 @@ impl ObjectEntity for FlameEntity {
         }
         self.counter += 1;
         if self.counter >= FRAME_COUNT {
-            // Match the Java reference's `counter--; killMe();` so the final
-            // tile remains pinned for the draw of the killing tick.
+            // Mirror the Java reference's `counter--; killMe()` sequence so
+            // the counter value is consistent, even though the Rust port
+            // suppresses drawing once `removed` is set.
             self.counter -= 1;
             self.removed = true;
         }

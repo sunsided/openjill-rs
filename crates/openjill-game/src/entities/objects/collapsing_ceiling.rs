@@ -6,7 +6,7 @@
 //! on contact while falling.
 //!
 //! The Java reference arms the fall through a `TRIGGER` message dispatched by
-//! a linked `SwitchEntity` (`SwitchManager.recieveMessage`).  Switches land
+//! a linked `SwitchEntity` (`SwitchManager.receiveMessage`).  Switches land
 //! with issue #63; until then the Rust port follows the `Gameplay: hazard
 //! motion + sprite tiles (#91)` issue text and arms the fall the first tick
 //! the player's bounding box overlaps the cell directly below the ceiling
@@ -82,12 +82,12 @@ impl CollapsingCeilingEntity {
     /// Returns the rectangle directly below the ceiling that the player must
     /// occupy for the walks-under trigger to fire.
     ///
-    /// The trigger zone is one block tall and matches the ceiling's
-    /// horizontal extent so a player whose feet land in the same column as
-    /// the ceiling arms the fall, regardless of how far below they are
-    /// vertically aligned to the cell.  Java's switch-triggered behaviour does
-    /// not constrain proximity at all; the walks-under heuristic uses a
-    /// generous column probe to stay close to the original spirit.
+    /// The trigger zone is one block tall and matches the ceiling's horizontal
+    /// extent.  A player whose bounding box overlaps this one-cell-deep strip
+    /// immediately below the ceiling arms the fall.  Java's switch-triggered
+    /// behaviour does not constrain player proximity at all; the walks-under
+    /// heuristic fires on entry into the adjacent cell as the nearest safe
+    /// approximation.
     fn trigger_zone(&self) -> Rect {
         Rect::new(self.x, self.y + self.h, self.w, BLOCK_SIZE_I)
     }
