@@ -11,6 +11,7 @@ use openjill_core::Palette;
 use openjill_data::ByteReader;
 use openjill_data::cfg::CfgFile;
 use openjill_data::dma::DmaFile;
+use openjill_data::episode::{self, Episode, discover_jn_files};
 use openjill_data::jn::JnFile;
 use openjill_data::sha::ShaFile;
 use openjill_data::vcl::VclFile;
@@ -23,10 +24,6 @@ use sha2::{Digest, Sha256};
 const OPENJILL_DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 /// Task-runner environment variable used as a data directory override.
 const DATA_DIR_ENV: &str = "DATA_DIR";
-/// Workspace-relative fallback path used when no flag or environment override is supplied.
-const DEFAULT_DATA_DIR: &str = "data/original/JILL1";
-/// Default root for generated debug dumps.
-const DEFAULT_DUMP_ROOT: &str = "data/extracted/JILL1/debug";
 /// Repository-relative directory that must never receive generated output.
 const ORIGINAL_DATA_ROOT: &str = "data/original";
 /// File name used by `dump sha` for indexed atlas pixels.
@@ -35,15 +32,20 @@ const SHA_ATLAS_INDEXED_FILE: &str = "atlas-indexed.png";
 const SHA_ATLAS_RGB_FILE: &str = "atlas-rgb.png";
 /// Pixel padding inserted between packed SHA atlas tiles.
 const SHA_ATLAS_TILE_PADDING: usize = 1;
-/// Required fixed files for episode 1 verification.
-const REQUIRED_FILES: [(&str, ParserDomain); 6] = [
-    ("JILL.DMA", ParserDomain::Dma),
-    ("JILL1.VCL", ParserDomain::Vcl),
-    ("JILL1.CFG", ParserDomain::Cfg),
-    ("JILL1.SHA", ParserDomain::Sha),
-    ("INTRO.JN1", ParserDomain::Jn),
-    ("MAP.JN1", ParserDomain::Jn),
-];
+/// Shared DMA file name used by every episode for tile metadata.
+const SHARED_DMA_FILE: &str = "JILL.DMA";
+
+/// Builds the fixed required-file list verified by `data verify` for `episode`.
+fn required_files(episode: &Episode) -> Vec<(String, ParserDomain)> {
+    vec![
+        (SHARED_DMA_FILE.to_string(), ParserDomain::Dma),
+        (episode.vcl.to_string(), ParserDomain::Vcl),
+        (episode.cfg.to_string(), ParserDomain::Cfg),
+        (episode.sha.to_string(), ParserDomain::Sha),
+        (episode.intro_jn(), ParserDomain::Jn),
+        (episode.map_jn(), ParserDomain::Jn),
+    ]
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "openjill-rs", about = "OpenJill Rust port CLI (stub)")]
@@ -69,8 +71,12 @@ enum DataCommand {
 
 #[derive(Args, Debug)]
 struct DataDirArgs {
+    /// Directory containing the original episode data files.
     #[arg(long)]
     data_dir: Option<PathBuf>,
+    /// Episode number (1, 2, or 3) overriding auto-detection from the data directory.
+    #[arg(long)]
+    episode: Option<u8>,
 }
 
 #[derive(Args, Debug)]
@@ -84,6 +90,20 @@ struct DumpArgs {
     /// Specific dump kind requested by the caller.
     #[command(subcommand)]
     kind: DumpKind,
+}
+
+/// Resolves the descriptor for the episode targeted by the current command.
+///
+/// Honors an explicit `--episode <N>` flag first, then auto-detects from the
+/// data directory contents, and finally falls back to episode 1. Returns an
+/// error only when the caller supplied an unknown episode number.
+fn resolve_episode(explicit: Option<u8>, data_dir: &Path) -> Result<&'static Episode> {
+    if let Some(number) = explicit {
+        return Episode::from_number(number).ok_or_else(|| {
+            anyhow::anyhow!("unknown episode number {number} (expected 1, 2, or 3)")
+        });
+    }
+    Ok(Episode::detect_from_dir(data_dir).unwrap_or(&episode::JILL1))
 }
 
 #[derive(Debug, Subcommand)]
@@ -103,6 +123,9 @@ struct DumpCommandArgs {
     /// Optional directory containing the original episode data files.
     #[arg(long)]
     data_dir: Option<PathBuf>,
+    /// Optional episode number (1, 2, or 3) overriding auto-detection.
+    #[arg(long)]
+    episode: Option<u8>,
     /// Optional output file or directory for the dump.
     #[arg(long)]
     output: Option<PathBuf>,
@@ -123,8 +146,12 @@ enum DumpFormat {
 
 #[derive(Args, Debug)]
 struct VerifyArgs {
+    /// Directory containing the original episode data files to verify.
     #[arg(long)]
     data_dir: Option<PathBuf>,
+    /// Episode number (1, 2, or 3) overriding auto-detection from the data directory.
+    #[arg(long)]
+    episode: Option<u8>,
 }
 
 fn main() -> Result<()> {
@@ -144,13 +171,16 @@ fn dispatch(command: Command) -> Result<()> {
 
 /// Runs the interactive game loop using the configured data directory.
 fn run_command(args: RunArgs) -> Result<()> {
-    run_game(resolve_run_data_dir(&args)).map_err(Into::into)
+    let data_dir = resolve_run_data_dir(&args);
+    let episode = resolve_episode(args.common.episode, &data_dir)?;
+    run_game(data_dir, episode).map_err(Into::into)
 }
 
 fn data_verify_command(args: VerifyArgs) -> Result<()> {
     let data_dir = resolve_verify_data_dir(&args);
-    let report = verify_data_directory(data_dir)?;
-    print_verification_report(&report);
+    let episode = resolve_episode(args.episode, &data_dir)?;
+    let report = verify_data_directory(data_dir, episode)?;
+    print_verification_report(&report, episode);
     if report.ok() {
         Ok(())
     } else {
@@ -159,7 +189,7 @@ fn data_verify_command(args: VerifyArgs) -> Result<()> {
 }
 
 fn dump_command(args: DumpArgs) -> Result<()> {
-    let request = DumpRequest::from_args(args);
+    let request = DumpRequest::from_args(args)?;
     write_dump(request)
 }
 
@@ -190,8 +220,10 @@ impl ParserDomain {
         }
     }
 
-    /// Parses bytes according to the selected domain, returning an error string on failure.
-    fn parse(self, bytes: &[u8]) -> std::result::Result<(), String> {
+    /// Parses bytes according to the selected domain using `episode` for any
+    /// domain-specific conventions (currently the CFG save-name prefix),
+    /// returning an error string on failure.
+    fn parse(self, bytes: &[u8], episode: &Episode) -> std::result::Result<(), String> {
         match self {
             Self::Dma => DmaFile::from_bytes(bytes)
                 .map(|_| ())
@@ -199,7 +231,7 @@ impl ParserDomain {
             Self::Vcl => VclFile::from_bytes(bytes)
                 .map(|_| ())
                 .map_err(|error| error.to_string()),
-            Self::Cfg => CfgFile::from_bytes(bytes, "JN1")
+            Self::Cfg => CfgFile::from_bytes(bytes, episode.jn_ext)
                 .map(|_| ())
                 .map_err(|error| error.to_string()),
             Self::Sha => ShaFile::from_bytes(bytes)
@@ -330,6 +362,10 @@ fn nonempty_env_os(key: &str) -> Option<std::ffi::OsString> {
 }
 
 /// Resolves data-directory overrides shared by data utility commands.
+///
+/// Falls back to [`episode::JILL1`]'s default directory when neither the
+/// explicit flag nor the environment override is supplied, matching the
+/// historical episode-1-only behaviour for fresh checkouts.
 fn resolve_data_dir_with_env(
     explicit: Option<PathBuf>,
     env_override: Option<std::ffi::OsString>,
@@ -342,7 +378,7 @@ fn resolve_data_dir_with_env(
         return PathBuf::from(path);
     }
 
-    PathBuf::from(DEFAULT_DATA_DIR)
+    PathBuf::from(episode::JILL1.default_dir)
 }
 
 /// Supported dump framework kinds.
@@ -374,23 +410,25 @@ impl DumpFrameworkKind {
         matches!(self, Self::Sha | Self::Jn)
     }
 
-    /// Returns the default repository-relative output path for this dump kind.
-    fn default_output(self) -> PathBuf {
+    /// Returns the default repository-relative output path for this dump kind
+    /// targeted at `episode`.
+    fn default_output(self, episode: &Episode) -> PathBuf {
+        let root = PathBuf::from(episode.default_dump_root);
         match self {
-            Self::Dma => PathBuf::from(DEFAULT_DUMP_ROOT).join("dma.json"),
-            Self::Vcl => PathBuf::from(DEFAULT_DUMP_ROOT).join("vcl-text.json"),
-            Self::Sha => PathBuf::from(DEFAULT_DUMP_ROOT).join("sha"),
-            Self::Jn => PathBuf::from(DEFAULT_DUMP_ROOT).join("jn"),
+            Self::Dma => root.join("dma.json"),
+            Self::Vcl => root.join("vcl-text.json"),
+            Self::Sha => root.join("sha"),
+            Self::Jn => root.join("jn"),
         }
     }
 
-    /// Returns the required source files for this dump kind.
-    fn fixed_source_files(self) -> &'static [&'static str] {
+    /// Returns the required source files for this dump kind under `episode`.
+    fn fixed_source_files(self, episode: &Episode) -> Vec<String> {
         match self {
-            Self::Dma => &["JILL.DMA"],
-            Self::Vcl => &["JILL1.VCL"],
-            Self::Sha => &["JILL1.SHA"],
-            Self::Jn => &["INTRO.JN1", "MAP.JN1"],
+            Self::Dma => vec![SHARED_DMA_FILE.to_string()],
+            Self::Vcl => vec![episode.vcl.to_string()],
+            Self::Sha => vec![episode.sha.to_string()],
+            Self::Jn => vec![episode.intro_jn(), episode.map_jn()],
         }
     }
 }
@@ -402,6 +440,8 @@ struct DumpRequest {
     kind: DumpFrameworkKind,
     /// Data directory resolved from CLI flags, environment, or fallback.
     data_dir: PathBuf,
+    /// Episode resolved for this dump request.
+    episode: &'static Episode,
     /// User-selected output path, or the default path for the kind.
     output: PathBuf,
     /// Output format selected by the caller.
@@ -412,7 +452,7 @@ struct DumpRequest {
 
 impl DumpRequest {
     /// Converts clap arguments into a resolved dump request.
-    fn from_args(args: DumpArgs) -> Self {
+    fn from_args(args: DumpArgs) -> Result<Self> {
         match args.kind {
             DumpKind::Dma(command) => Self::from_command(DumpFrameworkKind::Dma, command),
             DumpKind::Vcl(command) => Self::from_command(DumpFrameworkKind::Vcl, command),
@@ -422,16 +462,20 @@ impl DumpRequest {
     }
 
     /// Converts one dump subcommand into a resolved request.
-    fn from_command(kind: DumpFrameworkKind, command: DumpCommandArgs) -> Self {
+    fn from_command(kind: DumpFrameworkKind, command: DumpCommandArgs) -> Result<Self> {
         let data_dir = resolve_dump_data_dir(&command);
-        let output = command.output.unwrap_or_else(|| kind.default_output());
-        Self {
+        let episode = resolve_episode(command.episode, &data_dir)?;
+        let output = command
+            .output
+            .unwrap_or_else(|| kind.default_output(episode));
+        Ok(Self {
             kind,
             data_dir,
+            episode,
             output,
             format: command.format,
             force: command.force,
-        }
+        })
     }
 }
 
@@ -450,7 +494,7 @@ fn write_dump(request: DumpRequest) -> Result<()> {
         ensure_output_may_be_written(&output_file, request.force)?;
         ensure_output_may_be_written(&atlas_indexed_file, request.force)?;
         ensure_output_may_be_written(&atlas_rgb_file, request.force)?;
-        let sha_dump = sha_dump_output(&request.data_dir)?;
+        let sha_dump = sha_dump_output(&request.data_dir, request.episode)?;
         write_json_file(&output_file, &sha_dump.metadata_json, request.force)?;
         write_binary_file(
             &atlas_indexed_file,
@@ -474,8 +518,8 @@ fn write_dump(request: DumpRequest) -> Result<()> {
 fn render_dump_json(request: &DumpRequest) -> Result<String> {
     match request.kind {
         DumpFrameworkKind::Dma => dma_dump_json(&request.data_dir),
-        DumpFrameworkKind::Vcl => vcl_dump_json(&request.data_dir),
-        DumpFrameworkKind::Jn => jn_dump_json(&request.data_dir),
+        DumpFrameworkKind::Vcl => vcl_dump_json(&request.data_dir, request.episode),
+        DumpFrameworkKind::Jn => jn_dump_json(&request.data_dir, request.episode),
         DumpFrameworkKind::Sha => {
             unreachable!("SHA dumps are rendered through the dedicated payload writer")
         }
@@ -524,26 +568,27 @@ fn read_dump_input_source(
 /// Parses one DMA input source and wraps parser failures with file context.
 fn parse_dma_source(bytes: Vec<u8>) -> Result<DmaFile> {
     DmaFile::from_bytes(bytes)
-        .map_err(|error| anyhow::anyhow!("failed to parse input file JILL.DMA: {error}"))
+        .map_err(|error| anyhow::anyhow!("failed to parse input file {SHARED_DMA_FILE}: {error}"))
 }
 
-/// Parses one VCL input source and wraps parser failures with file context.
-fn parse_vcl_source(bytes: Vec<u8>) -> Result<VclFile> {
+/// Parses one VCL input source and wraps parser failures with file context so
+/// callers get actionable diagnostics that name the resolved episode file.
+fn parse_vcl_source(bytes: Vec<u8>, episode: &Episode) -> Result<VclFile> {
     VclFile::from_bytes(bytes)
-        .map_err(|error| anyhow::anyhow!("failed to parse input file JILL1.VCL: {error}"))
+        .map_err(|error| anyhow::anyhow!("failed to parse input file {}: {error}", episode.vcl))
 }
 
 /// Parses one SHA input source and wraps parser failures with file context so
-/// callers get actionable diagnostics that name `JILL1.SHA`.
-fn parse_sha_source(bytes: Vec<u8>) -> Result<ShaFile> {
+/// callers get actionable diagnostics that name the resolved episode file.
+fn parse_sha_source(bytes: Vec<u8>, episode: &Episode) -> Result<ShaFile> {
     ShaFile::from_bytes(bytes)
-        .map_err(|error| anyhow::anyhow!("failed to parse input file JILL1.SHA: {error}"))
+        .map_err(|error| anyhow::anyhow!("failed to parse input file {}: {error}", episode.sha))
 }
 
 /// Builds deterministic JSON metadata for a `dump dma` request.
 fn dma_dump_json(data_dir: &Path) -> Result<String> {
     let directory = DataDirectory::new(data_dir.to_path_buf());
-    let source = read_dump_input_source(&directory, "JILL.DMA")?;
+    let source = read_dump_input_source(&directory, SHARED_DMA_FILE)?;
     let DumpInputSource {
         bytes,
         source_size,
@@ -577,7 +622,7 @@ fn dma_dump_json(data_dir: &Path) -> Result<String> {
         .collect::<Vec<_>>();
 
     let json = serde_json::json!({
-        "source_file": "JILL.DMA",
+        "source_file": SHARED_DMA_FILE,
         "source_size": source_size,
         "source_sha256": source_sha256,
         "entry_count": dma.entry_count(),
@@ -590,16 +635,16 @@ fn dma_dump_json(data_dir: &Path) -> Result<String> {
 }
 
 /// Builds deterministic JSON metadata for a `dump vcl` request.
-fn vcl_dump_json(data_dir: &Path) -> Result<String> {
+fn vcl_dump_json(data_dir: &Path, episode: &Episode) -> Result<String> {
     let directory = DataDirectory::new(data_dir.to_path_buf());
-    let source = read_dump_input_source(&directory, "JILL1.VCL")?;
+    let source = read_dump_input_source(&directory, episode.vcl)?;
     let DumpInputSource {
         bytes,
         source_size,
         source_sha256,
         ..
     } = source;
-    let vcl = parse_vcl_source(bytes)?;
+    let vcl = parse_vcl_source(bytes, episode)?;
 
     let entries = vcl
         .text_entries()
@@ -615,7 +660,7 @@ fn vcl_dump_json(data_dir: &Path) -> Result<String> {
         .collect::<Vec<_>>();
 
     let json = serde_json::json!({
-        "source_file": "JILL1.VCL",
+        "source_file": episode.vcl,
         "source_size": source_size,
         "source_sha256": source_sha256,
         "sound_entries_supported": false,
@@ -629,15 +674,12 @@ fn vcl_dump_json(data_dir: &Path) -> Result<String> {
 }
 
 /// Builds metadata JSON for `dump jn`.
-fn jn_dump_json(data_dir: &Path) -> Result<String> {
+fn jn_dump_json(data_dir: &Path, episode: &Episode) -> Result<String> {
     let directory = DataDirectory::new(data_dir.to_path_buf());
-    let required_files = DumpFrameworkKind::Jn.fixed_source_files();
-    let mut requested_files = required_files
-        .iter()
-        .map(|file| (*file).to_string())
-        .collect::<Vec<_>>();
+    let required_files = DumpFrameworkKind::Jn.fixed_source_files(episode);
+    let mut requested_files = required_files.clone();
     requested_files.extend(
-        discover_episode_one_jn1_files(data_dir)?
+        discover_jn_files(data_dir, episode)?
             .into_iter()
             .filter(|file| {
                 !required_files
@@ -803,16 +845,16 @@ struct ShaAtlasTilePlacement {
 }
 
 /// Builds deterministic SHA metadata and indexed atlas payloads.
-fn sha_dump_output(data_dir: &Path) -> Result<ShaDumpOutput> {
+fn sha_dump_output(data_dir: &Path, episode: &Episode) -> Result<ShaDumpOutput> {
     let directory = DataDirectory::new(data_dir.to_path_buf());
-    let source = read_dump_input_source(&directory, "JILL1.SHA")?;
+    let source = read_dump_input_source(&directory, episode.sha)?;
     let DumpInputSource {
         bytes,
         source_size,
         source_sha256,
         ..
     } = source;
-    let sha = parse_sha_source(bytes)?;
+    let sha = parse_sha_source(bytes, episode)?;
     let atlas = pack_sha_tiles_row_major(&sha);
     let palette = Palette::jill_vga();
     let atlas_indexed_png = encode_grayscale_png(&atlas)?;
@@ -889,7 +931,7 @@ fn sha_dump_output(data_dir: &Path) -> Result<ShaDumpOutput> {
         .collect::<Vec<_>>();
 
     let json = serde_json::json!({
-        "source_file": "JILL1.SHA",
+        "source_file": episode.sha,
         "source_size": source_size,
         "source_sha256": source_sha256,
         "header_entry_count": sha.header().entries().len(),
@@ -1261,21 +1303,22 @@ fn ensure_output_may_be_written(path: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
-/// Verifies required episode-1 files and discovered `*.JN1` files in `data_dir`.
-fn verify_data_directory(data_dir: PathBuf) -> Result<VerificationReport> {
+/// Verifies the fixed required files and discovered JN files for `episode` in `data_dir`.
+fn verify_data_directory(data_dir: PathBuf, episode: &Episode) -> Result<VerificationReport> {
     let directory = DataDirectory::new(data_dir.clone());
-    let required_files = REQUIRED_FILES
-        .iter()
-        .map(|(file, parser_domain)| verify_file(&directory, file, *parser_domain))
+    let required_files = required_files(episode)
+        .into_iter()
+        .map(|(file, parser_domain)| verify_file(&directory, &file, parser_domain, episode))
         .collect::<Vec<_>>();
 
-    let jn_files = discover_episode_one_jn1_files(directory.as_path())?
+    let intro_jn = episode.intro_jn();
+    let map_jn = episode.map_jn();
+    let jn_files = discover_jn_files(directory.as_path(), episode)?
         .into_iter()
         .filter(|file_name| {
-            !file_name.eq_ignore_ascii_case("INTRO.JN1")
-                && !file_name.eq_ignore_ascii_case("MAP.JN1")
+            !file_name.eq_ignore_ascii_case(&intro_jn) && !file_name.eq_ignore_ascii_case(&map_jn)
         })
-        .map(|file_name| verify_file(&directory, &file_name, ParserDomain::Jn))
+        .map(|file_name| verify_file(&directory, &file_name, ParserDomain::Jn, episode))
         .collect::<Vec<_>>();
 
     Ok(VerificationReport {
@@ -1290,6 +1333,7 @@ fn verify_file(
     directory: &DataDirectory,
     requested_file: &str,
     parser_domain: ParserDomain,
+    episode: &Episode,
 ) -> FileVerification {
     let resolved_path = match directory.resolve_path_case_insensitive(requested_file) {
         Ok(path) => path,
@@ -1337,7 +1381,7 @@ fn verify_file(
 
     let checksum_sha256 = sha256_lower_hex(&bytes);
     let size_bytes = bytes.len() as u64;
-    match parser_domain.parse(&bytes) {
+    match parser_domain.parse(&bytes, episode) {
         Ok(()) => FileVerification {
             requested_file: requested_file.to_string(),
             resolved_file: Some(path_relative_to_data_dir(
@@ -1365,38 +1409,6 @@ fn verify_file(
     }
 }
 
-/// Discovers top-level `*.JN1` files in deterministic order.
-fn discover_episode_one_jn1_files(data_dir: &Path) -> Result<Vec<String>> {
-    if !data_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut file_names = fs::read_dir(data_dir)?
-        .filter_map(std::result::Result::ok)
-        .filter_map(|entry| {
-            let is_file = entry.file_type().ok()?.is_file();
-            if !is_file {
-                return None;
-            }
-
-            let file_name = entry.file_name();
-            let extension = Path::new(&file_name).extension().and_then(OsStr::to_str)?;
-            if extension.eq_ignore_ascii_case("jn1") {
-                Some(file_name.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
-    file_names.sort_by(|left, right| {
-        left.to_ascii_lowercase()
-            .cmp(&right.to_ascii_lowercase())
-            .then_with(|| left.cmp(right))
-    });
-    Ok(file_names)
-}
-
 /// Returns a path relative to `data_dir` when possible.
 fn path_relative_to_data_dir(data_dir: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(data_dir)
@@ -1415,15 +1427,20 @@ fn sha256_lower_hex(bytes: &[u8]) -> String {
     hex
 }
 
-/// Prints a human-readable verification report.
-fn print_verification_report(report: &VerificationReport) {
+/// Prints a human-readable verification report for `episode`.
+fn print_verification_report(report: &VerificationReport, episode: &Episode) {
     println!("data directory: {}", report.data_dir.display());
+    println!("episode: {} ({})", episode.number, episode.default_dir);
     for file in &report.required_files {
         print_file_report("required", file);
     }
 
     if report.jn_files.is_empty() {
-        println!("jn_files: none discovered beyond INTRO.JN1 and MAP.JN1");
+        println!(
+            "jn_files: none discovered beyond {} and {}",
+            episode.intro_jn(),
+            episode.map_jn()
+        );
     } else {
         println!("jn_files:");
         for file in &report.jn_files {
@@ -1461,13 +1478,14 @@ fn print_file_report(label: &str, file: &FileVerification) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Command, DEFAULT_DATA_DIR, DataCommand, DataDirArgs, FileVerification, RunArgs,
-        SHA_ATLAS_INDEXED_FILE, SHA_ATLAS_RGB_FILE, SHA_ATLAS_TILE_PADDING, VerificationStatus,
-        dispatch, reject_original_data_output_with_roots, resolve_data_dir_with_env,
+        Cli, Command, DataCommand, DataDirArgs, FileVerification, RunArgs, SHA_ATLAS_INDEXED_FILE,
+        SHA_ATLAS_RGB_FILE, SHA_ATLAS_TILE_PADDING, VerificationStatus, dispatch,
+        reject_original_data_output_with_roots, resolve_data_dir_with_env,
         resolve_run_data_dir_with_env, verify_data_directory,
     };
     use assert2::check;
     use clap::Parser;
+    use openjill_data::episode;
     use png::Decoder;
     use serde_json::Value;
     use std::fs;
@@ -1534,9 +1552,9 @@ mod tests {
         write_valid_episode_one_fixture(temp_dir.path());
         fs::write(temp_dir.path().join("level2.jN1"), valid_jn_bytes()).expect("write level2.jN1");
 
-        let first = verify_data_directory(temp_dir.path().to_path_buf())
+        let first = verify_data_directory(temp_dir.path().to_path_buf(), &episode::JILL1)
             .expect("verification should succeed");
-        let second = verify_data_directory(temp_dir.path().to_path_buf())
+        let second = verify_data_directory(temp_dir.path().to_path_buf(), &episode::JILL1)
             .expect("repeated verification should succeed");
 
         check!(first.ok());
@@ -1572,7 +1590,7 @@ mod tests {
         write_valid_episode_one_fixture(temp_dir.path());
         fs::remove_file(temp_dir.path().join("JILL1.SHA")).expect("remove JILL1.SHA");
 
-        let report = verify_data_directory(temp_dir.path().to_path_buf())
+        let report = verify_data_directory(temp_dir.path().to_path_buf(), &episode::JILL1)
             .expect("verification should complete");
         check!(!report.ok());
         check!(matches!(
@@ -1593,7 +1611,7 @@ mod tests {
         write_valid_episode_one_fixture(temp_dir.path());
         fs::write(temp_dir.path().join("JILL1.CFG"), [0u8; 4]).expect("truncate JILL1.CFG");
 
-        let report = verify_data_directory(temp_dir.path().to_path_buf())
+        let report = verify_data_directory(temp_dir.path().to_path_buf(), &episode::JILL1)
             .expect("verification should complete");
         check!(!report.ok());
         let cfg_file = required_file(&report.required_files, "JILL1.CFG");
@@ -1639,6 +1657,7 @@ mod tests {
         let args = RunArgs {
             common: DataDirArgs {
                 data_dir: Some(PathBuf::from("/tmp/openjill-run-explicit")),
+                episode: None,
             },
         };
         let resolved = resolve_run_data_dir_with_env(&args, Some("/tmp/openjill-run-env".into()));
@@ -1655,7 +1674,10 @@ mod tests {
     #[test]
     fn run_uses_environment_fallback_when_flag_is_omitted() {
         let args = RunArgs {
-            common: DataDirArgs { data_dir: None },
+            common: DataDirArgs {
+                data_dir: None,
+                episode: None,
+            },
         };
         let resolved = resolve_run_data_dir_with_env(&args, Some("/tmp/openjill-run-env".into()));
         check!(resolved == PathBuf::from("/tmp/openjill-run-env"));
@@ -1666,15 +1688,18 @@ mod tests {
     /// Preconditions: neither an explicit `--data-dir` value nor an environment
     /// override is provided.
     ///
-    /// Invariants asserted: the workspace-relative `DEFAULT_DATA_DIR` is used as
-    /// the resolved run data directory.
+    /// Invariants asserted: the episode-1 default directory
+    /// ([`episode::JILL1::default_dir`]) is used as the resolved run data directory.
     #[test]
     fn run_falls_back_to_default_when_flag_and_env_are_absent() {
         let args = RunArgs {
-            common: DataDirArgs { data_dir: None },
+            common: DataDirArgs {
+                data_dir: None,
+                episode: None,
+            },
         };
         let resolved = resolve_run_data_dir_with_env(&args, None);
-        check!(resolved == PathBuf::from(DEFAULT_DATA_DIR));
+        check!(resolved == PathBuf::from(episode::JILL1.default_dir));
     }
 
     /// Unit under test: failing exit status from `data verify`.

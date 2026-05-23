@@ -6,6 +6,7 @@ use assert2::check;
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{ActiveInput, MessageDispatcher, ScreenHandler};
 use openjill_data::DataDirectory;
+use openjill_data::episode;
 use openjill_game::asset_cache::AssetCache;
 use openjill_game::screens::level_screen::{EPISODE_1_SKY_COLOR, LevelScreen};
 use std::path::{Path, PathBuf};
@@ -95,7 +96,7 @@ fn level_screen_constructs_and_renders_with_original_data() {
     };
 
     let directory = DataDirectory::new(&data_dir);
-    let cache = AssetCache::load(&directory)
+    let cache = AssetCache::load(&directory, &episode::JILL1)
         .unwrap_or_else(|err| panic!("AssetCache::load should succeed with real data: {err}"));
 
     let level_path = match directory.resolve_path_case_insensitive(LEVEL_FILE) {

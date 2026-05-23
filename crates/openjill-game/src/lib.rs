@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use openjill_core::{InputCommand, Palette};
 use openjill_data::DataDirectory;
+use openjill_data::episode::Episode;
 use openjill_data::sha::ShaFile;
 use openjill_render::{Presenter, PresenterError, SurfaceError};
 use thiserror::Error;
@@ -42,10 +43,10 @@ static INPUT_COMMAND_KEY_MAP: &[(KeyCode, InputCommand)] = &[
     (KeyCode::KeyQ, InputCommand::Quit),
 ];
 
-/// Runs the game event loop for the configured data directory.
-pub fn run(data_dir: PathBuf) -> Result<(), GameError> {
+/// Runs the game event loop for the configured data directory and episode.
+pub fn run(data_dir: PathBuf, episode: &'static Episode) -> Result<(), GameError> {
     let event_loop = EventLoop::new()?;
-    let mut app = GameApp::new(data_dir);
+    let mut app = GameApp::new(data_dir, episode);
     event_loop.run_app(&mut app)?;
     app.error.take().map_or(Ok(()), Err)
 }
@@ -58,6 +59,8 @@ const TICK_INTERVAL: Duration = Duration::from_millis(55);
 pub struct GameApp {
     /// Data directory selected by the CLI.
     data_dir: PathBuf,
+    /// Active episode descriptor resolved by the CLI.
+    episode: &'static Episode,
     /// Active native window when initialization succeeds.
     window: Option<Arc<Window>>,
     /// Rendering presenter initialized from the native window.
@@ -86,12 +89,16 @@ impl GameApp {
     /// Creates a new game app shell before the event loop enters `resumed`.
     ///
     /// Loads the startup palette from the first non-empty SHA color map found in
-    /// `JILL1.SHA`, or falls back to a greyscale ramp when no color map is available.
-    /// Also constructs the [`GameOrchestrator`] if the required asset files are present;
-    /// logs a warning to stderr and continues without game logic if they are not.
-    pub fn new(data_dir: PathBuf) -> Self {
-        let startup_assets = load_startup_assets_from_data_dir(&data_dir);
-        let orchestrator = match GameOrchestrator::new(DataDirectory::new(data_dir.clone())) {
+    /// the active episode's SHA file ([`Episode::sha`]), or falls back to a
+    /// greyscale ramp when no color map is available. Also constructs the
+    /// [`GameOrchestrator`] if the required asset files are present; logs a
+    /// warning to stderr and continues without game logic if they are not.
+    pub fn new(data_dir: PathBuf, episode: &'static Episode) -> Self {
+        let startup_assets = load_startup_assets_from_data_dir(&data_dir, episode);
+        let orchestrator = match GameOrchestrator::new(
+            DataDirectory::new(data_dir.clone()),
+            episode,
+        ) {
             Ok(orch) => {
                 println!("openjill-game: game orchestrator initialized");
                 Some(orch)
@@ -105,6 +112,7 @@ impl GameApp {
         };
         Self {
             data_dir,
+            episode,
             window: None,
             presenter: None,
             palette: startup_assets.palette,
@@ -165,12 +173,13 @@ impl GameApp {
     ///
     /// | Key | Action |
     /// |-----|--------|
-    /// | `L` | Force-transition into `1.JN1` (level 1) |
+    /// | `L` | Force-transition into level 1 of the active episode |
     /// | `K` | Send `CheckpointChangeLevelPrevious` (return to map) |
     /// | `R` | Send `DieRestartLevel` |
     ///
-    /// Episode 1 level files are named `<level_number>.JN1` on disk
-    /// (`1.JN1`, `2.JN1`, ..., `50.JN1`).  `L` calls
+    /// Level files are named `<level_number>.<jn_ext>` on disk where
+    /// `jn_ext` is the active episode's JN extension (for example
+    /// `1.JN1`, `2.JN1`, ..., `50.JN1` in episode 1). `L` calls
     /// [`GameOrchestrator::force_transition`] directly: the dispatcher route
     /// requires a subscriber, and [`crate::screens::map_screen::MapScreen`]
     /// does not subscribe to `CheckpointChangeLevel`, so a queued message
@@ -184,11 +193,12 @@ impl GameApp {
         };
         match key_code {
             KeyCode::KeyL => {
+                let level_file = self.episode.level_jn(1);
                 orch.force_transition(openjill_core::ScreenTransition::Level {
-                    file: String::from("1.JN1"),
+                    file: level_file.clone(),
                     number: 1,
                 });
-                eprintln!("openjill-game: debug: force-transition -> LevelScreen 1.JN1");
+                eprintln!("openjill-game: debug: force-transition -> LevelScreen {level_file}");
             }
             KeyCode::KeyK => {
                 orch.dispatcher_mut().send(
@@ -209,19 +219,24 @@ impl GameApp {
     }
 }
 
-/// Startup rendering assets loaded from `JILL1.SHA`.
+/// Startup rendering assets loaded from the active episode's SHA file.
 struct StartupAssets {
     /// Palette used to present indexed frames.
     palette: Palette,
 }
 
-/// Loads startup rendering assets from `JILL1.SHA`.
+/// Loads startup rendering assets from the active episode's SHA file
+/// ([`Episode::sha`]).
 ///
-/// The VGA palette is always the hardcoded `Palette::jill_vga()` — it does not come from
+/// The VGA palette is always the hardcoded `Palette::jill_vga()` - it does not come from
 /// the SHA file. SHA is opened here only for diagnostic logging (font tileset index).
-fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAssets {
+fn load_startup_assets_from_data_dir(
+    data_dir: &std::path::Path,
+    episode: &Episode,
+) -> StartupAssets {
     let directory = DataDirectory::new(data_dir.to_path_buf());
-    match directory.open_reader("JILL1.SHA") {
+    let sha_name = episode.sha;
+    match directory.open_reader(sha_name) {
         Ok(mut reader) => match ShaFile::parse(&mut reader) {
             Ok(sha) => {
                 if let Some(font_tileset) = sha.tilesets().iter().find(|ts| ts.is_font()) {
@@ -234,11 +249,11 @@ fn load_startup_assets_from_data_dir(data_dir: &std::path::Path) -> StartupAsset
                 }
             }
             Err(error) => {
-                eprintln!("openjill-game: failed to parse JILL1.SHA ({error})");
+                eprintln!("openjill-game: failed to parse {sha_name} ({error})");
             }
         },
         Err(error) => {
-            eprintln!("openjill-game: JILL1.SHA unavailable ({error})");
+            eprintln!("openjill-game: {sha_name} unavailable ({error})");
         }
     }
     StartupAssets {
