@@ -148,6 +148,18 @@ pub trait ObjectEntity: Send {
         false
     }
 
+    /// Per-tick lifecycle hook that notifies the entity of the player's
+    /// current bounding box.
+    ///
+    /// Called once per tick by the level loop *before* [`Self::update`], so
+    /// hazards that depend on the player's position (e.g. a collapsing
+    /// ceiling that arms when the player walks under it, a falling spike that
+    /// drops when the player crosses below) can record the proximity state
+    /// without needing a player reference inside `update`.  Default
+    /// implementation is a no-op so the vast majority of entities can ignore
+    /// the hook entirely.
+    fn observe_player(&mut self, _player_bbox: Rect) {}
+
     /// Drains a pending player-kill classification armed during
     /// [`ObjectEntity::on_touch`].
     ///
@@ -197,6 +209,24 @@ pub trait BackgroundEntity: Send {
 
     /// Returns `true` when the player passes through this cell vertically.
     fn is_passthrough(&self) -> bool;
+
+    /// Returns `true` when this cell blocks vertical motion at the supplied
+    /// player vertical velocity `player_yd` (positive = falling).
+    ///
+    /// The default implementation mirrors [`Self::is_passthrough`]: regular
+    /// solid cells block in both directions, regular passable cells block in
+    /// neither.  One-way cells override this to consult `player_yd` directly:
+    /// `FFloorBackground` (fake floor) blocks upward motion only so the
+    /// player jumps into its top edge, and `FroofBackground` (fake roof)
+    /// blocks downward motion only so the player lands on its top edge while
+    /// still being free to jump up through it from below.
+    ///
+    /// A `player_yd == 0` probe (used by floor-detection helpers that ask
+    /// "is there a floor below me right now?") follows the falling convention
+    /// and treats the cell as solid when it blocks the falling direction.
+    fn blocks_vertical(&self, _player_yd: i32) -> bool {
+        !self.is_passthrough()
+    }
 
     /// Returns `true` when the player can climb this cell (vine/tree).
     fn is_climbable(&self) -> bool;
