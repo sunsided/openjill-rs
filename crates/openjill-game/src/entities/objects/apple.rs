@@ -15,6 +15,15 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset index for apple sprites (matches `AppleManager.tileSet = 9`).
+const TILESET: u8 = 9;
+
+/// Base tile index within [`TILESET`] (matches `AppleManager.tile = 0`).
+const BASE_TILE: u16 = 0;
+
+/// Number of animation frames (matches `AppleManager.numberTileSet = 4`).
+const FRAME_COUNT: u16 = 4;
+
 /// Apple pickup entity.
 pub struct AppleEntity {
     /// World X position in pixels.
@@ -25,6 +34,9 @@ pub struct AppleEntity {
     w: i32,
     /// Bounding box height in pixels.
     h: i32,
+    /// Animation frame counter; incremented each tick, cycles every
+    /// `FRAME_COUNT * 2` ticks so each tile is shown for 2 ticks.
+    frame: u16,
     /// `true` once the apple has been touched by the player.
     removed: bool,
 }
@@ -39,13 +51,14 @@ impl AppleEntity {
             y: i32::from(item.y()),
             w,
             h,
+            frame: 0,
             removed: false,
         }
     }
 }
 
 impl ObjectEntity for AppleEntity {
-    /// Apples are inert between touches; per-tick update is a no-op.
+    /// Advances the animation frame counter.
     fn update(
         &mut self,
         _input: &ActiveInput,
@@ -53,13 +66,23 @@ impl ObjectEntity for AppleEntity {
         _backgrounds: &BackgroundGrid,
         _dispatcher: &mut MessageDispatcher,
     ) {
+        self.frame = self.frame.wrapping_add(1);
     }
 
-    /// Sprite rendering is deferred until the SHA-driven tileset binding for
-    /// pickup entities lands; for now the entity is invisible (matches the
-    /// pre-pickup placeholder behaviour).
+    /// Returns a `Blit` for the current animation frame.
+    ///
+    /// Cycles through `FRAME_COUNT` tiles (each shown for 2 ticks), matching
+    /// `AppleManager.msgDraw` / `msgUpdate` from the Java reference.
     fn draw(&self) -> Option<RenderCommand> {
-        None
+        let tile = BASE_TILE + (self.frame / 2) % FRAME_COUNT;
+        Some(RenderCommand::Blit {
+            tileset: TILESET,
+            tile,
+            x: self.x,
+            y: self.y,
+            opaque: false,
+            clip: None,
+        })
     }
 
     /// Dispatches the gem inventory pickup and flags the apple for removal.

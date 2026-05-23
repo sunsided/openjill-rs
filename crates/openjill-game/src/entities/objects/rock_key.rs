@@ -17,7 +17,16 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
-/// Rock key pickup entity.
+/// SHA tileset index for rock-key sprites (matches `RockKeyManager.tileSet = 9`).
+const TILESET: u8 = 9;
+
+/// Base tile index within [`TILESET`] (matches `RockKeyManager.tile = 4`).
+const BASE_TILE: u16 = 4;
+
+/// Number of animation frames (matches `RockKeyManager.numberTileSet = 4`).
+const FRAME_COUNT: u16 = 4;
+
+/// Rock key pickup entity (the gem that opens map doors).
 pub struct RockKeyEntity {
     /// World X position in pixels.
     x: i32,
@@ -27,6 +36,9 @@ pub struct RockKeyEntity {
     w: i32,
     /// Bounding box height in pixels.
     h: i32,
+    /// Animation frame counter; incremented each tick, cycles every
+    /// `FRAME_COUNT * 2` ticks so each tile is shown for 2 ticks.
+    frame: u16,
     /// `true` once the rock key has been touched by the player.
     removed: bool,
 }
@@ -41,13 +53,14 @@ impl RockKeyEntity {
             y: i32::from(item.y()),
             w,
             h,
+            frame: 0,
             removed: false,
         }
     }
 }
 
 impl ObjectEntity for RockKeyEntity {
-    /// Inert between touches.
+    /// Advances the animation frame counter.
     fn update(
         &mut self,
         _input: &ActiveInput,
@@ -55,11 +68,23 @@ impl ObjectEntity for RockKeyEntity {
         _backgrounds: &BackgroundGrid,
         _dispatcher: &mut MessageDispatcher,
     ) {
+        self.frame = self.frame.wrapping_add(1);
     }
 
-    /// Sprite rendering deferred until pickup tile binding lands.
+    /// Returns a `Blit` for the current animation frame.
+    ///
+    /// Cycles through `FRAME_COUNT` tiles (each shown for 2 ticks), matching
+    /// `AbstractKeyManager.msgDraw` / `msgUpdate` from the Java reference.
     fn draw(&self) -> Option<RenderCommand> {
-        None
+        let tile = BASE_TILE + (self.frame / 2) % FRAME_COUNT;
+        Some(RenderCommand::Blit {
+            tileset: TILESET,
+            tile,
+            x: self.x,
+            y: self.y,
+            opaque: false,
+            clip: None,
+        })
     }
 
     /// Dispatches the gem inventory pickup and flags the entity for removal.

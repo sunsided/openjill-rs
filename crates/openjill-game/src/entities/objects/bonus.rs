@@ -20,6 +20,9 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset index for all bonus sprites (matches `BonusManager` config `"14,*"`).
+const TILESET: u8 = 14;
+
 /// Bonus pickup entity.
 pub struct BonusEntity {
     /// World X position in pixels.
@@ -32,6 +35,8 @@ pub struct BonusEntity {
     h: i32,
     /// Inventory item granted on touch, resolved from the JN `counter` index.
     item: InventoryObject,
+    /// SHA tile index for this bonus sprite, resolved from `BonusManager` config.
+    tile: u16,
     /// `true` once the bonus has been touched by the player.
     removed: bool,
 }
@@ -41,12 +46,14 @@ impl BonusEntity {
     pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
+        let resolved = resolve_bonus_item(item.counter());
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()),
             w,
             h,
-            item: resolve_bonus_item(item.counter()),
+            tile: bonus_tile(resolved),
+            item: resolved,
             removed: false,
         }
     }
@@ -63,9 +70,19 @@ impl ObjectEntity for BonusEntity {
     ) {
     }
 
-    /// Sprite rendering deferred until pickup tile binding lands.
+    /// Returns a `Blit` for this bonus sprite.
+    ///
+    /// Single frame - `BonusManager.msgDraw()` returns one static image
+    /// with no animation cycle.
     fn draw(&self) -> Option<RenderCommand> {
-        None
+        Some(RenderCommand::Blit {
+            tileset: TILESET,
+            tile: self.tile,
+            x: self.x,
+            y: self.y,
+            opaque: false,
+            clip: None,
+        })
     }
 
     /// Dispatches the resolved inventory pickup and flags the entity for
@@ -123,5 +140,19 @@ fn resolve_bonus_item(counter: i16) -> InventoryObject {
         5 => InventoryObject::Firebird,
         8 => InventoryObject::Blade,
         _ => InventoryObject::Gem,
+    }
+}
+
+/// Maps an inventory item to the tile index within tileset 14 used by
+/// `BonusManager` (values from `object_conf.json`'s `BonusManager` block).
+fn bonus_tile(item: InventoryObject) -> u16 {
+    match item {
+        InventoryObject::Key => 12,
+        InventoryObject::Knife => 13,
+        InventoryObject::Gem => 11,
+        InventoryObject::FireFlower => 14,
+        InventoryObject::Firebird => 15,
+        InventoryObject::Blade => 35,
+        InventoryObject::Jill => 38,
     }
 }

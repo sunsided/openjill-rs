@@ -14,6 +14,15 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset index for red-key sprites (matches `RedKeyManager.tileSet = 14`).
+const TILESET: u8 = 14;
+
+/// Base tile index within [`TILESET`] (matches `RedKeyManager.tile = 6`).
+const BASE_TILE: u16 = 6;
+
+/// Number of animation frames (matches `RedKeyManager.numberTileSet = 4`).
+const FRAME_COUNT: u16 = 4;
+
 /// Red key pickup entity.
 pub struct RedKeyEntity {
     /// World X position in pixels.
@@ -24,6 +33,9 @@ pub struct RedKeyEntity {
     w: i32,
     /// Bounding box height in pixels.
     h: i32,
+    /// Animation frame counter; incremented each tick, cycles every
+    /// `FRAME_COUNT * 2` ticks so each tile is shown for 2 ticks.
+    frame: u16,
     /// `true` once the key has been touched by the player.
     removed: bool,
 }
@@ -38,13 +50,14 @@ impl RedKeyEntity {
             y: i32::from(item.y()),
             w,
             h,
+            frame: 0,
             removed: false,
         }
     }
 }
 
 impl ObjectEntity for RedKeyEntity {
-    /// Inert between touches.
+    /// Advances the animation frame counter.
     fn update(
         &mut self,
         _input: &ActiveInput,
@@ -52,11 +65,23 @@ impl ObjectEntity for RedKeyEntity {
         _backgrounds: &BackgroundGrid,
         _dispatcher: &mut MessageDispatcher,
     ) {
+        self.frame = self.frame.wrapping_add(1);
     }
 
-    /// Sprite rendering deferred until pickup tile binding lands.
+    /// Returns a `Blit` for the current animation frame.
+    ///
+    /// Cycles through `FRAME_COUNT` tiles (each shown for 2 ticks), matching
+    /// `AbstractKeyManager.msgDraw` / `msgUpdate` from the Java reference.
     fn draw(&self) -> Option<RenderCommand> {
-        None
+        let tile = BASE_TILE + (self.frame / 2) % FRAME_COUNT;
+        Some(RenderCommand::Blit {
+            tileset: TILESET,
+            tile,
+            x: self.x,
+            y: self.y,
+            opaque: false,
+            clip: None,
+        })
     }
 
     /// Dispatches the key inventory pickup and flags the entity for removal.
