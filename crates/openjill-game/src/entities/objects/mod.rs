@@ -3,8 +3,9 @@
 //! Every concrete type listed in `objects_manager_mapping.json` of the Java
 //! reference is expected to eventually live as one submodule below.  The
 //! registry covers the player, pickups, keys, doors, triggers, checkpoints,
-//! projectiles, switches, lifts, and decoration entities required by epic 6;
-//! remaining types fall through to the catch-all [`stub::StubObjectEntity`].
+//! projectiles, switches, lifts, and decoration entities required by epic 6.
+//! Three low-priority types are explicitly stubbed (types 40, 49, 67); all
+//! remaining unknown types fall through to the catch-all [`stub::StubObjectEntity`].
 
 pub mod apple;
 pub mod bees;
@@ -133,11 +134,13 @@ pub fn make_object_entity(
         37 => Box::new(HitFireEntity::new(item, cache)),
         38 => Box::new(FallingSpikeEntity::new(item, cache)),
         39 => Box::new(SnakeEntity::new(item, cache)),
+        40 => Box::new(StubObjectEntity::new(type_id, item)),
         42 => Box::new(HugeLetterTileEntity::new(item, cache)),
         45 => Box::new(HiveEntity::new(item, cache)),
         46 => Box::new(BeesEntity::new(item, cache)),
         47 => Box::new(CrabEntity::new(item, cache)),
         48 => Box::new(GatorEntity::new(item, cache)),
+        49 => Box::new(StubObjectEntity::new(type_id, item)),
         50 => Box::new(BladeEntity::new(item, cache)),
         51 => Box::new(SkullEntity::new(item, cache)),
         53 => Box::new(GhostEntity::new(item, cache)),
@@ -147,6 +150,7 @@ pub fn make_object_entity(
         62 => Box::new(FirebirdWeaponEntity::new(item, cache)),
         64 => Box::new(EyesEntity::new(item, cache)),
         65 => Box::new(SparkEntity::new(item, cache)),
+        67 => Box::new(StubObjectEntity::new(type_id, item)),
         other => Box::new(StubObjectEntity::new(other, item)),
     }
 }
@@ -222,6 +226,33 @@ mod tests {
         let entity = make_object_entity(12, &item, None, &cache);
         assert!(entity.is_checkpoint());
         assert!(!entity.is_player());
+    }
+
+    /// Unit under test: `make_object_entity` for the three explicitly-stubbed
+    /// low-priority types (40 `UnderWaterRockEntity`, 49 `EpicEntity`, 67
+    /// `DemoMapEntity`).
+    ///
+    /// Preconditions: synthetic JN object records carry each of the three
+    /// type ids.
+    ///
+    /// Invariants asserted: construction does not panic; the returned entity
+    /// reports neither `is_player` nor `is_checkpoint`; bounding box is
+    /// zero-sized (matching `StubObjectEntity` output).
+    #[test]
+    fn make_object_entity_returns_stub_for_explicitly_stubbed_types() {
+        let cache = AssetCache::synthetic();
+        for type_id in [40u8, 49, 67] {
+            let item = synthetic_object_of_type(type_id);
+            let entity = make_object_entity(type_id, &item, None, &cache);
+            assert!(!entity.is_player(), "type {type_id} should not be player");
+            assert!(
+                !entity.is_checkpoint(),
+                "type {type_id} should not be checkpoint"
+            );
+            let bbox = entity.bounding_box();
+            assert_eq!(bbox.w, 0, "type {type_id} stub bbox width");
+            assert_eq!(bbox.h, 0, "type {type_id} stub bbox height");
+        }
     }
 
     /// Unit under test: `make_object_entity` for the apple type id.
