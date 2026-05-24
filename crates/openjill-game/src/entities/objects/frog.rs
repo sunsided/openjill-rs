@@ -4,30 +4,35 @@
 //! reverses direction at walls or gaps, jumps periodically, and kills the
 //! player on contact.
 //!
-//! Tileset/tile from `object_conf.json`: `tileSet = 4`, `tile = 0`,
-//! `numberTileSet = 2`.
-//!
-//! FIXME(epic-6): confirm tileset 4 tiles 0..=1 against JILL1.SHA dump.
+//! Tileset/tile from `object_conf.json`: `tileSet = 63`, `tile = 0`,
+//! `numberTileSet = 6` (tiles 0-2 = floor walk, tiles 3-5 = jump arc).
+//! SHA dump confirms: tileset 63 tile 0 is 14×10 px (6 tiles total).
 
-use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
+use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
 use openjill_core::{
     ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
     ObjectEntity, Rect, RenderCommand, RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
-use super::enemy_shared::{blocked_ahead, floor_below, floor_under_next};
+use super::enemy_shared::{blocked_ahead, floor_below, floor_under_next, sprite_dims};
 use crate::asset_cache::AssetCache;
 
-const TILESET_INDEX: u8 = 4;
-const TILE_BASE: u16 = 0;
-const NUMBER_TILE_SET: u16 = 2;
+const TILESET_INDEX: u8 = 63;
+const NUMBER_TILE_SET: u16 = 6;
+/// Frames per animation state (floor and jump each use 3 tiles).
+const FRAMES_PER_STATE: u16 = 3;
 const X_SPEED: i32 = 4;
 const SCORE_VALUE: i32 = 100;
-const JUMP_PERIOD: i32 = 32;
-const JUMP_INIT_YD: i32 = -8;
+/// Ticks on the ground before initiating a jump (`counterBeforeJump`).
+const JUMP_PERIOD: i32 = 17;
+const JUMP_INIT_YD: i32 = -12;
 const GRAVITY: i32 = 2;
-const FALL_SPEED_MAX: i32 = 8;
+/// Max downward speed per tick (`ySpeedMax`).
+const FALL_SPEED_MAX: i32 = 12;
+/// y_speed threshold below which the jump-arc tile set is shown
+/// (`ySpeedChangePicture`).
+const JUMP_Y_THRESHOLD: i32 = -10;
 
 pub struct FrogEntity {
     x: i32,
@@ -45,15 +50,13 @@ pub struct FrogEntity {
 }
 
 impl FrogEntity {
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
-        let w = i32::from(item.width()).max(BLOCK_SIZE_I);
-        let h = {
-            let v = i32::from(item.height());
-            if v > 0 { v } else { BLOCK_SIZE_I }
-        };
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        let (w, h) = sprite_dims(cache, TILESET_INDEX);
+        let jn_h = i32::from(item.height());
+        let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };
         Self {
             x: i32::from(item.x()),
-            y: i32::from(item.y()),
+            y: i32::from(item.y()) - y_adj,
             w,
             h,
             x_speed: X_SPEED,
@@ -130,10 +133,15 @@ impl ObjectEntity for FrogEntity {
         if self.dead {
             return None;
         }
-        let frame = (self.counter as u16).min(NUMBER_TILE_SET - 1);
+        let frame = (self.counter as u16) % FRAMES_PER_STATE;
+        let base = if self.y_speed < JUMP_Y_THRESHOLD {
+            FRAMES_PER_STATE
+        } else {
+            0
+        };
         Some(RenderCommand::Blit {
             tileset: TILESET_INDEX,
-            tile: TILE_BASE + frame,
+            tile: base + frame,
             x: self.x,
             y: self.y,
             opaque: false,
