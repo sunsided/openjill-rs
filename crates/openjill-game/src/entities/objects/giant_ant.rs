@@ -4,16 +4,16 @@
 //! patrol; reverses at walls and gaps; kills player on contact.
 //!
 //! Tileset/tile: `tileSet = 6`, `tile = 0`, `numberTileSet = 4`.
-//! FIXME(epic-6): confirm tileset 6 tiles 0..=3 against JILL1.SHA dump.
+//! SHA dump confirms: tileset 6 tile 0 is 32×8 px.
 
-use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
+use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
 use openjill_core::{
     ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
     ObjectEntity, Rect, RenderCommand, RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
-use super::enemy_shared::{blocked_ahead, floor_under_next};
+use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
 use crate::asset_cache::AssetCache;
 
 const TILESET_INDEX: u8 = 6;
@@ -36,15 +36,13 @@ pub struct GiantAntEntity {
 }
 
 impl GiantAntEntity {
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
-        let w = i32::from(item.width()).max(BLOCK_SIZE_I);
-        let h = {
-            let v = i32::from(item.height());
-            if v > 0 { v } else { BLOCK_SIZE_I }
-        };
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        let (w, h) = sprite_dims(cache, TILESET_INDEX);
+        let jn_h = i32::from(item.height());
+        let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };
         Self {
             x: i32::from(item.x()),
-            y: i32::from(item.y()),
+            y: i32::from(item.y()) - y_adj,
             w,
             h,
             x_speed: X_SPEED,

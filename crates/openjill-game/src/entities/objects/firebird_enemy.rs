@@ -6,7 +6,7 @@
 //! kills player on contact.
 //!
 //! Tileset/tile: `tileSet = 5`, `tile = 0`, `numberTileSet = 4`.
-//! FIXME(epic-6): confirm tileset 5 tiles 0..=3 against JILL1.SHA dump.
+//! SHA dump confirms: tileset 5 tile 0 is 32×16 px.
 
 use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
 use openjill_core::{
@@ -16,6 +16,7 @@ use openjill_core::{
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
+use crate::entities::objects::enemy_shared::sprite_dims;
 
 const TILESET_INDEX: u8 = 5;
 const TILE_BASE: u16 = 0;
@@ -39,9 +40,8 @@ pub struct FirebirdEnemyEntity {
 }
 
 impl FirebirdEnemyEntity {
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
-        let w = i32::from(item.width()).max(BLOCK_SIZE_I);
-        let h = i32::from(item.height()).max(BLOCK_SIZE_I);
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        let (w, h) = sprite_dims(cache, TILESET_INDEX);
         let xd = i32::from(item.x_speed());
         let yd = i32::from(item.y_speed());
         Self {
@@ -79,7 +79,7 @@ impl FirebirdEnemyEntity {
         for cy in cy_t..=cy_b {
             for cx in cx_l..=cx_r {
                 if let Some(cell) = backgrounds.get(cx, cy)
-                    && (!cell.is_passthrough() || cell.is_stair())
+                    && !cell.is_passthrough()
                 {
                     return true;
                 }
