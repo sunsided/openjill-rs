@@ -5,7 +5,7 @@ use openjill_core::entity::Rect;
 use openjill_core::Palette;
 use openjill_data::dma::{DmaEntry, DmaFile};
 use openjill_data::jn::{BACKGROUND_HEIGHT, BACKGROUND_WIDTH, JnFile};
-use openjill_data::sha::{ShaFile, ShaTile};
+use openjill_data::sha::{ShaFile, ShaTile, ShaTileSet};
 use std::collections::HashMap;
 
 /// Width of one JN background cell in pixels.
@@ -97,7 +97,7 @@ pub fn map_to_png_with_viewport(
 /// tileset or tile index is out of range.
 fn resolve_tile<'a>(
     entry: &DmaEntry,
-    tilesets_by_index: &HashMap<usize, &'a openjill_data::sha::ShaTileSet>,
+    tilesets_by_index: &HashMap<usize, &'a ShaTileSet>,
 ) -> Option<&'a ShaTile> {
     let tileset = tilesets_by_index.get(&(entry.tileset() as usize))?;
     tileset.tiles().get(entry.tile() as usize)
@@ -221,11 +221,12 @@ mod tests {
     /// Builds synthetic JN bytes with selected non-zero background cells.
     fn jn_bytes_with_cells(cells: &[(usize, usize, u16)]) -> Vec<u8> {
         const BACKGROUND_BYTES: usize = 128 * 64 * 2;
+        const BACKGROUND_HEIGHT: usize = 64;
         const SAVE_BLOCK_BYTES: usize = 70;
         let mut bytes = vec![0u8; BACKGROUND_BYTES + 2 + SAVE_BLOCK_BYTES];
 
         for (x, y, map_code) in cells {
-            let cell_index = x * 64 + y;
+            let cell_index = x * BACKGROUND_HEIGHT + y;
             let offset = cell_index * 2;
             bytes[offset..offset + 2].copy_from_slice(&map_code.to_le_bytes());
         }
