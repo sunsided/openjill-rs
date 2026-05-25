@@ -6,7 +6,7 @@ use std::fmt::Write;
 /// Exports parsed `*.VCL` text entries as aligned text lines.
 ///
 /// Each output line contains one entry in parser order with a right-aligned
-/// index and decoded payload: `<index>: <payload>`.
+/// index and control-character-escaped payload: `<index>: <payload>`.
 pub fn entries_to_text(vcl: &VclFile) -> String {
     let index_width = vcl
         .text_entries()
@@ -24,12 +24,29 @@ pub fn entries_to_text(vcl: &VclFile) -> String {
             out,
             "{:>index_width$}: {}",
             entry.index(),
-            entry.text(),
+            escape_text_payload(entry.text()),
             index_width = index_width
         )
         .expect("writing VCL text export into String should not fail");
     }
     out
+}
+
+fn escape_text_payload(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\0' => escaped.push_str("\\0"),
+            '\r' => escaped.push_str("\\r"),
+            '\n' => escaped.push_str("\\n"),
+            ch if ch.is_control() => {
+                write!(escaped, "\\x{:02X}", ch as u32)
+                    .expect("writing escaped control character into String should not fail");
+            }
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 /// Exports parsed `*.VCL` text entries as JSON (`[{index,payload}, ...]`).
@@ -77,6 +94,20 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
 
         check!(lines == vec![" 3: HELLO", "12: A\\B", "39: DONE"]);
+    }
+
+    /// Unit under test: [`entries_to_text`].
+    ///
+    /// Invariants asserted: control characters are escaped so text output keeps
+    /// one entry per line.
+    #[test]
+    fn entries_to_text_escapes_control_characters() {
+        let mut bytes = vec![0; table_end()];
+        write_text_entry(&mut bytes, 4, 700, 5);
+        write_text_at(&mut bytes, 700, b"A\n\r\0\x1b");
+        let vcl = VclFile::from_bytes(bytes).expect("fixture should parse");
+
+        check!(entries_to_text(&vcl) == "4: A\\n\\r\\0\\x1B\n");
     }
 
     /// Unit under test: [`entries_to_json`].

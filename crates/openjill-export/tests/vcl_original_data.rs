@@ -22,9 +22,9 @@ const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 /// neither is available this test self-skips.
 ///
 /// Invariants asserted: text output has one line per parsed entry in table
-/// order, each line stores a right-aligned index prefix and payload; JSON
-/// output parses as an array with the same entry count and matching
-/// `{index,payload}` values.
+/// order, each line stores a right-aligned index prefix and a control-character-
+/// escaped payload; JSON output parses as an array with the same entry count and
+/// matching `{index,payload}` values.
 #[test]
 fn exports_original_jill_vcl_entries_when_available() {
     let env_override = std::env::var_os(DATA_DIR_ENV);
@@ -72,7 +72,7 @@ fn exports_original_jill_vcl_entries_when_available() {
             .expect("text line should separate index and payload");
         check!(index_part.len() == index_width);
         check!(index_part.trim().parse::<usize>().ok() == Some(entry.index()));
-        check!(payload_part == entry.text());
+        check!(payload_part == escape_text_payload(entry.text()));
     }
 
     let json: serde_json::Value =
@@ -99,4 +99,18 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+fn escape_text_payload(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\0' => escaped.push_str("\\0"),
+            '\r' => escaped.push_str("\\r"),
+            '\n' => escaped.push_str("\\n"),
+            ch if ch.is_control() => escaped.push_str(&format!("\\x{:02X}", ch as u32)),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
 }
