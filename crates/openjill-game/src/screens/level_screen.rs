@@ -946,6 +946,7 @@ impl LevelScreen {
                 if t_idx == p_idx
                     || target.is_player()
                     || target.is_projectile()
+                    || target.is_decorative()
                     || target.is_dead()
                     || target.should_remove()
                 {

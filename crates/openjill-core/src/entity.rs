@@ -170,6 +170,18 @@ pub trait ObjectEntity: Send {
         false
     }
 
+    /// Returns `true` when this object is a purely cosmetic / decorative
+    /// entity (e.g. a colored-bullet scatter particle from an enemy
+    /// death burst) that must not participate in collision passes.
+    ///
+    /// The level loop's projectile-vs-enemy hit pass uses this to skip
+    /// decorative targets so a player-thrown projectile resting at the
+    /// burst origin does not instantly reap every newly spawned
+    /// particle on the next overlap tick.
+    fn is_decorative(&self) -> bool {
+        false
+    }
+
     /// Returns `true` when this object has signalled that it should be removed
     /// from the active object list.
     ///

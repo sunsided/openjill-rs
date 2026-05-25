@@ -254,6 +254,15 @@ impl ObjectEntity for ScatterParticleEntity {
     fn always_active(&self) -> bool {
         true
     }
+
+    /// Scatter particles are visual-only and must be skipped by the
+    /// projectile-vs-enemy hit pass; otherwise a player-thrown
+    /// projectile resting at the burst origin reaps every freshly
+    /// spawned particle on the next overlap tick, leaving the death
+    /// burst showing only one frame.
+    fn is_decorative(&self) -> bool {
+        true
+    }
 }
 
 /// Returns the rotating-particle tile index for the supplied tick
