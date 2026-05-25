@@ -3,6 +3,8 @@
 use openjill_data::vcl::VclFile;
 use std::fmt::Write;
 
+const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+
 /// Exports parsed `*.VCL` text entries as aligned text lines.
 ///
 /// Each output line contains one entry in parser order with a right-aligned
@@ -32,7 +34,8 @@ pub fn entries_to_text(vcl: &VclFile) -> String {
     out
 }
 
-fn escape_text_payload(text: &str) -> String {
+/// Escapes control characters for line-oriented VCL text export.
+pub fn escape_text_payload(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
@@ -40,8 +43,10 @@ fn escape_text_payload(text: &str) -> String {
             '\r' => escaped.push_str("\\r"),
             '\n' => escaped.push_str("\\n"),
             ch if ch.is_control() => {
-                write!(escaped, "\\x{:02X}", ch as u32)
-                    .expect("writing escaped control character into String should not fail");
+                let value = ch as u32;
+                escaped.push_str("\\x");
+                escaped.push(HEX_DIGITS[((value >> 4) & 0x0F) as usize] as char);
+                escaped.push(HEX_DIGITS[(value & 0x0F) as usize] as char);
             }
             ch => escaped.push(ch),
         }
@@ -72,7 +77,7 @@ pub fn file_to_string(file: &VclFile) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{entries_to_json, entries_to_text};
+    use super::{entries_to_json, entries_to_text, escape_text_payload};
     use assert2::check;
     use openjill_data::vcl::VclFile;
 
@@ -107,7 +112,7 @@ mod tests {
         write_text_at(&mut bytes, 700, b"A\n\r\0\x1b");
         let vcl = VclFile::from_bytes(bytes).expect("fixture should parse");
 
-        check!(entries_to_text(&vcl) == "4: A\\n\\r\\0\\x1B\n");
+        check!(entries_to_text(&vcl) == format!("4: {}\n", escape_text_payload("A\n\r\0\x1b")));
     }
 
     /// Unit under test: [`entries_to_json`].

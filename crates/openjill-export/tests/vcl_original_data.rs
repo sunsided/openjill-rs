@@ -4,7 +4,7 @@
 use assert2::check;
 use openjill_data::DataDirectory;
 use openjill_data::vcl::VclFile;
-use openjill_export::vcl::{entries_to_json, entries_to_text};
+use openjill_export::vcl::{entries_to_json, entries_to_text, escape_text_payload};
 use std::path::{Path, PathBuf};
 
 /// Environment variable that lets a developer override the data directory at
@@ -99,18 +99,4 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     } else {
         None
     }
-}
-
-fn escape_text_payload(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for ch in text.chars() {
-        match ch {
-            '\0' => escaped.push_str("\\0"),
-            '\r' => escaped.push_str("\\r"),
-            '\n' => escaped.push_str("\\n"),
-            ch if ch.is_control() => escaped.push_str(&format!("\\x{:02X}", ch as u32)),
-            ch => escaped.push(ch),
-        }
-    }
-    escaped
 }

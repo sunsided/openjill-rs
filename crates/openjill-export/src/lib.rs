@@ -74,6 +74,15 @@ mod tests {
         let _: fn(&VclFile) -> String = vcl::entries_to_text;
     }
 
+    /// Unit under test: [`vcl::escape_text_payload`].
+    ///
+    /// Invariants asserted: the helper keeps accepting a text slice and
+    /// returning an escaped `String`.
+    #[test]
+    fn vcl_escape_text_payload_smoke_test_pins_signature() {
+        let _: fn(&str) -> String = vcl::escape_text_payload;
+    }
+
     /// Unit under test: [`vcl::entries_to_json`].
     ///
     /// Invariants asserted: the export function keeps accepting a parsed
