@@ -53,6 +53,19 @@ impl StubObjectEntity {
         }
     }
 
+    /// Builds a stub for a type whose absence is known and deliberate
+    /// (e.g. types 40, 49, 67 in the JILL1 levels) without emitting the
+    /// log warning. Marks `type_id` as already-warned so any later
+    /// instance routed through [`Self::new`] also stays silent.
+    pub fn silent(type_id: u8, item: &JnObject) -> Self {
+        let _ = Self::record_warning(type_id);
+        Self {
+            type_id,
+            x: i32::from(item.x()),
+            y: i32::from(item.y()),
+        }
+    }
+
     /// Records that `type_id` has produced a warning.
     ///
     /// Returns `true` when this call inserted a new entry (the warning should

@@ -16,11 +16,54 @@
 use openjill_core::layout::BLOCK_SIZE_I;
 use openjill_core::{
     ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundGrid, DeathKind,
-    MessageDispatcher, ObjectEntity, Rect, RenderCommand, RuntimeState,
+    MessageDispatcher, MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand,
+    RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
+
+/// Object type routed to [`ScatterParticleEntity::with_velocity`] in
+/// [`crate::screens::level_screen::LevelScreen::spawn_objects`]. Chosen
+/// outside the JN object-type range so runtime-only scatter particles
+/// do not collide with any static record handled by `make_object_entity`.
+pub const SCATTER_PARTICLE_TYPE: u8 = 100;
+
+/// Dispatches an 8-direction scatter burst centred at `(cx, cy)`.
+///
+/// Each particle is spawned via a [`MessageType::CreateObject`] message
+/// carrying [`SCATTER_PARTICLE_TYPE`] and a fixed `(xd, yd)` from the
+/// 8-direction spread. The spread is deterministic so the same source
+/// position always produces the same visual burst.
+pub fn spawn_burst_at(cx: i32, cy: i32, dispatcher: &mut MessageDispatcher) {
+    /// Velocity tuples for the 8-direction spread.
+    ///
+    /// REVERSE-ENGINEERED from the Java `BulletObjectFactory` random
+    /// range (`xdRange` / `ydRange`): magnitudes match the maximum
+    /// Java envelope without the per-frame jitter.
+    const SPREAD: [(i32, i32); 8] = [
+        (-6, -4),
+        (-4, -6),
+        (0, -7),
+        (4, -6),
+        (6, -4),
+        (-6, 0),
+        (6, 0),
+        (0, -3),
+    ];
+    for (xd, yd) in SPREAD {
+        dispatcher.send(
+            MessageType::CreateObject,
+            MessagePayload::SpawnAt {
+                object_type: SCATTER_PARTICLE_TYPE,
+                x: cx,
+                y: cy,
+                xd,
+                yd,
+            },
+        );
+    }
+}
 
 /// Per-tick downward acceleration applied to the particle.
 ///

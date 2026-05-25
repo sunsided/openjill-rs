@@ -952,8 +952,19 @@ impl LevelScreen {
             }
         }
         for (p_idx, t_idx) in hits {
+            let target_bbox = self.objects[t_idx].bounding_box();
             self.objects[t_idx].on_kill(1, DeathKind::Enemy);
             self.objects[p_idx].on_kill(1, DeathKind::Enemy);
+            // Visible death shatter: spawn the colored-bullet burst from
+            // the target's bbox centre so any enemy taken down by a
+            // projectile visibly explodes regardless of whether the
+            // Java reference's specific manager calls
+            // `BulletObjectFactory.explode` on death.
+            crate::entities::objects::scatter_particle::spawn_burst_at(
+                target_bbox.x + target_bbox.w / 2,
+                target_bbox.y + target_bbox.h / 2,
+                &mut self.entity_dispatcher,
+            );
         }
     }
 
@@ -1029,7 +1040,9 @@ impl LevelScreen {
         for (object_type, x, y, xd, yd) in spawns {
             let entity: Box<dyn ObjectEntity> = match object_type {
                 46 => Box::new(BeesEntity::spawn_at(x, y)),
-                49 => Box::new(ScatterParticleEntity::with_velocity(x, y, xd, yd)),
+                t if t == crate::entities::objects::scatter_particle::SCATTER_PARTICLE_TYPE => {
+                    Box::new(ScatterParticleEntity::with_velocity(x, y, xd, yd))
+                }
                 _ => Box::new(BulletEntity::with_velocity(
                     x,
                     y,
