@@ -155,7 +155,12 @@ fn intersect_rect(a: Rect, b: Rect) -> Rect {
     let y0 = a.y.max(b.y);
     let x1 = a.x.saturating_add(a.w).min(b.x.saturating_add(b.w));
     let y1 = a.y.saturating_add(a.h).min(b.y.saturating_add(b.h));
-    Rect::new(x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
+    Rect::new(
+        x0,
+        y0,
+        x1.saturating_sub(x0).max(0),
+        y1.saturating_sub(y0).max(0),
+    )
 }
 
 #[cfg(test)]
