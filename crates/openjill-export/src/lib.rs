@@ -29,9 +29,12 @@ pub struct Row {
 #[cfg(test)]
 mod tests {
     use super::{cfg, dma, jn, sha, vcl};
+    use openjill_core::entity::Rect;
+    use openjill_core::Palette;
     use openjill_data::cfg::CfgFile;
     use openjill_data::dma::DmaFile;
     use openjill_data::jn::JnFile;
+    use openjill_data::sha::ShaFile;
     use openjill_data::sha::ShaTileSet;
     use openjill_data::vcl::VclFile;
 
@@ -73,10 +76,20 @@ mod tests {
 
     /// Unit under test: [`jn::map_to_png`].
     ///
-    /// Invariants asserted: the export function keeps accepting a parsed
-    /// `JnFile` reference and returning `RgbaImage`.
+    /// Invariants asserted: the export function keeps accepting parsed JN/SHA/DMA
+    /// references plus a palette and returning `RgbaImage`.
     #[test]
     fn jn_smoke_test_pins_signature() {
-        let _: fn(&JnFile) -> image::RgbaImage = jn::map_to_png;
+        let _: fn(&JnFile, &ShaFile, &DmaFile, &Palette) -> image::RgbaImage = jn::map_to_png;
+    }
+
+    /// Unit under test: [`jn::map_to_png_with_viewport`].
+    ///
+    /// Invariants asserted: the viewport overload accepts the same map inputs
+    /// plus an optional clipping rectangle.
+    #[test]
+    fn jn_viewport_smoke_test_pins_signature() {
+        let _: fn(&JnFile, &ShaFile, &DmaFile, &Palette, Option<Rect>) -> image::RgbaImage =
+            jn::map_to_png_with_viewport;
     }
 }

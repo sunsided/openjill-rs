@@ -8,6 +8,7 @@ version.workspace = true
 
 [dependencies]
 image.workspace = true
+openjill-core = { path = "../openjill-core" }
 openjill-data = { path = "../openjill-data" }
 
 [dev-dependencies]
