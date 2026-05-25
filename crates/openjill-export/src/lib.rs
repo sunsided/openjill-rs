@@ -65,13 +65,31 @@ mod tests {
         let _: fn(&DmaFile) -> String = dma::table_to_text;
     }
 
-    /// Unit under test: [`vcl::file_to_string`].
+    /// Unit under test: [`vcl::entries_to_text`].
     ///
     /// Invariants asserted: the export function keeps accepting a parsed
     /// `VclFile` reference and returning `String`.
     #[test]
-    fn vcl_smoke_test_pins_signature() {
-        let _: fn(&VclFile) -> String = vcl::file_to_string;
+    fn vcl_text_smoke_test_pins_signature() {
+        let _: fn(&VclFile) -> String = vcl::entries_to_text;
+    }
+
+    /// Unit under test: [`vcl::escape_text_payload`].
+    ///
+    /// Invariants asserted: the helper keeps accepting a text slice and
+    /// returning an escaped `String`.
+    #[test]
+    fn vcl_escape_text_payload_smoke_test_pins_signature() {
+        let _: fn(&str) -> String = vcl::escape_text_payload;
+    }
+
+    /// Unit under test: [`vcl::entries_to_json`].
+    ///
+    /// Invariants asserted: the export function keeps accepting a parsed
+    /// `VclFile` reference and returning `String`.
+    #[test]
+    fn vcl_json_smoke_test_pins_signature() {
+        let _: fn(&VclFile) -> String = vcl::entries_to_json;
     }
 
     /// Unit under test: [`cfg::file_to_rows`].
