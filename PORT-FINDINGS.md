@@ -243,3 +243,48 @@ _No findings yet._
 ## Tooling and CI
 
 _No findings yet._
+
+---
+
+## Open issues (unresolved - observed during playthrough)
+
+These are observed deviations from original game behaviour that have not
+yet been investigated or fixed. Move each entry to the appropriate
+resolved section once root cause and resolution are known.
+
+### Firebird: on-touch explosion with gem scatter not implemented
+
+- **Symptom**: touching a firebird deals damage but the firebird does not
+  explode and gems do not splatter around on contact.
+- **Expected**: firebird explodes on player contact; several gems scatter
+  from the explosion position; player loses health.
+- **Likely applies to**: other enemies that have an on-death spawn effect.
+- **Status**: unresolved.
+
+### Gator: repeated contact damage instead of single-hit invincibility window
+
+- **Symptom**: while Jill stands on or touches the gator, damage is applied
+  every tick. Touching the gator roughly five times kills Jill before the
+  gator is defeated.
+- **Expected**: the first contact deals one point of damage; subsequent
+  frames while still touching the same enemy must not re-trigger damage
+  (invincibility / grace period). The gator should be defeatable without
+  Jill dying from repeated contact.
+- **Likely applies to**: all enemies - the invincibility window after a
+  player hit is probably a global mechanic, not gator-specific.
+- **Status**: unresolved.
+
+### Input: SPACE and ALT both jump; SHIFT should jump, ALT should throw knife
+
+- **Symptom**: both SPACE and ALT trigger a jump. SHIFT has no binding.
+  Throwing the knife (ALT in original) is unbound or incorrectly mapped.
+- **Expected**: SHIFT = jump, ALT = throw knife (original DOS key layout).
+  SPACE may remain as an alias or be removed.
+- **Status**: unresolved.
+
+### Frog: does not chase player
+
+- **Symptom**: the frog enemy patrols without reacting to player proximity.
+- **Expected**: frog detects the player and hops toward them (chasing
+  behaviour as in the original game).
+- **Status**: unresolved.
