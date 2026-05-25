@@ -3,6 +3,7 @@
 use openjill_data::vcl::VclFile;
 use std::fmt::Write;
 
+/// Uppercase hex digits used when escaping non-printable control characters.
 const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
 
 /// Exports parsed `*.VCL` text entries as aligned text lines.
