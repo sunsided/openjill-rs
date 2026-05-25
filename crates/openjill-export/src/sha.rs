@@ -197,7 +197,8 @@ pub fn tileset_to_png(tileset: &ShaTileSet, output: TilesetColorOutput) -> RgbaI
 /// without any additional PNG dependency.
 pub fn atlas_to_png(sha: &ShaFile, options: &AtlasOptions) -> RgbaImage {
     // Collect tiles from tilesets that survive both filters.
-    let tiles: Vec<(usize, usize, usize, usize, &[u8])> = sha
+    // Tuple layout: (width, height, indexed_pixels).
+    let tiles: Vec<(usize, usize, &[u8])> = sha
         .tilesets()
         .iter()
         .filter(|ts| tileset_matches_mode(ts, options.mode))
@@ -205,8 +206,6 @@ pub fn atlas_to_png(sha: &ShaFile, options: &AtlasOptions) -> RgbaImage {
         .flat_map(|ts| {
             ts.tiles().iter().map(|tile| {
                 (
-                    usize::from(tile.width()),
-                    usize::from(tile.height()),
                     usize::from(tile.width()),
                     usize::from(tile.height()),
                     tile.indexed_pixels(),
@@ -249,7 +248,7 @@ pub fn atlas_to_png(sha: &ShaFile, options: &AtlasOptions) -> RgbaImage {
     // Second pass: blit pixels.
     let mut image = RgbaImage::new(atlas_width as u32, atlas_height as u32);
 
-    for ((px, py, pw, ph), (_, _, _, _, pixels)) in placements.iter().zip(&tiles) {
+    for ((px, py, pw, ph), (_, _, pixels)) in placements.iter().zip(&tiles) {
         for row in 0..*ph {
             for col in 0..*pw {
                 let index = pixels[row * pw + col];

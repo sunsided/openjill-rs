@@ -178,6 +178,11 @@ fn renders_tilesets_from_original_jill_sha_when_available() {
 /// Resolves the data directory, preferring `OPENJILL_DATA_DIR` and falling
 /// back to the workspace-relative `data/original/JILL1` path.  Returns `None`
 /// when neither is available so the caller can self-skip.
+///
+/// `CARGO_WORKSPACE_DIR` is a custom environment variable injected at compile
+/// time by the workspace's `.cargo/config.toml` `[env]` section — it expands
+/// to the absolute path of the workspace root so tests can find the shared
+/// `data/` directory regardless of where Cargo invokes them from.
 fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     if let Some(path) = env_override {
         return Some(PathBuf::from(path));
