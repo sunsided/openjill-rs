@@ -83,6 +83,24 @@ mod tests {
         let _: fn(&CfgFile) -> Vec<super::Row> = cfg::file_to_rows;
     }
 
+    /// Unit under test: [`cfg::scores_to_text`].
+    ///
+    /// Invariants asserted: the export function accepts a parsed `CfgFile`
+    /// reference and returns `String`.
+    #[test]
+    fn cfg_scores_to_text_smoke_test_pins_signature() {
+        let _: fn(&CfgFile) -> String = cfg::scores_to_text;
+    }
+
+    /// Unit under test: [`cfg::save_slots_to_text`].
+    ///
+    /// Invariants asserted: the export function accepts a parsed `CfgFile`
+    /// reference plus a `jn_ext` slice and returns `String`.
+    #[test]
+    fn cfg_save_slots_to_text_smoke_test_pins_signature() {
+        let _: fn(&CfgFile, &str) -> String = cfg::save_slots_to_text;
+    }
+
     /// Unit under test: [`sha::tileset_to_png`].
     ///
     /// Invariants asserted: the export function keeps accepting a parsed
