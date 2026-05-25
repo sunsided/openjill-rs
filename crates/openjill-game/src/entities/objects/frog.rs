@@ -12,7 +12,7 @@
 //!   tile 0/3 = on-floor frame, tile 1/4 = airborne frame, tile 2/5 = apex.
 //! SHA header[63] confirms: 6 tiles, 14×10 px each.
 
-use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
+use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
 use openjill_core::{
     ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
     ObjectEntity, Rect, RenderCommand, RuntimeState,
@@ -163,8 +163,17 @@ impl ObjectEntity for FrogEntity {
                 self.y_speed += 1;
             }
 
-            // Land when descending and floor reached.
+            // Land when descending and floor reached. The Java reference
+            // `UtilityObjectEntity.moveObjectDown` walks pixel-by-pixel
+            // and stops on first contact; the Rust port integrates
+            // `y += y_speed` in one step, which can overshoot a fast
+            // fall into the floor cell. Snap the frog so its bottom
+            // edge aligns with the top of the landed-on cell, otherwise
+            // the next-tick patrol probes report `blocked_ahead` and
+            // the frog wiggles in place.
             if self.y_speed > 0 && floor_below(backgrounds, self.x, self.y, self.w, self.h) {
+                let foot_cell = (self.y + self.h).div_euclid(BLOCK_SIZE_I);
+                self.y = foot_cell * BLOCK_SIZE_I - self.h;
                 self.y_speed = 0;
                 self.on_floor = true;
                 self.jump_counter = 0;
