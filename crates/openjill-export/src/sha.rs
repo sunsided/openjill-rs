@@ -140,7 +140,7 @@ pub fn tileset_to_png(tileset: &ShaTileSet, output: TilesetColorOutput) -> RgbaI
         })
         .collect();
     if tiles.is_empty() {
-        return RgbaImage::new(1, 1);
+        return one_by_one_transparent_black();
     }
 
     let cols = grid_columns(tiles.len());
@@ -221,7 +221,7 @@ pub fn atlas_to_png(sha: &ShaFile, options: &AtlasOptions) -> RgbaImage {
         .collect();
 
     if tiles.is_empty() {
-        return RgbaImage::new(1, 1);
+        return one_by_one_transparent_black();
     }
 
     let cols = grid_columns(tiles.len());
@@ -315,6 +315,12 @@ fn grid_columns(tile_count: usize) -> usize {
         columns += 1;
     }
     columns
+}
+
+fn one_by_one_transparent_black() -> RgbaImage {
+    let mut image = RgbaImage::new(1, 1);
+    image.put_pixel(0, 0, Rgba([0, 0, 0, 0]));
+    image
 }
 
 #[cfg(test)]
