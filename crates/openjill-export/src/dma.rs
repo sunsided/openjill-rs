@@ -4,7 +4,11 @@ use crate::Row;
 use openjill_data::dma::DmaFile;
 use std::fmt::Write;
 
-/// Known DMA/JN `iFlags` bits mapped to human-readable names.
+/// REVERSE-ENGINEERED: Known DMA/JN `iFlags` bits mapped to symbolic names.
+///
+/// These names mirror the OpenJill Java flag naming used by the original
+/// extractor output and the repository's Jill format reference
+/// (`docs/port/00-format-reference.md`, DMA `iFlags` table).
 const FLAG_NAMES: &[(u16, &str)] = &[
     (0x0001, "PLAYERTHRU"),
     (0x0002, "STAIR"),
@@ -26,9 +30,11 @@ pub fn file_to_rows(_file: &DmaFile) -> Vec<Row> {
     unimplemented!("DMA export wiring lands in a follow-up issue")
 }
 
-/// Converts parsed `JILL.DMA` metadata into CSV.
+/// Exports parsed `JILL.DMA` entries into CSV with one row per entry.
 ///
-/// Columns: `map_code,tileset,tile,flags,flag_names`.
+/// The output header is `map_code,tileset,tile,flags,flag_names`.
+/// `flag_names` is emitted as `|`-separated symbolic names (for example
+/// `PLAYERTHRU|MSGTOUCH`) or `-` when no known flag bits are set.
 pub fn table_to_csv(dma: &DmaFile) -> String {
     let mut out = String::from("map_code,tileset,tile,flags,flag_names\n");
 
@@ -47,9 +53,11 @@ pub fn table_to_csv(dma: &DmaFile) -> String {
     out
 }
 
-/// Converts parsed `JILL.DMA` metadata into a human-readable aligned table.
+/// Exports parsed `JILL.DMA` entries into a human-readable aligned text table.
 ///
-/// Columns: `map_code`, `tileset`, `tile`, `flags`, `flag_names`.
+/// The table includes a header row, divider row, and one row per entry with
+/// columns `map_code`, `tileset`, `tile`, `flags`, `flag_names`. Numeric
+/// `map_code`/`flags` values are emitted in uppercase hex (`0x0102`).
 pub fn table_to_text(dma: &DmaFile) -> String {
     let rows: Vec<[String; 5]> = dma
         .entries()
@@ -119,7 +127,11 @@ pub fn table_to_text(dma: &DmaFile) -> String {
     out
 }
 
-/// Decodes raw DMA flag bits into `|`-separated names.
+/// Decodes raw DMA flag bits into `|`-separated symbolic names.
+///
+/// This helper is shared by both CSV and text exports so both renderings use
+/// identical human-readable names for the same raw flag bitmask. Returns `-`
+/// when no known flag bits are set.
 fn decode_flag_names(flags: u16) -> String {
     let names: Vec<&str> = FLAG_NAMES
         .iter()
@@ -133,7 +145,10 @@ fn decode_flag_names(flags: u16) -> String {
     }
 }
 
-/// Computes the column width from the header plus all values in that column.
+/// Computes the max width needed for a column's header and all row values.
+///
+/// Used by [`table_to_text`] so each rendered table column stays aligned across
+/// all data rows. Returns `header.len()` when `values` is empty.
 fn max_width<'a>(header: &str, values: impl Iterator<Item = &'a str>) -> usize {
     values.fold(header.len(), |width, value| width.max(value.len()))
 }
@@ -196,7 +211,11 @@ mod tests {
         check!(lines[3].contains("0x0304"));
     }
 
-    /// Builds a valid synthetic `JILL.DMA` fixture with two entries.
+    /// Builds a valid synthetic two-entry `JILL.DMA` fixture.
+    ///
+    /// Entry #1 uses map code `0x0102` and flags `0x0039`
+    /// (`PLAYERTHRU|MSGTOUCH|MSGDRAW|MSGUPDATE`); entry #2 uses map code
+    /// `0x0304` and flags `0x0006` (`STAIR|VINE`).
     fn fixture_dma() -> DmaFile {
         let mut bytes = Vec::new();
         bytes.extend(0x0102u16.to_le_bytes());
