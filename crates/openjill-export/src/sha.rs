@@ -2,6 +2,7 @@
 
 use image::RgbaImage;
 use openjill_data::sha::ShaTileSet;
+use std::sync::Arc;
 
 /// Selects how indexed SHA tiles are turned into export pixels.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,7 +18,7 @@ pub enum TilesetColorOutput {
     /// `R, G, B` from that triplet with `A=255`.
     Colored {
         /// Explicit VGA palette entries used to resolve tile indices.
-        palette: Box<[[u8; 3]; 256]>,
+        palette: Arc<[[u8; 3]; 256]>,
     },
 }
 

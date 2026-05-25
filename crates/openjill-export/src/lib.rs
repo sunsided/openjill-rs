@@ -35,6 +35,7 @@ mod tests {
     use openjill_data::sha::ShaFile;
     use openjill_data::vcl::VclFile;
     use std::panic::{self, AssertUnwindSafe};
+    use std::sync::Arc;
 
     /// Runs one export stub and asserts that the current placeholder body panics.
     fn assert_stub_panics<R>(f: impl FnOnce() -> R) {
@@ -103,7 +104,7 @@ mod tests {
             sha::tileset_to_png(
                 tileset,
                 sha::TilesetColorOutput::Colored {
-                    palette: Box::new([[0u8; 3]; 256]),
+                    palette: Arc::new([[0u8; 3]; 256]),
                 },
             )
         });
