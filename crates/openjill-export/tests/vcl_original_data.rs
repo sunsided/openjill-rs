@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 /// runtime (`OPENJILL_DATA_DIR=/path/to/JILL1`).
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 
+/// Verifies that `JILL1.VCL` entries from original data can be exported to
+/// both text and JSON forms.
+///
 /// Unit under test: [`entries_to_text`] + [`entries_to_json`] on original
 /// episode-1 `JILL1.VCL`.
 ///
@@ -45,7 +48,8 @@ fn exports_original_jill_vcl_entries_when_available() {
         )
     });
 
-    let vcl = VclFile::parse(&mut reader).expect("JILL1.VCL from original data should parse");
+    let vcl = VclFile::parse(&mut reader)
+        .unwrap_or_else(|error| panic!("JILL1.VCL from original data should parse: {error}"));
     check!(!vcl.text_entries().is_empty());
 
     let text = entries_to_text(&vcl);

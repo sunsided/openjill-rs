@@ -20,13 +20,14 @@ pub fn entries_to_text(vcl: &VclFile) -> String {
 
     let mut out = String::new();
     for entry in vcl.text_entries() {
-        let _ = writeln!(
+        writeln!(
             out,
             "{:>index_width$}: {}",
             entry.index(),
             entry.text(),
             index_width = index_width
-        );
+        )
+        .expect("writing VCL text export into String should not fail");
     }
     out
 }
@@ -43,7 +44,8 @@ pub fn entries_to_json(vcl: &VclFile) -> String {
             })
         })
         .collect::<Vec<_>>();
-    serde_json::to_string(&entries).expect("serializing VCL entries should not fail")
+    serde_json::to_string(&entries)
+        .unwrap_or_else(|error| panic!("failed to serialize VCL entries to JSON: {error}"))
 }
 
 /// Backward-compatible alias for text rendering.
@@ -57,6 +59,17 @@ mod tests {
     use assert2::check;
     use openjill_data::vcl::VclFile;
 
+    /// REVERSE-ENGINEERED: `JILL1.VCL` starts with a 400-byte sound-entry area
+    /// before text offset/length tables.
+    const SOUND_ENTRY_SKIP: usize = 400;
+    /// REVERSE-ENGINEERED: `JILL1.VCL` text offset/length tables each have
+    /// 40 entry slots.
+    const TEXT_ENTRY_COUNT: usize = 40;
+
+    /// Unit under test: [`entries_to_text`].
+    ///
+    /// Invariants asserted: index prefixes are right-aligned and each payload
+    /// is emitted on its own line in parser order.
     #[test]
     fn entries_to_text_aligns_indexes_and_preserves_payload() {
         let vcl = fixture_vcl();
@@ -66,6 +79,10 @@ mod tests {
         check!(lines == vec![" 3: HELLO", "12: A\\B", "39: DONE"]);
     }
 
+    /// Unit under test: [`entries_to_json`].
+    ///
+    /// Invariants asserted: JSON output is an array of objects with
+    /// `{index,payload}` values in parser order.
     #[test]
     fn entries_to_json_emits_index_and_payload() {
         let vcl = fixture_vcl();
@@ -82,30 +99,9 @@ mod tests {
         );
     }
 
+    /// Builds a synthetic `VclFile` fixture with three non-empty text entries
+    /// at indices 3, 12, and 39.
     fn fixture_vcl() -> VclFile {
-        const SOUND_ENTRY_SKIP: usize = 400;
-        const TEXT_ENTRY_COUNT: usize = 40;
-
-        fn table_end() -> usize {
-            SOUND_ENTRY_SKIP + (TEXT_ENTRY_COUNT * 4) + (TEXT_ENTRY_COUNT * 2)
-        }
-
-        fn write_text_entry(bytes: &mut [u8], index: usize, offset: u32, length: u16) {
-            let offset_pos = SOUND_ENTRY_SKIP + (index * 4);
-            bytes[offset_pos..offset_pos + 4].copy_from_slice(&offset.to_le_bytes());
-
-            let length_pos = SOUND_ENTRY_SKIP + (TEXT_ENTRY_COUNT * 4) + (index * 2);
-            bytes[length_pos..length_pos + 2].copy_from_slice(&length.to_le_bytes());
-        }
-
-        fn write_text_at(bytes: &mut Vec<u8>, offset: usize, text: &[u8]) {
-            let end = offset + text.len();
-            if bytes.len() < end {
-                bytes.resize(end, 0);
-            }
-            bytes[offset..end].copy_from_slice(text);
-        }
-
         let mut bytes = vec![0; table_end()];
         write_text_entry(&mut bytes, 3, 700, 5);
         write_text_entry(&mut bytes, 12, 705, 3);
@@ -114,5 +110,31 @@ mod tests {
         write_text_at(&mut bytes, 705, b"A\\B");
         write_text_at(&mut bytes, 708, b"DONE");
         VclFile::from_bytes(bytes).expect("fixture should parse")
+    }
+
+    /// Returns the byte offset immediately after the text offset/length tables
+    /// in a synthetic `JILL1.VCL` fixture.
+    fn table_end() -> usize {
+        SOUND_ENTRY_SKIP + (TEXT_ENTRY_COUNT * 4) + (TEXT_ENTRY_COUNT * 2)
+    }
+
+    /// Writes one `(offset,length)` record into the fixture's text-entry tables
+    /// at slot `index`.
+    fn write_text_entry(bytes: &mut [u8], index: usize, offset: u32, length: u16) {
+        let offset_pos = SOUND_ENTRY_SKIP + (index * 4);
+        bytes[offset_pos..offset_pos + 4].copy_from_slice(&offset.to_le_bytes());
+
+        let length_pos = SOUND_ENTRY_SKIP + (TEXT_ENTRY_COUNT * 4) + (index * 2);
+        bytes[length_pos..length_pos + 2].copy_from_slice(&length.to_le_bytes());
+    }
+
+    /// Writes raw text bytes into the fixture at `offset`, growing the buffer
+    /// with zero padding as needed.
+    fn write_text_at(bytes: &mut Vec<u8>, offset: usize, text: &[u8]) {
+        let end = offset + text.len();
+        if bytes.len() < end {
+            bytes.resize(end, 0);
+        }
+        bytes[offset..end].copy_from_slice(text);
     }
 }
