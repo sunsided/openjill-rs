@@ -32,24 +32,29 @@ pub const SCATTER_PARTICLE_TYPE: u8 = 100;
 /// Dispatches an 8-direction scatter burst centred at `(cx, cy)`.
 ///
 /// Each particle is spawned via a [`MessageType::CreateObject`] message
-/// carrying [`SCATTER_PARTICLE_TYPE`] and a fixed `(xd, yd)` from the
-/// 8-direction spread. The spread is deterministic so the same source
-/// position always produces the same visual burst.
+/// carrying [`SCATTER_PARTICLE_TYPE`] and one `(xd, yd)` from the
+/// 8-direction spread. `LevelScreen::spawn_objects` constructs the
+/// entity via [`ScatterParticleEntity::with_velocity`], which derives
+/// the per-particle palette `state` offset from `(xd + yd) & 1` so the
+/// burst shows two colour variants per rotation phase without changing
+/// the `SpawnAt` payload shape.
 pub fn spawn_burst_at(cx: i32, cy: i32, dispatcher: &mut MessageDispatcher) {
     /// Velocity tuples for the 8-direction spread.
     ///
-    /// REVERSE-ENGINEERED from the Java `BulletObjectFactory` random
-    /// range (`xdRange` / `ydRange`): magnitudes match the maximum
-    /// Java envelope without the per-frame jitter.
+    /// REVERSE-ENGINEERED from the Java `BulletObjectFactory`
+    /// `xdRange = 7`, `xdRangeSubstract = 3`, `ydRange = 11`,
+    /// `ydRangeSubstract = 8` (= velocities roughly in `[-3, 3]` x
+    /// `[-8, 2]`). The Rust port uses a fixed 8-direction spread that
+    /// covers the same envelope without per-frame randomness.
     const SPREAD: [(i32, i32); 8] = [
-        (-6, -4),
-        (-4, -6),
+        (-3, -4),
+        (-2, -6),
         (0, -7),
-        (4, -6),
-        (6, -4),
-        (-6, 0),
-        (6, 0),
-        (0, -3),
+        (2, -6),
+        (3, -4),
+        (-3, -1),
+        (3, -1),
+        (0, -2),
     ];
     for (xd, yd) in SPREAD {
         dispatcher.send(
@@ -65,11 +70,26 @@ pub fn spawn_burst_at(cx: i32, cy: i32, dispatcher: &mut MessageDispatcher) {
     }
 }
 
+/// Number of palette variants used in [`tile_for_counter`] + state.
+///
+/// REVERSE-ENGINEERED: matches `bullet_factory.properties`
+/// `stateRange = 2`.
+const STATE_RANGE: u16 = 2;
+
 /// Per-tick downward acceleration applied to the particle.
 ///
 /// REVERSE-ENGINEERED: matches the Java `BulletManager.ySpeedMax = 12`
 /// envelope and the `yd++` increment in `BulletManager.msgUpdate`.
 const GRAVITY_PER_TICK: i32 = 1;
+
+/// Pixel dimensions of the colored-bullet sprite in tileset 46.
+///
+/// REVERSE-ENGINEERED: tileset 46 carries 15 6×6 px frames. Sizing the
+/// bullet-vs-collision bbox to match the sprite (instead of the default
+/// 16×16 block) lets particles squeeze through the player's own
+/// position and small terrain gaps without immediately self-removing on
+/// the first tick.
+const PARTICLE_SIZE: i32 = 6;
 
 /// Maximum downward speed clamp.
 ///
@@ -113,6 +133,15 @@ pub struct ScatterParticleEntity {
     /// Tick counter; drives the rotating-particle frame selection and
     /// the [`COUNTER_DIE`] lifetime cutoff.
     counter: i32,
+    /// Color offset added to the rotation tile, in `0..STATE_RANGE`.
+    ///
+    /// REVERSE-ENGINEERED: Java `BulletObjectFactory` seeds each spawned
+    /// bullet with `setState((int)(Math.random() * stateRange))` and
+    /// `BulletManager.msgDraw` returns
+    /// `images[baseTile + getState()]`. The Rust port stores the per-
+    /// particle offset here so a burst can show two distinct colour
+    /// variants per rotation phase.
+    state: u16,
     /// Set to `true` once the particle should be reaped.
     removed: bool,
 }
@@ -124,25 +153,32 @@ impl ScatterParticleEntity {
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()),
-            w: BLOCK_SIZE_I,
-            h: BLOCK_SIZE_I,
+            w: PARTICLE_SIZE,
+            h: PARTICLE_SIZE,
             xd: i32::from(item.x_speed()),
             yd: i32::from(item.y_speed()),
             counter: 0,
+            state: 0,
             removed: false,
         }
     }
 
-    /// Constructs a scatter particle with explicit position and velocity.
+    /// Constructs a scatter particle with explicit position and
+    /// velocity. The palette `state` offset is derived deterministically
+    /// from `(xd + yd) & 1` so two particles spawned with different
+    /// directions land on different colour variants without needing a
+    /// random number source.
     pub fn with_velocity(x: i32, y: i32, xd: i32, yd: i32) -> Self {
+        let state = ((xd + yd).rem_euclid(STATE_RANGE as i32)) as u16;
         Self {
             x,
             y,
-            w: BLOCK_SIZE_I,
-            h: BLOCK_SIZE_I,
+            w: PARTICLE_SIZE,
+            h: PARTICLE_SIZE,
             xd,
             yd,
             counter: 0,
+            state,
             removed: false,
         }
     }
@@ -153,7 +189,7 @@ impl ObjectEntity for ScatterParticleEntity {
         &mut self,
         _input: &ActiveInput,
         _state: &RuntimeState,
-        backgrounds: &BackgroundGrid,
+        _backgrounds: &BackgroundGrid,
         _dispatcher: &mut MessageDispatcher,
     ) {
         if self.removed {
@@ -167,10 +203,9 @@ impl ObjectEntity for ScatterParticleEntity {
             self.removed = true;
             return;
         }
-        if overlaps_solid(backgrounds, nx, ny, self.w, self.h) {
-            self.removed = true;
-            return;
-        }
+        // Scatter particles are purely cosmetic; let them clip through
+        // solid background cells so a burst spawned inside an enemy's
+        // collision footprint is not killed on its first tick.
         self.x = nx;
         self.y = ny;
         if self.yd < Y_SPEED_MAX {
@@ -186,9 +221,13 @@ impl ObjectEntity for ScatterParticleEntity {
         if self.removed {
             return None;
         }
+        // REVERSE-ENGINEERED: Java `BulletManager.msgDraw` returns
+        // `images[baseTile + getState()]`. `tile_for_counter` provides
+        // the rotation-based base tile; `state` adds the per-particle
+        // colour offset seeded at spawn time.
         Some(RenderCommand::Blit {
             tileset: TILESET,
-            tile: tile_for_counter(self.counter),
+            tile: tile_for_counter(self.counter) + self.state,
             x: self.x,
             y: self.y,
             opaque: false,
@@ -230,31 +269,6 @@ fn tile_for_counter(counter: i32) -> u16 {
         3 => 3,
         _ => 0,
     }
-}
-
-/// Returns `true` when the rectangle `[x, x+w) x [y, y+h)` overlaps any
-/// background cell that is not passable.
-fn overlaps_solid(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
-    let cx_l = x.div_euclid(BLOCK_SIZE_I).max(0) as usize;
-    let cx_r = ((x + w - 1).div_euclid(BLOCK_SIZE_I)).max(0) as usize;
-    let cy_t = y.div_euclid(BLOCK_SIZE_I).max(0) as usize;
-    let cy_b = ((y + h - 1).div_euclid(BLOCK_SIZE_I)).max(0) as usize;
-    for cy in cy_t..=cy_b {
-        if cy >= grid.height {
-            continue;
-        }
-        for cx in cx_l..=cx_r {
-            if cx >= grid.width {
-                continue;
-            }
-            if let Some(cell) = grid.get(cx, cy)
-                && !cell.is_passthrough()
-            {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 #[cfg(test)]
