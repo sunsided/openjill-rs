@@ -135,6 +135,9 @@ fn blit_tile(
 
             let src_index = (src_y as usize * tile_width as usize) + src_x as usize;
             let palette_index = tile_pixels[src_index];
+            if palette_index == 0 {
+                continue;
+            }
             let [r, g, b, a] = palette.rgba(palette_index);
 
             image.put_pixel(
@@ -150,8 +153,8 @@ fn blit_tile(
 fn intersect_rect(a: Rect, b: Rect) -> Rect {
     let x0 = a.x.max(b.x);
     let y0 = a.y.max(b.y);
-    let x1 = (a.x + a.w).min(b.x + b.w);
-    let y1 = (a.y + a.h).min(b.y + b.h);
+    let x1 = a.x.saturating_add(a.w).min(b.x.saturating_add(b.w));
+    let y1 = a.y.saturating_add(a.h).min(b.y.saturating_add(b.h));
     Rect::new(x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
 }
 
@@ -216,6 +219,36 @@ mod tests {
         check!(image.height() == 16);
         check!(*image.get_pixel(0, 0) == Rgba([0xaa, 0xbb, 0xcc, 255]));
         check!(*image.get_pixel(15, 15) == Rgba([0xaa, 0xbb, 0xcc, 255]));
+    }
+
+    /// Unit under test: transparent palette index handling.
+    ///
+    /// Preconditions: synthetic JN/DMA/SHA data with a visible map tile whose
+    /// indexed pixels are all zero.
+    ///
+    /// Invariants asserted: output remains transparent for those tile pixels.
+    #[test]
+    fn index_zero_pixels_remain_transparent() {
+        let jn = JnFile::from_bytes(jn_bytes_with_cells(&[(0, 0, 1)])).expect("JN should parse");
+        let dma = DmaFile::from_bytes(dma_bytes_single(1, 0, 0)).expect("DMA should parse");
+        let sha = ShaFile::from_bytes(sha_bytes_single_tile(0)).expect("SHA should parse");
+        let palette = palette_with_index_color(0, [0xff, 0x00, 0x00]);
+
+        let image = map_to_png(&jn, &sha, &dma, &palette);
+
+        check!(*image.get_pixel(0, 0) == Rgba([0, 0, 0, 0]));
+    }
+
+    /// Unit under test: [`intersect_rect`] endpoint overflow resilience.
+    ///
+    /// Preconditions: one rectangle with endpoint past `i32::MAX`.
+    ///
+    /// Invariants asserted: saturation preserves a valid clipped result.
+    #[test]
+    fn intersect_rect_saturates_endpoint_overflow() {
+        let overlap = super::intersect_rect(Rect::new(i32::MAX - 1, 0, 10, 10), Rect::new(0, 0, 10, 10));
+
+        check!(overlap == Rect::new(i32::MAX - 1, 0, 0, 10));
     }
 
     /// Builds synthetic JN bytes with selected non-zero background cells.
