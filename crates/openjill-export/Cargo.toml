@@ -9,3 +9,6 @@ version.workspace = true
 [dependencies]
 image.workspace = true
 openjill-data = { path = "../openjill-data" }
+
+[dev-dependencies]
+assert2.workspace = true
