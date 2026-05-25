@@ -89,7 +89,8 @@ mod tests {
     /// parsed tileset.
     ///
     /// Invariants asserted: the export function accepts the parsed
-    /// `ShaTileSet` value and currently remains an `unimplemented!()` stub.
+    /// `ShaTileSet` value and both indexed and explicit-palette output modes,
+    /// while currently remaining an `unimplemented!()` stub.
     #[test]
     fn sha_smoke_test_builds_against_synthetic_fixture() {
         let file = ShaFile::from_bytes(valid_sha_bytes()).expect("parse synthetic SHA fixture");
@@ -97,7 +98,15 @@ mod tests {
             .tilesets()
             .first()
             .expect("synthetic SHA fixture should contain one tileset");
-        assert_stub_panics(|| sha::tileset_to_png(tileset));
+        assert_stub_panics(|| sha::tileset_to_png(tileset, sha::TilesetColorOutput::Indexed));
+        assert_stub_panics(|| {
+            sha::tileset_to_png(
+                tileset,
+                sha::TilesetColorOutput::Colored {
+                    palette: Box::new([[0u8; 3]; 256]),
+                },
+            )
+        });
     }
 
     /// Unit under test: [`jn::map_to_png`].
