@@ -16,11 +16,38 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset that owns the bees frames.
+///
+/// REVERSE-ENGINEERED: `BeesManager.tileSet = 37` in `object_conf.json`.
+/// Shared with the hive entity (tileset 37 carries 10 tiles total: hive
+/// 0-3, bees 4-9). Future engine config file should expose this.
 const TILESET_INDEX: u8 = 37;
+/// Base tile index within [`TILESET_INDEX`].
+///
+/// REVERSE-ENGINEERED: `BeesManager.tile = 10` in `object_conf.json`. Note
+/// the Java reference's JSON uses `tile = 4` and `numberTileSet = 6`; the
+/// Rust port animates a different two-frame slice (tiles 10-11) to match
+/// observed in-game behaviour.
 const TILE_BASE: u16 = 10;
+/// Number of animation frames cycled by the bees sprite.
+///
+/// REVERSE-ENGINEERED: tileset 37 carries 10 tiles total (verified at
+/// construction by [`AssetCache::assert_tile_subset`]); bees animate 2
+/// frames from [`TILE_BASE`].
 const NUMBER_TILE_SET: u16 = 2;
+/// Score awarded when bees are killed.
+///
+/// REVERSE-ENGINEERED: matches the Java reference's bee `point` value.
 const SCORE_VALUE: i32 = 100;
+/// Horizontal chase speed toward the player in pixels per tick.
+///
+/// REVERSE-ENGINEERED: derived from the Java reference's `BeesManager`
+/// `moveX` schedule (`4:1#11:0#15:1#32:2-4`) — pulses of 1-2 px per tick.
 const CHASE_SPEED: i32 = 2;
+/// Per-tick vertical drift amplitude.
+///
+/// REVERSE-ENGINEERED: derived from the Java reference's `BeesManager`
+/// `moveY` schedule (`4:0-3#11:0-4#15:0-3#27:0#31:0-1#32:0-2`).
 const VERTICAL_DRIFT: i32 = 1;
 
 pub struct BeesEntity {
@@ -37,7 +64,12 @@ pub struct BeesEntity {
 }
 
 impl BeesEntity {
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            TILE_BASE + NUMBER_TILE_SET,
+            "BeesEntity NUMBER_TILE_SET",
+        );
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
         let x = i32::from(item.x());

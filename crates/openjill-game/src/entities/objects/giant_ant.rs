@@ -17,10 +17,30 @@ use openjill_data::jn::JnObject;
 use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset that owns the giant-ant frames.
+///
+/// REVERSE-ENGINEERED: `GiantAntManager.tileSet = 10` in `object_conf.json`.
+/// Tileset 10 carries 10 tiles total; the Rust port animates the first 4.
+/// The Java reference's `numberTileSet = 10` corresponds to the full
+/// tileset, but the visible giant-ant walk cycle is 4 frames. Future
+/// engine config file should expose this.
 const TILESET_INDEX: u8 = 10;
+/// Base tile index within [`TILESET_INDEX`].
+///
+/// REVERSE-ENGINEERED: `GiantAntManager.tile = 0` in `object_conf.json`.
 const TILE_BASE: u16 = 0;
+/// Number of animation frames cycled by the giant-ant sprite.
+///
+/// REVERSE-ENGINEERED: verified at construction by
+/// [`AssetCache::assert_tile_subset`].
 const NUMBER_TILE_SET: u16 = 4;
+/// Horizontal patrol speed in pixels per tick.
+///
+/// REVERSE-ENGINEERED.
 const X_SPEED: i32 = 4;
+/// Score awarded when the giant ant is killed.
+///
+/// REVERSE-ENGINEERED.
 const SCORE_VALUE: i32 = 200;
 
 pub struct GiantAntEntity {
@@ -38,6 +58,11 @@ pub struct GiantAntEntity {
 
 impl GiantAntEntity {
     pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            TILE_BASE + NUMBER_TILE_SET,
+            "GiantAntEntity NUMBER_TILE_SET",
+        );
         let (w, h) = sprite_dims(cache, TILESET_INDEX);
         let jn_h = i32::from(item.height());
         let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };

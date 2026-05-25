@@ -8,18 +8,13 @@ use openjill_core::{BackgroundGrid, layout::BLOCK_SIZE_I};
 use crate::asset_cache::AssetCache;
 
 /// Returns the pixel dimensions `(w, h)` of the first tile in the SHA
-/// tileset identified by `tileset_index` (matched against
-/// `ShaTileSet::entry_index`).  Falls back to `(BLOCK_SIZE_I, BLOCK_SIZE_I)`
-/// when the tileset or its tile list is absent (e.g. synthetic test cache).
+/// tileset identified by `tileset_index`.
+///
+/// Thin wrapper around [`AssetCache::tile_dims`] kept for source-stability
+/// of existing enemy entity constructors; new call sites should prefer the
+/// `AssetCache` method directly.
 pub(crate) fn sprite_dims(cache: &AssetCache, tileset_index: u8) -> (i32, i32) {
-    cache
-        .sha
-        .tilesets()
-        .iter()
-        .find(|ts| ts.entry_index() == usize::from(tileset_index))
-        .and_then(|ts| ts.tiles().first())
-        .map(|t| (i32::from(t.width()), i32::from(t.height())))
-        .unwrap_or((BLOCK_SIZE_I, BLOCK_SIZE_I))
+    cache.tile_dims(tileset_index)
 }
 
 /// `true` when the column directly ahead of the entity is occupied by a

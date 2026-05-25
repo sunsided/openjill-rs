@@ -16,8 +16,8 @@
 
 use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
 use openjill_core::{
-    ActiveInput, BackgroundGrid, DeathKind, InputCommand, MessageDispatcher, MessagePayload,
-    MessageType, ObjectEntity, Rect, RenderCommand, RuntimeState,
+    ActiveInput, BackgroundGrid, DeathKind, InputCommand, InventoryObject, MessageDispatcher,
+    MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, RuntimeState,
 };
 
 /// Ticks between successive player shots.
@@ -335,7 +335,7 @@ impl ObjectEntity for PlayerEntity {
     fn update(
         &mut self,
         input: &ActiveInput,
-        _state: &RuntimeState,
+        state: &RuntimeState,
         backgrounds: &BackgroundGrid,
         dispatcher: &mut MessageDispatcher,
     ) {
@@ -348,10 +348,18 @@ impl ObjectEntity for PlayerEntity {
         }
 
         // Fire: dispatch a CreateObject request when the throw/fire key is
-        // pressed, the player state allows it, and the cooldown is clear.
+        // pressed, the player state allows it, the cooldown is clear, and
+        // the player actually carries a knife inventory item. The
+        // inventory gate mirrors the Java reference: pressing the action
+        // key with no thrown weapon in inventory is a no-op.
         // `info1` holds the last facing direction (-1 left, 0/+1 right); a
-        // zero value is treated as right-facing for the bullet origin.
-        if input.contains(&InputCommand::ThrowItem) && self.can_fire() && self.fire_cooldown == 0 {
+        // zero value is treated as right-facing for the projectile origin.
+        let has_knife = state.inventory.contains(&InventoryObject::Knife);
+        if input.contains(&InputCommand::ThrowItem)
+            && self.can_fire()
+            && self.fire_cooldown == 0
+            && has_knife
+        {
             let dir = if self.info1 < 0 { -1 } else { 1 };
             let bullet_x = if dir > 0 {
                 self.x + self.w
@@ -367,6 +375,16 @@ impl ObjectEntity for PlayerEntity {
                     xd: dir * BULLET_SPEED_PX,
                     yd: 0,
                 },
+            );
+            // Knife temporarily leaves the inventory on throw so the player
+            // cannot spam the attack. The `BulletEntity` re-dispatches an
+            // `InventoryItem(add Knife)` if its follow phase brings the
+            // projectile back into contact with the player.
+            dispatcher.send(
+                MessageType::InventoryItem,
+                MessagePayload::InventoryItem(openjill_core::InventoryItemPayload::remove(
+                    InventoryObject::Knife,
+                )),
             );
             self.fire_cooldown = FIRE_COOLDOWN_TICKS;
         }

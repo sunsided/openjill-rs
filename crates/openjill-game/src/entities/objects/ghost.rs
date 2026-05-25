@@ -16,8 +16,24 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset entry carrying ghost sprite frames.
+///
+/// REVERSE-ENGINEERED: `GhostManager.tileSet = 50` in `object_conf.json`.
+/// Not derivable from SHA structure; future engine config file should
+/// expose this.
 const TILESET_INDEX: u8 = 50;
+/// Base tile index within [`TILESET_INDEX`].
+///
+/// REVERSE-ENGINEERED: `GhostManager.tile = 0` in `object_conf.json`.
 const TILE_BASE: u16 = 0;
+/// Number of animation frames cycled by the ghost sprite.
+///
+/// REVERSE-ENGINEERED: ghost animates 2 visible frames; tileset 50 carries
+/// 4 tiles total (verified at construction by
+/// [`AssetCache::assert_tile_subset`]). The Java reference's
+/// `GhostManager.numberTileSet = 4` value reflects the full tileset, but
+/// the Rust port animates only the first two frames to match observed
+/// in-game behaviour.
 const NUMBER_TILE_SET: u16 = 2;
 const SCORE_VALUE: i32 = 300;
 const DEFAULT_X_SPEED: i32 = 3;
@@ -41,7 +57,12 @@ pub struct GhostEntity {
 }
 
 impl GhostEntity {
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            TILE_BASE + NUMBER_TILE_SET,
+            "GhostEntity NUMBER_TILE_SET",
+        );
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
         let xd = i32::from(item.x_speed());

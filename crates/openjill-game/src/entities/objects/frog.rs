@@ -22,16 +22,39 @@ use openjill_data::jn::JnObject;
 use super::enemy_shared::{blocked_ahead, floor_below, floor_under_next, sprite_dims};
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset that owns the frog frames.
+///
+/// REVERSE-ENGINEERED: `FrogManager.tileSet = 63` in `object_conf.json`.
+/// Tileset 63 carries 6 tiles total — the only enemy in the Rust port
+/// that consumes its entire tileset. Future engine config file should
+/// expose this.
 const TILESET_INDEX: u8 = 63;
 /// Tiles per direction (right: 0-2, left: 3-5).
+///
+/// REVERSE-ENGINEERED: derived from `FrogManager.numberTileSet = 6` / 2.
 const FRAMES_PER_DIR: u16 = 3;
+/// Horizontal patrol/jump speed in pixels per tick.
+///
+/// REVERSE-ENGINEERED: `FrogManager.xSpeedMax = 4` in `object_conf.json`.
 const X_SPEED: i32 = 4;
+/// Score awarded when the frog is killed.
+///
+/// REVERSE-ENGINEERED: `FrogManager.point = 15` in `object_conf.json`
+/// (rounded up to 100 in the Rust port).
 const SCORE_VALUE: i32 = 100;
-/// Ticks on floor before jumping (`counterBeforeJump`).
+/// Ticks on floor before jumping.
+///
+/// REVERSE-ENGINEERED: `FrogManager.counterBeforeJump = 17` in
+/// `object_conf.json`.
 const JUMP_PERIOD: i32 = 17;
-/// Initial upward velocity at jump time (`ySpeedChangePicture`).
+/// Initial upward velocity at jump time.
+///
+/// REVERSE-ENGINEERED: `FrogManager.ySpeedChangePicture = -10` in
+/// `object_conf.json`.
 const JUMP_INIT_YD: i32 = -10;
-/// Max downward speed per tick (`ySpeedMax`).
+/// Max downward speed per tick.
+///
+/// REVERSE-ENGINEERED: `FrogManager.ySpeedMax = 12` in `object_conf.json`.
 const FALL_SPEED_MAX: i32 = 12;
 
 pub struct FrogEntity {
@@ -47,10 +70,20 @@ pub struct FrogEntity {
     score_dispatched: bool,
     zaphold: i32,
     pending_kill: Option<DeathKind>,
+    /// Most recent player x coordinate captured via
+    /// [`ObjectEntity::observe_player`]; used at jump launch to chase
+    /// the player horizontally (mirrors Java `FrogManager.msgUpdate`'s
+    /// `PLAYER_POSITION.getX()` lookup).
+    player_x: i32,
 }
 
 impl FrogEntity {
     pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            FRAMES_PER_DIR * 2,
+            "FrogEntity NUMBER_TILE_SET",
+        );
         let (w, h) = sprite_dims(cache, TILESET_INDEX);
         let jn_h = i32::from(item.height());
         let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };
@@ -67,6 +100,7 @@ impl FrogEntity {
             score_dispatched: false,
             zaphold: 0,
             pending_kill: None,
+            player_x: i32::from(item.x()),
         }
     }
 }
@@ -108,6 +142,14 @@ impl ObjectEntity for FrogEntity {
                 self.jump_counter = 0;
                 self.y_speed = JUMP_INIT_YD;
                 self.on_floor = false;
+                // Java `FrogManager.msgUpdate`: at jump launch reset
+                // `xSpeed = xSpeedMax` and flip the sign when the player
+                // is to the left (`xd = PLAYER_POSITION.getX() - this.x;
+                // if (xd < 0) this.xSpeed *= -1;`). This makes the frog
+                // chase the player horizontally instead of patrolling
+                // blindly.
+                let dir = if self.player_x < self.x { -1 } else { 1 };
+                self.x_speed = X_SPEED * dir;
             }
         } else {
             // Air state: move horizontally without gap check; stop at walls (no reversal).
@@ -177,6 +219,12 @@ impl ObjectEntity for FrogEntity {
 
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
+    }
+
+    /// Records the player x position so the next jump launches in the
+    /// chase direction.
+    fn observe_player(&mut self, player_bbox: Rect) {
+        self.player_x = player_bbox.x;
     }
 }
 

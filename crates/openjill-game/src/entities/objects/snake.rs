@@ -16,10 +16,30 @@ use openjill_data::jn::JnObject;
 use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset that owns the snake frames.
+///
+/// REVERSE-ENGINEERED: `SnakeManager.tileSet = 15` in `object_conf.json`.
+/// Tileset 15 carries 14 tiles total; snake animates head/tail/middle
+/// slices. Future engine config file should expose this.
 const TILESET_INDEX: u8 = 15;
+/// Base tile index within [`TILESET_INDEX`].
+///
+/// REVERSE-ENGINEERED.
 const TILE_BASE: u16 = 0;
+/// Number of animation frames cycled by the snake sprite.
+///
+/// REVERSE-ENGINEERED: derived from the Java reference's
+/// `SnakeManager.rightTileHead = "0,1,0,2"` (4 frames). Verified at
+/// construction by [`AssetCache::assert_tile_subset`].
 const NUMBER_TILE_SET: u16 = 4;
+/// Horizontal patrol speed in pixels per tick.
+///
+/// REVERSE-ENGINEERED.
 const X_SPEED: i32 = 3;
+/// Score awarded when the snake is killed.
+///
+/// REVERSE-ENGINEERED: `SnakeManager.point = 35` in `object_conf.json`
+/// (rounded up to 100 in the Rust port for parity with other enemies).
 const SCORE_VALUE: i32 = 100;
 
 pub struct SnakeEntity {
@@ -37,6 +57,11 @@ pub struct SnakeEntity {
 
 impl SnakeEntity {
     pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            TILE_BASE + NUMBER_TILE_SET,
+            "SnakeEntity NUMBER_TILE_SET",
+        );
         let (w, h) = sprite_dims(cache, TILESET_INDEX);
         let jn_h = i32::from(item.height());
         let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };

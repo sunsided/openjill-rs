@@ -19,13 +19,34 @@ use openjill_data::jn::JnObject;
 use crate::asset_cache::AssetCache;
 use crate::entities::objects::enemy_shared::sprite_dims;
 
+/// SHA tileset that owns the firebird enemy frames.
+///
+/// REVERSE-ENGINEERED: `FirebirdManager.tileSet = 11` in `object_conf.json`.
+/// Tileset 11 carries 12 tiles total; firebird animates 4 frames per
+/// direction (right 0-3, left 4-7). Future engine config file should expose
+/// this.
 const TILESET_INDEX: u8 = 11;
 /// First tile for right-facing frames (tiles 0-3).
+///
+/// REVERSE-ENGINEERED: `FirebirdManager.tile = 0` in `object_conf.json`.
 const TILE_BASE_RIGHT: u16 = 0;
-/// First tile for left-facing frames (tiles 4-7, = baseTileNumber offset).
+/// First tile for left-facing frames (tiles 4-7, = `baseTileNumber` offset).
+///
+/// REVERSE-ENGINEERED: `FirebirdManager.baseTileNumber = 4` in
+/// `object_conf.json`.
 const TILE_BASE_LEFT: u16 = 4;
+/// Number of animation frames cycled per direction.
+///
+/// REVERSE-ENGINEERED. Verified at construction by
+/// [`AssetCache::assert_tile_subset`].
 const NUMBER_TILE_SET: u16 = 4;
+/// Score awarded when the firebird is killed.
+///
+/// REVERSE-ENGINEERED.
 const SCORE_VALUE: i32 = 300;
+/// Default horizontal speed when the JN record's `x_speed` is zero.
+///
+/// REVERSE-ENGINEERED.
 const DEFAULT_X_SPEED: i32 = 4;
 
 pub struct FirebirdEnemyEntity {
@@ -43,6 +64,11 @@ pub struct FirebirdEnemyEntity {
 
 impl FirebirdEnemyEntity {
     pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            TILE_BASE_LEFT + NUMBER_TILE_SET,
+            "FirebirdEnemyEntity NUMBER_TILE_SET",
+        );
         let (w, h) = sprite_dims(cache, TILESET_INDEX);
         let xd = i32::from(item.x_speed());
         Self {
@@ -145,12 +171,22 @@ impl ObjectEntity for FirebirdEnemyEntity {
         })
     }
 
-    fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {
+    fn on_touch(&mut self, _state: &RuntimeState, dispatcher: &mut MessageDispatcher) {
         if self.dead || self.zaphold > 0 {
             return;
         }
         self.zaphold = ZAPHOLD_AFTER_TOUCH as i32;
         self.pending_kill = Some(DeathKind::Enemy);
+        // The Java reference `FirebirdManager.touchPlayer` extends
+        // `AbstractFireHitPlayerObject.msgTouch`, which calls `killMe()`
+        // on the firebird and then `BulletObjectFactory.explode(this,
+        // nbColoredBullet, dispatcher)` so the firebird vanishes and
+        // scatters a burst of colored particles from the impact point.
+        // The Rust port mirrors both halves: `self.dead = true` removes
+        // the firebird and a fixed 8-direction spread of
+        // `ScatterParticleEntity` spawns gives the visual burst.
+        self.dead = true;
+        scatter_burst(self.x + self.w / 2, self.y + self.h / 2, dispatcher);
     }
 
     fn on_kill(&mut self, damage: i32, _death_kind: DeathKind) {
@@ -166,5 +202,54 @@ impl ObjectEntity for FirebirdEnemyEntity {
 
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
+    }
+}
+
+/// Number of colored particles the firebird scatters on death.
+///
+/// REVERSE-ENGINEERED: `FirebirdManager.nbColoredBullet = 5` in
+/// `object_conf.json`. The Rust port doubles it (8 directions) for a
+/// more visible burst since the simplified particle physics covers
+/// less screen real estate than the Java random spread.
+const SCATTER_PARTICLE_COUNT: usize = 8;
+
+/// Object type routed to [`crate::entities::objects::ScatterParticleEntity`]
+/// in [`crate::screens::level_screen::LevelScreen::spawn_objects`].
+const SCATTER_PARTICLE_TYPE: u8 = 49;
+
+/// Dispatches an 8-direction scatter burst centred at `(cx, cy)`.
+///
+/// Each particle is spawned via a [`MessageType::CreateObject`] message
+/// carrying [`SCATTER_PARTICLE_TYPE`] and a fixed `(xd, yd)` from the
+/// 8-direction spread. The spread is deterministic so the same firebird
+/// position always produces the same visual burst, matching the
+/// reproducibility guarantee the rest of the gameplay loop relies on.
+fn scatter_burst(cx: i32, cy: i32, dispatcher: &mut MessageDispatcher) {
+    /// Velocity tuples for the 8-direction spread.
+    ///
+    /// REVERSE-ENGINEERED from the Java `BulletObjectFactory` random
+    /// range (`xdRange` / `ydRange`): magnitudes match the maximum
+    /// Java envelope without the per-frame jitter.
+    const SPREAD: [(i32, i32); SCATTER_PARTICLE_COUNT] = [
+        (-6, -4),
+        (-4, -6),
+        (0, -7),
+        (4, -6),
+        (6, -4),
+        (-6, 0),
+        (6, 0),
+        (0, -3),
+    ];
+    for (xd, yd) in SPREAD {
+        dispatcher.send(
+            MessageType::CreateObject,
+            MessagePayload::SpawnAt {
+                object_type: SCATTER_PARTICLE_TYPE,
+                x: cx,
+                y: cy,
+                xd,
+                yd,
+            },
+        );
     }
 }

@@ -56,6 +56,72 @@ impl AssetCache {
             intro_jn,
         })
     }
+
+    /// Returns the SHA tileset whose header `entry_index` matches
+    /// `tileset_index`, or `None` when the tileset is absent (e.g. synthetic
+    /// test cache).
+    ///
+    /// `tileset_index` matches the `tileSet` field used by Java's
+    /// `object_conf.json` and the `tileset` field on [`RenderCommand::Blit`].
+    pub fn tileset(&self, tileset_index: u8) -> Option<&openjill_data::sha::ShaTileSet> {
+        self.sha
+            .tilesets()
+            .iter()
+            .find(|ts| ts.entry_index() == usize::from(tileset_index))
+    }
+
+    /// Returns the pixel dimensions `(w, h)` of the first tile in the SHA
+    /// tileset identified by `tileset_index`.  Falls back to
+    /// `(BLOCK_SIZE_I, BLOCK_SIZE_I)` when the tileset or its tile list is
+    /// absent so synthetic test caches stay usable.
+    pub fn tile_dims(&self, tileset_index: u8) -> (i32, i32) {
+        use openjill_core::layout::BLOCK_SIZE_I;
+        self.tileset(tileset_index)
+            .and_then(|ts| ts.tiles().first())
+            .map(|t| (i32::from(t.width()), i32::from(t.height())))
+            .unwrap_or((BLOCK_SIZE_I, BLOCK_SIZE_I))
+    }
+
+    /// Returns the number of tiles in the SHA tileset identified by
+    /// `tileset_index`.  Returns `0` when the tileset is absent.
+    ///
+    /// Used by entity constructors to bounds-check animation-frame subset
+    /// constants (e.g. `NUMBER_TILE_SET`) against the SHA-declared tile count
+    /// so a tileset structure change is caught immediately in debug builds.
+    pub fn tile_count(&self, tileset_index: u8) -> u16 {
+        self.tileset(tileset_index)
+            .map(|ts| u16::from(ts.tile_count()))
+            .unwrap_or(0)
+    }
+
+    /// Returns the pixel height of tile `tile_index` in the SHA tileset
+    /// identified by `tileset_index`, or `None` when the tileset or tile is
+    /// absent.
+    ///
+    /// Used by layouts that stack rows of variable-height sprites (e.g. the
+    /// status-bar Jill portrait) to compute row offsets from real tile
+    /// heights instead of hard-coded pixel positions.
+    pub fn tile_height(&self, tileset_index: u8, tile_index: u16) -> Option<u8> {
+        self.tileset(tileset_index)
+            .and_then(|ts| ts.tiles().get(usize::from(tile_index)))
+            .map(|t| t.height())
+    }
+
+    /// `debug_assert!` that an animation-subset frame count fits within the
+    /// SHA tileset's tile count.
+    ///
+    /// `frame_count` is the per-entity animation slice (e.g. the
+    /// `NUMBER_TILE_SET` / `FRAME_COUNT` constants), and `label` is a short
+    /// identifier surfaced in the assertion message. Skipped when the SHA
+    /// tileset is absent (`tile_count == 0`) so synthetic test fixtures
+    /// stay usable.
+    pub fn assert_tile_subset(&self, tileset_index: u8, frame_count: u16, label: &str) {
+        let sha_count = self.tile_count(tileset_index);
+        debug_assert!(
+            sha_count == 0 || frame_count <= sha_count,
+            "{label} ({frame_count}) exceeds SHA tile_count ({sha_count}) for tileset {tileset_index}",
+        );
+    }
 }
 
 /// Opens and parses the shared `JILL.DMA` file.

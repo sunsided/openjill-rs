@@ -20,7 +20,7 @@ pub use message::{
     MessageType,
 };
 pub use render::{ClipRect, FontSize, RenderCommand};
-pub use runtime::{InventoryObject, MAP_LEVEL, RuntimeState};
+pub use runtime::{InventoryObject, MAP_LEVEL, PLAYER_INVINCIBILITY_TICKS, RuntimeState};
 pub use screen::{ScreenHandler, ScreenTransition, SoundEvent, TickResult};
 
 /// Set of logical input commands currently active (held) during one tick.

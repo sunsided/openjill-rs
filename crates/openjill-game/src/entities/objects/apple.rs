@@ -15,13 +15,24 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
-/// SHA tileset index for apple sprites (matches `AppleManager.tileSet = 9`).
+/// SHA tileset index for apple sprites.
+///
+/// REVERSE-ENGINEERED: `AppleManager.tileSet = 9` in `object_conf.json`.
+/// Tileset 9 is shared with other pickups (rock keys, gems); apple uses the
+/// first four tiles. Not derivable from SHA structure; future engine config
+/// file should expose this.
 const TILESET: u8 = 9;
 
-/// Base tile index within [`TILESET`] (matches `AppleManager.tile = 0`).
+/// Base tile index within [`TILESET`].
+///
+/// REVERSE-ENGINEERED: `AppleManager.tile = 0` in `object_conf.json`.
 const BASE_TILE: u16 = 0;
 
-/// Number of animation frames (matches `AppleManager.numberTileSet = 4`).
+/// Number of animation frames cycled by the apple sprite.
+///
+/// REVERSE-ENGINEERED: `AppleManager.numberTileSet = 4` in `object_conf.json`.
+/// Tileset 9 carries 8 tiles total (verified at construction by
+/// [`AssetCache::assert_tile_subset`]); apple animates the first four.
 const FRAME_COUNT: u16 = 4;
 
 /// Apple pickup entity.
@@ -43,7 +54,8 @@ pub struct AppleEntity {
 
 impl AppleEntity {
     /// Builds an apple from a JN object record.
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(TILESET, BASE_TILE + FRAME_COUNT, "AppleEntity FRAME_COUNT");
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
         Self {

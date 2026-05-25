@@ -146,6 +146,17 @@ pub trait ObjectEntity: Send {
         false
     }
 
+    /// Returns `true` when this object is a player-spawned projectile
+    /// (e.g. a thrown knife / bullet) that should damage enemies on overlap.
+    ///
+    /// Used by the level loop's projectile-vs-enemy hit pass to route
+    /// damage from the projectile to any non-player non-projectile object
+    /// whose bounding box overlaps, mirroring the Java reference's
+    /// bullet-vs-enemy collision dispatch.
+    fn is_projectile(&self) -> bool {
+        false
+    }
+
     /// Returns `true` when this object has signalled that it should be removed
     /// from the active object list.
     ///

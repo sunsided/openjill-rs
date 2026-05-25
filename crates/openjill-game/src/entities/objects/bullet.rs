@@ -1,23 +1,70 @@
-//! Bullet / projectile entity (JN object type 36).
+//! Bullet / thrown-knife projectile entity (JN object type 36).
 //!
-//! Rust translation of `BulletObjectFactory` / `BulletManager` from the Java
-//! reference (`open-jill-object-background`).
+//! Rust translation of the Java reference `KniveManager` boomerang state
+//! machine (the Java port reuses the bullet object slot for player-spawned
+//! knives via `BulletObjectFactory`). The projectile flies linearly for
+//! [`LAUNCH_END`] ticks, homes toward the player for [`FOLLOW_MAX`] ticks
+//! (boomerang return), then falls under gravity. Hitting an enemy in any
+//! phase past [`NO_MOVE_NO_HIT`] immediately starts the return phase, so
+//! the thrown knife snaps back to the player after a kill.
 //!
-//! A bullet moves by its stored `xd`/`yd` deltas every tick and removes
-//! itself as soon as it overlaps a solid background cell or leaves the map
-//! boundary.  It is used both for player-fired weapons and for the ten
-//! colored die-burst bullets spawned by `PlayerEntity` on death.
+//! Wall behaviour mirrors the Java `moveObject*` helpers: during the
+//! initial launch the projectile self-removes on contact with a solid
+//! cell, but during the follow phase walls only stop motion so the
+//! return trajectory is not lost.
 
 use openjill_core::layout::BLOCK_SIZE_I;
 use openjill_core::{
     ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundGrid, DeathKind,
-    MessageDispatcher, ObjectEntity, Rect, RenderCommand, RuntimeState,
+    InventoryItemPayload, InventoryObject, MessageDispatcher, MessagePayload, MessageType,
+    ObjectEntity, Rect, RenderCommand, RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
-/// Bullet / projectile entity.
+/// Statecount value where the projectile neither moves nor hits anything.
+///
+/// REVERSE-ENGINEERED: `KniveManager.statecountNoMoveNoHit = 0` in
+/// `object_conf.json`. Used by the on-hit return trigger to skip the
+/// transition when the projectile is dormant.
+const NO_MOVE_NO_HIT: i32 = 0;
+/// First statecount value of the linear-launch phase.
+///
+/// REVERSE-ENGINEERED: `KniveManager.statecountLaunchStart = 1`.
+const LAUNCH_START: i32 = 1;
+/// Last statecount value of the linear-launch phase.
+///
+/// REVERSE-ENGINEERED: `KniveManager.statecountLaunchEnd = 14`.
+const LAUNCH_END: i32 = 14;
+/// Last statecount value of the follow-player (boomerang return) phase.
+///
+/// REVERSE-ENGINEERED: `KniveManager.statecountFollowPlayerMax = 64`.
+const FOLLOW_MAX: i32 = 64;
+/// Maximum rightward horizontal speed during the follow phase.
+///
+/// REVERSE-ENGINEERED: `KniveManager.leftMaxMoveX = 8` (clamp on the
+/// positive side; the Java field is named for the launch direction and is
+/// reused as the clamp magnitude during homing).
+const RIGHT_MAX_X: i32 = 8;
+/// Maximum leftward horizontal speed during the follow phase.
+///
+/// REVERSE-ENGINEERED: `KniveManager.rightMaxMoveX = -8`.
+const LEFT_MAX_X: i32 = -8;
+/// Maximum downward vertical speed during the follow phase.
+///
+/// REVERSE-ENGINEERED: `KniveManager.downMaxMoveY = 4`.
+const DOWN_MAX_Y: i32 = 4;
+/// Maximum upward vertical speed during the follow phase.
+///
+/// REVERSE-ENGINEERED: `KniveManager.upMaxMoveY = -4`.
+const UP_MAX_Y: i32 = -4;
+/// Per-tick downward step during the fall phase.
+///
+/// REVERSE-ENGINEERED: `KniveManager.moveDown = 1`.
+const FALL_STEP_Y: i32 = 1;
+
+/// Thrown-knife / bullet projectile entity.
 pub struct BulletEntity {
     /// World X position in pixels (top-left of the bounding box).
     x: i32,
@@ -27,11 +74,25 @@ pub struct BulletEntity {
     w: i32,
     /// Bounding box height in pixels.
     h: i32,
-    /// Horizontal velocity in pixels per tick (positive = right).
+    /// Horizontal velocity in pixels per tick (positive = right). Drives
+    /// the linear launch in pure form and is adjusted toward the player
+    /// inside the follow phase.
     xd: i32,
-    /// Vertical velocity in pixels per tick (positive = down).
+    /// Vertical velocity in pixels per tick (positive = down). Adjusted
+    /// toward the player during the follow phase, snapped to
+    /// [`FALL_STEP_Y`] in the fall phase.
     yd: i32,
-    /// Set to `true` when the bullet should be removed from the object list.
+    /// Boomerang state counter, incremented every tick. Drives the
+    /// launch → follow → fall phase transitions per the Java
+    /// `KniveManager` state machine.
+    state_count: i32,
+    /// Most recent player bounding box observed via
+    /// [`ObjectEntity::observe_player`], used by the follow phase to
+    /// home toward the player and to detect follow-phase player catches
+    /// without needing a direct entity reference.
+    player_bbox: Rect,
+    /// Set to `true` when the projectile should be removed from the
+    /// object list.
     removed: bool,
 }
 
@@ -40,22 +101,27 @@ impl BulletEntity {
     pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
+        let x = i32::from(item.x());
+        let y = i32::from(item.y());
         Self {
-            x: i32::from(item.x()),
-            y: i32::from(item.y()),
+            x,
+            y,
             w,
             h,
             xd: i32::from(item.x_speed()),
             yd: i32::from(item.y_speed()),
+            state_count: LAUNCH_START,
+            player_bbox: Rect::new(x, y, w, h),
             removed: false,
         }
     }
 
-    /// Constructs a bullet with explicit position and velocity.
+    /// Constructs a bullet with explicit position and velocity, starting
+    /// in the launch phase (`state_count = LAUNCH_START`).
     ///
-    /// Used by `BulletObjectFactory` when the player or an enemy spawns a
-    /// bullet at runtime via a `CreateObject` dispatch rather than from a
-    /// JN object record.
+    /// Used by `LevelScreen::spawn_objects` when the player presses the
+    /// throw key, mirroring the Java reference's `BulletObjectFactory`
+    /// runtime spawn path.
     pub fn with_velocity(x: i32, y: i32, w: i32, h: i32, xd: i32, yd: i32) -> Self {
         Self {
             x,
@@ -64,68 +130,241 @@ impl BulletEntity {
             h,
             xd,
             yd,
+            state_count: LAUNCH_START,
+            player_bbox: Rect::new(x, y, w, h),
             removed: false,
         }
     }
 }
 
 impl ObjectEntity for BulletEntity {
-    /// Advances the bullet by one tick: integrates position and checks for
-    /// termination (solid cell or out-of-map-bounds).
+    /// Advances the projectile by one tick.
+    ///
+    /// Dispatches to the launch, follow, or fall phase based on
+    /// `state_count`, then increments the counter. Launch-phase wall
+    /// contact removes the projectile immediately; follow-phase wall
+    /// contact only stops further motion so the boomerang return is
+    /// preserved. The fall phase removes the projectile once it leaves
+    /// the map bounds or hits a solid cell.
     fn update(
         &mut self,
         _input: &ActiveInput,
         _state: &RuntimeState,
         backgrounds: &BackgroundGrid,
-        _dispatcher: &mut MessageDispatcher,
+        dispatcher: &mut MessageDispatcher,
     ) {
         if self.removed {
             return;
         }
-        self.x += self.xd;
-        self.y += self.yd;
 
-        let map_w = (BACKGROUND_GRID_WIDTH * BLOCK_SIZE_I as usize) as i32;
-        let map_h = (BACKGROUND_GRID_HEIGHT * BLOCK_SIZE_I as usize) as i32;
-        if self.x < 0 || self.x + self.w > map_w || self.y < 0 || self.y + self.h > map_h {
-            self.removed = true;
+        // Landed pickup: sit at rest and wait for the player to walk
+        // over the projectile. Mirrors Java `KniveManager`'s
+        // post-`moveDown` `stateCount = 0` (`NoMoveNoHit`) state where
+        // `msgUpdate`'s state machine has no branch and the knife
+        // becomes pickup-able via `msgTouch`.
+        if self.state_count == NO_MOVE_NO_HIT {
+            if self.bounding_box().intersects(&self.player_bbox) {
+                dispatch_catch(dispatcher);
+                self.removed = true;
+            }
             return;
         }
 
-        if overlaps_solid(backgrounds, self.x, self.y, self.w, self.h) {
+        if (LAUNCH_START..=LAUNCH_END).contains(&self.state_count) {
+            self.tick_launch(backgrounds);
+        } else if self.state_count > LAUNCH_END && self.state_count <= FOLLOW_MAX {
+            self.tick_follow(backgrounds);
+        } else if self.state_count > FOLLOW_MAX {
+            self.tick_fall(backgrounds);
+        }
+
+        // Follow/fall-phase overlap with the player counts as the
+        // player catching the boomerang knife: return the inventory
+        // item and remove the projectile from the active list.
+        if !self.removed
+            && self.state_count > LAUNCH_END
+            && self.bounding_box().intersects(&self.player_bbox)
+        {
+            dispatch_catch(dispatcher);
             self.removed = true;
+        }
+
+        // Advance the state machine. `tick_fall` may have snapped the
+        // counter back to `NO_MOVE_NO_HIT` on floor contact; suppress
+        // the increment so the landed knife sits still next tick.
+        if self.state_count != NO_MOVE_NO_HIT {
+            self.state_count = self.state_count.saturating_add(1);
         }
     }
 
-    /// Sprite rendering deferred pending SHA tileset verification.
+    /// Renders the projectile using the 5-frame rotating-knife sprite
+    /// in tileset 13.
+    ///
+    /// REVERSE-ENGINEERED: tileset 13 carries five 10×10 px knife
+    /// frames. The Java reference `KniveManager` loads only tile 0
+    /// (`msgDraw` returns a single image), but the original DOS game
+    /// animates the spin across all 5 frames; the Rust port cycles
+    /// through them at one frame per two ticks for a visible rotation.
+    /// Future engine config file should expose the spin period.
     fn draw(&self) -> Option<RenderCommand> {
-        None
+        if self.removed {
+            return None;
+        }
+        let frame = ((self.state_count.max(0) / 2) as u16) % 5;
+        Some(RenderCommand::Blit {
+            tileset: 13,
+            tile: frame,
+            x: self.x,
+            y: self.y,
+            opaque: false,
+            clip: None,
+        })
     }
 
-    /// Bullets do not react to player touch.
+    /// Projectiles do not react to direct player overlap here; the level
+    /// loop's projectile-vs-enemy hit pass handles enemy damage and
+    /// follow-phase player overlap is treated as a successful catch
+    /// inside [`Self::observe_player`].
     fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {}
 
-    /// Any hit from a weapon or hazard removes the bullet immediately.
-    fn on_kill(&mut self, _damage: i32, _death_kind: DeathKind) {
-        self.removed = true;
+    /// Returns `true` so the level loop's projectile-vs-enemy hit pass
+    /// can identify this object as a player-spawned projectile that
+    /// should damage enemies on overlap.
+    fn is_projectile(&self) -> bool {
+        true
     }
 
-    /// Returns the bullet's bounding box.
+    /// Returns `true` so the boomerang state machine keeps advancing
+    /// even when the projectile leaves the viewport update rectangle.
+    /// Without this, a launched knife that flies past the viewport edge
+    /// would have its `state_count` frozen and never transition into
+    /// the follow phase, so it would never return.
+    fn always_active(&self) -> bool {
+        true
+    }
+
+    /// Captures the player bounding box for the follow-phase homing pass
+    /// and the in-update catch detection. Catch handling lives in
+    /// [`Self::update`] (not here) so the catch can dispatch the
+    /// `InventoryItem(add Knife)` message; this hook has no dispatcher.
+    fn observe_player(&mut self, player_bbox: Rect) {
+        self.player_bbox = player_bbox;
+    }
+
+    /// Snaps the projectile into the follow (boomerang return) phase.
+    ///
+    /// Called by the level loop's projectile-vs-enemy hit pass when this
+    /// projectile lands a hit on an enemy: per Java `KniveManager.msgTouch`,
+    /// `setStateCount(statecountLaunchEnd + 1)` makes the knife immediately
+    /// stop the linear launch and start homing back to the player rather
+    /// than continuing through walls.
+    fn on_kill(&mut self, _damage: i32, _death_kind: DeathKind) {
+        if self.state_count != NO_MOVE_NO_HIT && self.state_count <= LAUNCH_END {
+            self.state_count = LAUNCH_END + 1;
+        }
+    }
+
+    /// Returns the projectile's bounding box.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
     }
 
-    /// Returns `true` when the bullet has hit a solid cell or left the map.
+    /// Returns `true` once the projectile has been removed.
     fn should_remove(&self) -> bool {
         self.removed
     }
+}
+
+impl BulletEntity {
+    /// Launch phase: linear motion in `xd`/`yd`. Wall contact and map
+    /// edges both only stop further motion this tick — the projectile
+    /// is NOT removed — so the follow phase can still take over once
+    /// `state_count` passes [`LAUNCH_END`] and pull the knife back to
+    /// the player. Mirrors Java `KniveManager.moveLeftRight`: the
+    /// underlying `UtilityObjectEntity.moveObject{Left,Right}` blocks
+    /// at walls without killing the entity, and the Java port's map
+    /// is bounded such that the player cannot throw past it. Removing
+    /// the projectile on map exit would permanently consume the
+    /// player's only knife when throwing near the screen edge.
+    fn tick_launch(&mut self, backgrounds: &BackgroundGrid) {
+        let nx = self.x + self.xd;
+        let ny = self.y + self.yd;
+        if !self.in_map(nx, ny) || overlaps_solid(backgrounds, nx, ny, self.w, self.h) {
+            return;
+        }
+        self.x = nx;
+        self.y = ny;
+    }
+
+    /// Follow phase: adjust `xd`/`yd` one pixel per tick toward the last
+    /// observed player position, clamped to the per-axis maximum speeds.
+    /// Wall contact stops further motion this tick but does not remove
+    /// the projectile so the return trajectory survives bumping a wall.
+    fn tick_follow(&mut self, backgrounds: &BackgroundGrid) {
+        let (px, py) = (self.player_bbox.x, self.player_bbox.y);
+        if self.x < px && self.xd < RIGHT_MAX_X {
+            self.xd += 1;
+        } else if self.x > px && self.xd > LEFT_MAX_X {
+            self.xd -= 1;
+        }
+        if self.y < py && self.yd < DOWN_MAX_Y {
+            self.yd += 1;
+        } else if self.y > py && self.yd > UP_MAX_Y {
+            self.yd -= 1;
+        }
+        let nx = self.x + self.xd;
+        let ny = self.y + self.yd;
+        if self.in_map(nx, ny) && !overlaps_solid(backgrounds, nx, ny, self.w, self.h) {
+            self.x = nx;
+            self.y = ny;
+        }
+    }
+
+    /// Fall phase: gravity. Snaps vertical speed to [`FALL_STEP_Y`].
+    /// Floor contact snaps `state_count` back to [`NO_MOVE_NO_HIT`] so
+    /// the knife sits at rest as a recoverable pickup (mirrors Java
+    /// `KniveManager.moveDown`: when `moveObjectDown` returns `false`
+    /// it sets `stateCount = 0`). Map-bottom exit removes the
+    /// projectile permanently since an off-map knife cannot be picked
+    /// up.
+    fn tick_fall(&mut self, backgrounds: &BackgroundGrid) {
+        self.yd = FALL_STEP_Y;
+        let ny = self.y + self.yd;
+        if !self.in_map(self.x, ny) {
+            self.removed = true;
+            return;
+        }
+        if overlaps_solid(backgrounds, self.x, ny, self.w, self.h) {
+            self.state_count = NO_MOVE_NO_HIT;
+            self.yd = 0;
+            return;
+        }
+        self.y = ny;
+    }
+
+    /// Returns `true` when the projectile's bounding box at `(x, y)` is
+    /// fully inside the map grid.
+    fn in_map(&self, x: i32, y: i32) -> bool {
+        let map_w = (BACKGROUND_GRID_WIDTH * BLOCK_SIZE_I as usize) as i32;
+        let map_h = (BACKGROUND_GRID_HEIGHT * BLOCK_SIZE_I as usize) as i32;
+        x >= 0 && x + self.w <= map_w && y >= 0 && y + self.h <= map_h
+    }
+}
+
+/// Dispatches the `InventoryItem(add Knife)` message used when the
+/// player catches a returning boomerang or walks over a landed knife.
+fn dispatch_catch(dispatcher: &mut MessageDispatcher) {
+    dispatcher.send(
+        MessageType::InventoryItem,
+        MessagePayload::InventoryItem(InventoryItemPayload::add(InventoryObject::Knife)),
+    );
 }
 
 /// Returns `true` when the rectangle `[x, x+w) x [y, y+h)` overlaps any
 /// background cell that is not passable.
 ///
 /// Used by `BulletEntity` to detect wall hits; passthrough and climbable
-/// cells are transparent to bullets.
+/// cells are transparent to projectiles.
 fn overlaps_solid(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
     let cx_l = x.div_euclid(BLOCK_SIZE_I).max(0) as usize;
     let cx_r = ((x + w - 1).div_euclid(BLOCK_SIZE_I)).max(0) as usize;
@@ -211,10 +450,12 @@ mod tests {
         grid.cells[y][x] = Box::new(TestCell { kind });
     }
 
-    /// Unit under test: `BulletEntity` moves `xd` pixels per tick in x.
+    /// Unit under test: `BulletEntity` moves `xd` pixels per tick in x
+    /// during the launch phase.
     ///
-    /// Preconditions: bullet at `(16, 16)` with `xd = 4`, `yd = 0`; fully
-    /// passable grid so no removal occurs.
+    /// Preconditions: bullet at `(16, 16)` with `xd = 4`, `yd = 0`,
+    /// initial `state_count = LAUNCH_START`; fully passable grid so no
+    /// removal occurs.
     ///
     /// Invariants asserted: after one tick, x equals `16 + 4`.
     #[test]
@@ -234,18 +475,23 @@ mod tests {
         );
     }
 
-    /// Unit under test: `BulletEntity` marks itself for removal on a solid
-    /// background cell.
+    /// Unit under test: `BulletEntity` blocks at a solid background cell
+    /// during the launch phase without being removed, so the follow
+    /// phase can later snap the projectile back to the player.
     ///
-    /// Preconditions: bullet at `(16, 16)` moving right; solid cell at grid
-    /// cell `(1, 1)` which the bullet enters after moving.
+    /// Preconditions: bullet at `(16, 16)` moving right with `xd = 8`;
+    /// solid cell at grid cell `(1, 1)` which the bullet would enter
+    /// after moving.
     ///
-    /// Invariants asserted: after one tick the bullet reports `should_remove`.
+    /// Invariants asserted: after one tick the bullet position is
+    /// unchanged and `should_remove` is `false`, mirroring Java
+    /// `KniveManager.moveLeftRight` which stops at walls without
+    /// killing the entity. The natural `state_count` increment
+    /// continues so the projectile transitions into the follow phase
+    /// after [`LAUNCH_END`] more ticks.
     #[test]
-    fn bullet_removes_on_solid_cell() {
+    fn bullet_blocks_at_solid_cell_during_launch_without_removing() {
         let mut grid = synthetic_grid(64, 64, CellKind::Air);
-        // Bullet at (16,16) with xd=8: after one tick x=24, which maps to
-        // cell (24/16, 16/16) = (1, 1).  Place a solid cell there.
         set_cell(&mut grid, 1, 1, CellKind::Solid);
         let mut bullet = BulletEntity::with_velocity(16, 16, 8, 8, 8, 0);
         let input = openjill_core::ActiveInput::new();
@@ -254,9 +500,216 @@ mod tests {
 
         bullet.update(&input, &state, &grid, &mut dispatcher);
 
+        assert_eq!(bullet.x, 16, "bullet must not enter the solid cell");
+        assert!(
+            !bullet.should_remove(),
+            "bullet must stay alive on wall contact during launch so the follow phase can return it",
+        );
+    }
+
+    /// Unit under test: `BulletEntity::on_kill` snaps the projectile out
+    /// of the launch phase and into the follow phase so it starts homing
+    /// back to the player after landing a hit on an enemy.
+    ///
+    /// Preconditions: bullet at the start of the launch phase
+    /// (`state_count = LAUNCH_START`).
+    ///
+    /// Invariants asserted: after `on_kill`, `state_count` equals
+    /// `LAUNCH_END + 1`, the first tick of the follow phase.
+    #[test]
+    fn on_kill_during_launch_starts_follow_phase() {
+        let mut bullet = BulletEntity::with_velocity(16, 16, 8, 8, 8, 0);
+        assert_eq!(bullet.state_count, LAUNCH_START);
+        bullet.on_kill(1, DeathKind::Enemy);
+        assert_eq!(
+            bullet.state_count,
+            LAUNCH_END + 1,
+            "on_kill must put the projectile at the first follow-phase tick"
+        );
+    }
+
+    /// Unit under test: `BulletEntity::observe_player` adjusts horizontal
+    /// velocity toward the player during the follow phase.
+    ///
+    /// Preconditions: bullet at `(100, 50)` moving right with `xd = 8`,
+    /// state forced into the follow phase by `on_kill`; player observed
+    /// at `(0, 50)` (to the left of the bullet).
+    ///
+    /// Invariants asserted: after one tick in the follow phase, `xd` has
+    /// decremented toward the player and the bullet position has shifted
+    /// in that direction.
+    #[test]
+    fn follow_phase_homes_toward_player() {
+        let grid = synthetic_grid(64, 64, CellKind::Air);
+        let mut bullet = BulletEntity::with_velocity(100, 50, 8, 8, 8, 0);
+        bullet.on_kill(1, DeathKind::Enemy);
+        bullet.observe_player(Rect::new(0, 50, 8, 8));
+
+        let input = openjill_core::ActiveInput::new();
+        let state = RuntimeState::new();
+        let mut dispatcher = MessageDispatcher::new();
+        bullet.update(&input, &state, &grid, &mut dispatcher);
+
+        assert_eq!(
+            bullet.xd, 7,
+            "xd must decrement toward the player on the first follow tick"
+        );
+        assert_eq!(
+            bullet.x, 107,
+            "bullet still moves with the freshly adjusted xd"
+        );
+    }
+
+    /// Unit under test: `BulletEntity::update` removes the projectile
+    /// and dispatches `InventoryItem(add Knife)` when the player
+    /// catches it during the follow phase.
+    ///
+    /// Preconditions: bullet at `(20, 20)` forced into the follow phase
+    /// by `on_kill`; player bbox observed at an overlapping position.
+    ///
+    /// Invariants asserted: after one `update`, `should_remove` is
+    /// `true` and the captured dispatcher received an
+    /// `InventoryItem(add Knife)` message.
+    #[test]
+    fn player_catches_follow_phase_projectile_returns_knife_to_inventory() {
+        use openjill_core::{InventoryObject, MessageHandler, MessageType};
+        use std::sync::{Arc, Mutex};
+
+        struct Recorder(Arc<Mutex<Vec<(MessageType, openjill_core::MessagePayload)>>>);
+        impl MessageHandler for Recorder {
+            fn handle(&mut self, m: MessageType, p: &openjill_core::MessagePayload) {
+                self.0.lock().unwrap().push((m, p.clone()));
+            }
+        }
+
+        let grid = synthetic_grid(64, 64, CellKind::Air);
+        let mut bullet = BulletEntity::with_velocity(20, 20, 8, 8, -8, 0);
+        bullet.on_kill(1, DeathKind::Enemy);
+        bullet.observe_player(Rect::new(16, 16, 16, 16));
+
+        let log: Arc<Mutex<Vec<(MessageType, openjill_core::MessagePayload)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let mut dispatcher = MessageDispatcher::new();
+        dispatcher.subscribe(MessageType::InventoryItem, Box::new(Recorder(log.clone())));
+
+        bullet.update(
+            &openjill_core::ActiveInput::new(),
+            &RuntimeState::new(),
+            &grid,
+            &mut dispatcher,
+        );
+
         assert!(
             bullet.should_remove(),
-            "bullet must be removed after hitting a solid cell"
+            "follow-phase overlap with the player must be treated as a catch"
+        );
+        let recorded = log.lock().unwrap().clone();
+        let saw_add = recorded.iter().any(|(t, p)| {
+            matches!(t, MessageType::InventoryItem)
+                && matches!(
+                    p,
+                    openjill_core::MessagePayload::InventoryItem(payload)
+                        if payload.item == InventoryObject::Knife && payload.add
+                )
+        });
+        assert!(
+            saw_add,
+            "catch must dispatch InventoryItem(add Knife) so the player gets the knife back"
+        );
+    }
+
+    /// Unit under test: a knife that lands on a floor (fall phase
+    /// `overlaps_solid` true) snaps back to [`NO_MOVE_NO_HIT`] and
+    /// stays alive as a pickup instead of being removed.
+    ///
+    /// Preconditions: bullet forced into the fall phase
+    /// (`state_count = FOLLOW_MAX + 1`) directly above a solid cell.
+    ///
+    /// Invariants asserted: after one `update`, `state_count` is
+    /// `NO_MOVE_NO_HIT` and `should_remove` is `false`.
+    #[test]
+    fn fall_onto_floor_snaps_to_pickup_state() {
+        let mut grid = synthetic_grid(64, 64, CellKind::Air);
+        // Solid cell at column 2, row 3 covers pixels [32, 48) x [48, 64).
+        // Bullet placed at y = 47 so one fall step (FALL_STEP_Y = 1)
+        // pushes it onto the solid row.
+        set_cell(&mut grid, 2, 3, CellKind::Solid);
+        let mut bullet = BulletEntity::with_velocity(32, 47, 8, 8, 0, 0);
+        bullet.state_count = FOLLOW_MAX + 1;
+        let input = openjill_core::ActiveInput::new();
+        let state = RuntimeState::new();
+        let mut dispatcher = MessageDispatcher::new();
+        bullet.update(&input, &state, &grid, &mut dispatcher);
+        assert_eq!(bullet.state_count, NO_MOVE_NO_HIT);
+        assert!(
+            !bullet.should_remove(),
+            "landed knife must stay alive as a recoverable pickup"
+        );
+    }
+
+    /// Unit under test: a knife in the pickup (`NO_MOVE_NO_HIT`) state
+    /// dispatches `InventoryItem(add Knife)` and self-removes when the
+    /// player walks onto it.
+    #[test]
+    fn landed_knife_picks_up_on_player_overlap() {
+        use openjill_core::{InventoryObject, MessageHandler, MessageType};
+        use std::sync::{Arc, Mutex};
+
+        struct Recorder(Arc<Mutex<Vec<(MessageType, openjill_core::MessagePayload)>>>);
+        impl MessageHandler for Recorder {
+            fn handle(&mut self, m: MessageType, p: &openjill_core::MessagePayload) {
+                self.0.lock().unwrap().push((m, p.clone()));
+            }
+        }
+
+        let grid = synthetic_grid(64, 64, CellKind::Air);
+        let mut bullet = BulletEntity::with_velocity(40, 40, 8, 8, 0, 0);
+        bullet.state_count = NO_MOVE_NO_HIT;
+        bullet.observe_player(Rect::new(36, 36, 16, 16));
+
+        let log: Arc<Mutex<Vec<(MessageType, openjill_core::MessagePayload)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let mut dispatcher = MessageDispatcher::new();
+        dispatcher.subscribe(MessageType::InventoryItem, Box::new(Recorder(log.clone())));
+
+        bullet.update(
+            &openjill_core::ActiveInput::new(),
+            &RuntimeState::new(),
+            &grid,
+            &mut dispatcher,
+        );
+
+        assert!(bullet.should_remove(), "pickup overlap must remove knife");
+        let recorded = log.lock().unwrap().clone();
+        assert!(recorded.iter().any(|(t, p)| {
+            matches!(t, MessageType::InventoryItem)
+                && matches!(
+                    p,
+                    openjill_core::MessagePayload::InventoryItem(payload)
+                        if payload.item == InventoryObject::Knife && payload.add
+                )
+        }));
+    }
+
+    /// Unit under test: a knife that would step out of the map during
+    /// the launch phase stops at the edge instead of being removed,
+    /// so the follow phase can still pull it back.
+    #[test]
+    fn launch_off_map_clamps_instead_of_removing() {
+        let grid = synthetic_grid(8, 8, CellKind::Air);
+        // `BulletEntity::in_map` uses the constant
+        // BACKGROUND_GRID_WIDTH * BLOCK_SIZE_I = 2048 px. Place the
+        // bullet just inside the right edge so one tick at xd = 16
+        // pushes it past 2048.
+        let mut bullet = BulletEntity::with_velocity(2030, 32, 16, 16, 16, 0);
+        let input = openjill_core::ActiveInput::new();
+        let state = RuntimeState::new();
+        let mut dispatcher = MessageDispatcher::new();
+        bullet.update(&input, &state, &grid, &mut dispatcher);
+        assert_eq!(bullet.x, 2030, "launch must clamp at the map edge");
+        assert!(
+            !bullet.should_remove(),
+            "off-map launch clamp must not remove the projectile"
         );
     }
 }

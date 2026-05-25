@@ -10,6 +10,7 @@
 
 use crate::screens::intro_background::render_intro_background;
 use crate::screens::jn_object_layer::render_jn_object_layer;
+use openjill_core::layout::BLOCK_SIZE_I;
 use openjill_core::layout::{CONTROL_AREA_X, CONTROL_AREA_Y, INVENTORY_AREA_X, INVENTORY_AREA_Y};
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
@@ -18,6 +19,7 @@ use openjill_core::{
 use openjill_data::cfg::CfgFile;
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::JnFile;
+use openjill_data::sha::ShaFile;
 use openjill_data::vcl::VclFile;
 use std::sync::LazyLock;
 
@@ -172,11 +174,21 @@ pub struct StartMenuScreen {
     /// Advanced once per tick to match `AbstractMenu.drawCursor`'s
     /// `cursorIndex++` increment in the Java reference.
     cursor_index: u8,
+    /// Pre-computed Jill-portrait tile layout derived from SHA tile heights.
+    ///
+    /// Built once at construction by [`compute_portrait_tiles`] so the per-row
+    /// vertical stacking and the per-tile bottom-anchor for row 3 stay in
+    /// sync with the actual SHA tileset 24 dimensions.
+    portrait_tiles: [(i32, i32, u16); 16],
 }
 
 impl StartMenuScreen {
     /// Creates the start menu screen from pre-loaded episode data.
-    pub fn new(intro: JnFile, dma: DmaFile, vcl: VclFile, cfg: CfgFile) -> Self {
+    ///
+    /// `sha` is consumed only to derive the Jill-portrait tile layout; the
+    /// caller retains ownership of the file.
+    pub fn new(intro: JnFile, dma: DmaFile, vcl: VclFile, cfg: CfgFile, sha: &ShaFile) -> Self {
+        let portrait_tiles = compute_portrait_tiles(sha);
         Self {
             intro,
             dma,
@@ -185,6 +197,7 @@ impl StartMenuScreen {
             selected: 0,
             overlay: Overlay::None,
             cursor_index: 0,
+            portrait_tiles,
         }
     }
 }
@@ -299,7 +312,7 @@ impl StartMenuScreen {
         commands.extend(self.render_menu_box());
         commands.extend(self.render_menu_text());
         commands.extend(self.render_high_score_panel());
-        commands.extend(render_jill_portrait());
+        commands.extend(render_jill_portrait(&self.portrait_tiles));
         match self.overlay {
             Overlay::InfoBox => commands.extend(self.render_info_box()),
             Overlay::LoadGame => commands.extend(self.render_load_game()),
@@ -545,50 +558,82 @@ impl StartMenuScreen {
 
 /// Tileset entry index that carries the Jill face portrait tiles in
 /// `JILL1.SHA`.
+///
+/// REVERSE-ENGINEERED: design choice from the Java reference's
+/// `status_bar_vga.json` `imagesInvenroy` array. Not derivable from SHA
+/// structure; future engine config file should expose this.
 const PORTRAIT_TILESET: u8 = 24;
 
-/// Tile placement of the Jill face portrait inside the inventory area.
+/// Per-column x offsets (inventory-area-relative) for the 4 portrait rows.
 ///
-/// Mirrors the `imagesInvenroy` array in `status_bar_vga.json`: 16 tiles
-/// arranged as a 4x4 grid covering 64 pixels horizontally by ~68 pixels
-/// vertically.  The third entry in each tuple is the source tile index
-/// inside [`PORTRAIT_TILESET`].
-///
-/// The shipped JSON places every row 3 entry at `y = 48`, which only
-/// works when all bottom-row tiles share the same height.  Tileset 24
-/// row 3 actually carries three 22-pixel tall tiles (12, 13, 14) and one
-/// 20-pixel tall tile (15), so a uniform `dy = 48` leaves tiles 12/13/14
-/// bleeding one pixel into the lower status-bar frame and tile 15 one
-/// pixel short of the inventory area's bottom edge.  This table uses
-/// per-tile `dy` values (47 for the 22-tall tiles, 49 for the 20-tall
-/// tile 15) so every bottom-row tile bottom lines up at framebuffer
-/// y = 175, immediately above the lower frame bar at y = 176.
-const PORTRAIT_TILES: [(i32, i32, u16); 16] = [
-    (0, 0, 0),
-    (16, 0, 1),
-    (32, 0, 2),
-    (48, 0, 3),
-    (0, 16, 4),
-    (16, 16, 5),
-    (32, 16, 6),
-    (46, 16, 7),
-    (0, 32, 8),
-    (16, 32, 9),
-    (32, 32, 10),
-    (48, 32, 11),
-    (0, 47, 12),
-    (16, 47, 13),
-    (32, 47, 14),
-    (48, 49, 15),
+/// REVERSE-ENGINEERED from the Java reference's `status_bar_vga.json`
+/// `imagesInvenroy` array. Row 1 column 3 uses `x = 46` instead of `48`
+/// to match the original asset's intentional 2-pixel inset for tile 7.
+const PORTRAIT_X: [[i32; 4]; 4] = [
+    [0, 16, 32, 48],
+    [0, 16, 32, 46],
+    [0, 16, 32, 48],
+    [0, 16, 32, 48],
 ];
+
+/// Bottom row anchor: bottom edge of row-3 tiles in inventory-area-relative
+/// pixels.
+///
+/// REVERSE-ENGINEERED: with `INVENTORY_AREA_Y = 107`, anchoring the row-3
+/// bottom edge at framebuffer y = 175 (immediately above the lower
+/// status-bar frame bar at y = 176) yields `dy_bottom = 175 - 107 + 1 = 69`.
+/// Tile 15 has SHA height 20 and tiles 12-14 have height 22; per-tile
+/// `dy = PORTRAIT_ROW3_BOTTOM - h` keeps every bottom edge aligned.
+const PORTRAIT_ROW3_BOTTOM: i32 = 69;
+
+/// Computes the 16-entry portrait tile layout `(dx, dy, tile_index)` from
+/// the SHA tileset heights.
+///
+/// Rows 0-2 stack vertically using the maximum tile height in each row
+/// (uniform 16 for tileset 24). Row 3 anchors each tile individually so
+/// its bottom edge lines up with [`PORTRAIT_ROW3_BOTTOM`], accommodating
+/// the varying heights of tiles 12-15 (22 vs 20 px).
+///
+/// Falls back to a flat 16-pixel row height when the SHA tileset is
+/// absent (e.g. synthetic test fixtures); positions are still emitted so
+/// downstream tests that count render commands continue to pass.
+fn compute_portrait_tiles(sha: &ShaFile) -> [(i32, i32, u16); 16] {
+    let tileset = sha
+        .tilesets()
+        .iter()
+        .find(|ts| ts.entry_index() == usize::from(PORTRAIT_TILESET));
+    let tile_h = |idx: u16| -> i32 {
+        tileset
+            .and_then(|ts| ts.tiles().get(usize::from(idx)))
+            .map(|t| i32::from(t.height()))
+            .unwrap_or(BLOCK_SIZE_I)
+    };
+
+    let mut result = [(0i32, 0i32, 0u16); 16];
+    let mut dy = 0i32;
+    for row in 0..3usize {
+        let mut row_h = 0i32;
+        for col in 0..4usize {
+            let tile = (row * 4 + col) as u16;
+            result[row * 4 + col] = (PORTRAIT_X[row][col], dy, tile);
+            row_h = row_h.max(tile_h(tile));
+        }
+        dy += row_h;
+    }
+    for col in 0..4usize {
+        let tile = (12 + col) as u16;
+        let row3_dy = PORTRAIT_ROW3_BOTTOM - tile_h(tile);
+        result[12 + col] = (PORTRAIT_X[3][col], row3_dy, tile);
+    }
+    result
+}
 
 /// Emits the 16 portrait blits for the inventory area.
 ///
-/// The status-bar JSON places the tiles at inventory-area-relative
-/// positions; this helper translates each into framebuffer coordinates
-/// via [`INVENTORY_AREA_X`] / [`INVENTORY_AREA_Y`].
-fn render_jill_portrait() -> Vec<RenderCommand> {
-    PORTRAIT_TILES
+/// Translates the inventory-area-relative offsets in `portrait_tiles` into
+/// framebuffer coordinates via [`INVENTORY_AREA_X`] / [`INVENTORY_AREA_Y`].
+fn render_jill_portrait(portrait_tiles: &[(i32, i32, u16); 16]) -> Vec<RenderCommand> {
+    portrait_tiles
         .iter()
         .map(|(dx, dy, tile)| RenderCommand::Blit {
             tileset: PORTRAIT_TILESET,
@@ -739,12 +784,16 @@ mod tests {
     use openjill_data::cfg::CfgFile;
     use openjill_data::dma::DmaFile;
     use openjill_data::jn::JnFile;
+    use openjill_data::sha::ShaFile;
     use openjill_data::vcl::VclFile;
 
     /// Minimal byte counts for synthetic fixture construction.
     const JN_MIN_BYTES: usize = 128 * 64 * 2 + 2 + 70;
     const VCL_MIN_BYTES: usize = 400 + 40 * 4 + 40 * 2;
     const CFG_MIN_BYTES: usize = 10 * 10 + 20 + 10 * 4 + 6 * 12 + 2 + 2 + 6 * 2 + 2 + 2 + 2;
+    /// SHA header-only byte count (128 header entries × 4 bytes + 128 × 2-byte
+    /// header tail) matching [`crate::asset_cache::AssetCache::synthetic`].
+    const SHA_HEADER_BYTES: usize = 128 * 4 + 128 * 2;
 
     /// Builds a minimal all-zero `JnFile` for tests.
     fn zero_jn() -> JnFile {
@@ -754,6 +803,12 @@ mod tests {
     /// Builds a minimal empty `DmaFile` for tests.
     fn empty_dma() -> DmaFile {
         DmaFile::from_bytes(vec![]).expect("empty DMA should parse")
+    }
+
+    /// Builds a minimal all-zero `ShaFile` (header only, zero tilesets) for
+    /// tests that only need the start-menu screen to construct.
+    fn zero_sha() -> ShaFile {
+        ShaFile::from_bytes(vec![0u8; SHA_HEADER_BYTES]).expect("zero SHA should parse")
     }
 
     /// Builds a minimal all-zero `VclFile` for tests.
@@ -792,7 +847,7 @@ mod tests {
 
     /// Creates a `StartMenuScreen` with all-zero synthetic fixtures.
     fn menu() -> StartMenuScreen {
-        StartMenuScreen::new(zero_jn(), empty_dma(), zero_vcl(), zero_cfg())
+        StartMenuScreen::new(zero_jn(), empty_dma(), zero_vcl(), zero_cfg(), &zero_sha())
     }
 
     /// Unit under test: `StartMenuScreen::tick` — confirms item 0 ("play") via
@@ -977,7 +1032,7 @@ mod tests {
     #[test]
     fn info_box_splits_text_on_newlines() {
         let vcl = vcl_with_entry_zero("LINE 1\nLINE 2\nLINE 3");
-        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg());
+        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg(), &zero_sha());
 
         let commands = open_info_box_overlay(&mut screen);
         let lines = info_box_lines(&commands);
@@ -1012,7 +1067,7 @@ mod tests {
     fn info_box_clips_lines_beyond_max() {
         let lines_in: Vec<String> = (0..20).map(|i| format!("L{i}")).collect();
         let vcl = vcl_with_entry_zero(&lines_in.join("\n"));
-        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg());
+        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg(), &zero_sha());
 
         let commands = open_info_box_overlay(&mut screen);
         let lines_out = info_box_lines(&commands);
@@ -1038,7 +1093,7 @@ mod tests {
     #[test]
     fn info_box_single_line_unchanged() {
         let vcl = vcl_with_entry_zero("ONLY LINE");
-        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg());
+        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg(), &zero_sha());
 
         let commands = open_info_box_overlay(&mut screen);
         let lines = info_box_lines(&commands);

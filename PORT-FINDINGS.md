@@ -246,6 +246,44 @@ _No findings yet._
 
 ---
 
+## Reverse-engineered constants
+
+### Tag DOS-EXE-derived constants with `REVERSE-ENGINEERED` for future externalisation
+
+- **Symptom**: gameplay constants (tile-to-entity assignments, jump speeds,
+  gravity, point rewards, layout positions) were inlined into Rust source
+  with brief origin comments. Some originated from the Java reference's
+  `object_conf.json` / `status_bar_vga.json` / `jill_const.properties`,
+  some from direct DOS EXE reverse-engineering, and some were Rust-port
+  hand-tuned. Distinguishing them later (to swap to a runtime engine
+  config file) required re-reading each call site.
+- **Root cause**: no uniform marker separating values that *cannot* be
+  derived from the loaded game files (SHA / JN / DMA / VCL / CFG) from
+  values that *are* in the game files. Tile dimensions and tile counts
+  are SHA-derivable at runtime via `AssetCache::tile_dims` /
+  `AssetCache::tile_count`; behavior parameters (gravity, jump period,
+  point rewards) are not in any data file and originate from the DOS EXE
+  via the Java reference's JSON resources or hand-tuning.
+- **Resolution**: every DOS-EXE-derived constant carries a doc comment
+  beginning with `REVERSE-ENGINEERED:` plus the upstream reference
+  (`object_conf.json` field, Java class, or "DOS EXE / hand-tuned").
+  Animation-subset constants (`NUMBER_TILE_SET`, `FRAME_COUNT`) are
+  bounds-checked at construction by
+  `AssetCache::assert_tile_subset(tileset_index, frame_count, label)`
+  which skips when the SHA tileset is absent (synthetic test fixtures).
+  Future work: surface these constants through a single engine config
+  file loaded at startup so episode 2/3 or modder forks can override
+  them without recompiling.
+- **Applies to**: per-entity `TILESET_INDEX`, `TILE_BASE`,
+  `NUMBER_TILE_SET`, `FRAME_COUNT`, behavior tunables (jump period,
+  fall speed, score values), and screen-layout offsets that are not
+  derivable from the loaded game files.
+- **Reference**: `AGENTS.md` "Reverse-engineered constants" section;
+  search the codebase for `REVERSE-ENGINEERED:` to enumerate all
+  current entries.
+
+---
+
 ## Open issues (unresolved - observed during playthrough)
 
 These are observed deviations from original game behaviour that have not
@@ -258,8 +296,27 @@ resolved section once root cause and resolution are known.
   explode and gems do not splatter around on contact.
 - **Expected**: firebird explodes on player contact; several gems scatter
   from the explosion position; player loses health.
-- **Likely applies to**: other enemies that have an on-death spawn effect.
-- **Status**: unresolved.
+- **Resolution**: introduced `ScatterParticleEntity` (object_type 49 in
+  the runtime spawn factory) — a lightweight ballistic projectile that
+  integrates `xd`/`yd` per tick with gravity, cycles through
+  tileset 46's 5 distinct frames over its 40-tick lifetime, and
+  self-removes on wall contact, map exit, or timeout. `FirebirdEnemy
+  Entity::on_touch` now dispatches an 8-direction
+  [`MessageType::CreateObject`] spread centred on the firebird's
+  bounding-box midpoint, mirroring Java
+  `FirebirdManager.touchPlayer`'s `killMe()` plus
+  `BulletObjectFactory.explode(this, nbColoredBullet, dispatcher)`.
+  Particle physics constants (`GRAVITY_PER_TICK`, `Y_SPEED_MAX`,
+  `COUNTER_DIE`) carry `REVERSE-ENGINEERED:` tags against the
+  `BulletManager` fields in `object_conf.json`.
+- **Applies to**: any enemy whose Java reference extends
+  `AbstractFireHitPlayerObject` and calls
+  `BulletObjectFactory.explode` on death (firebird directly; flame
+  inherits the explode path but currently relies on its frame-cycle
+  self-removal).
+- **Status**: resolved (scatter visible). Particle-to-gem conversion
+  (so the player can pick the burst up as inventory) remains a
+  follow-up.
 
 ### Gator: repeated contact damage instead of single-hit invincibility window
 
@@ -280,7 +337,143 @@ resolved section once root cause and resolution are known.
   Throwing the knife (ALT in original) is unbound or incorrectly mapped.
 - **Expected**: SHIFT = jump, ALT = throw knife (original DOS key layout).
   SPACE may remain as an alias or be removed.
-- **Status**: unresolved.
+- **Resolution**: `INPUT_COMMAND_KEY_MAP` in
+  `crates/openjill-game/src/lib.rs` now binds `ShiftLeft`/`ShiftRight` to
+  `Jump` and `AltLeft`/`AltRight` to `ThrowItem`. `Space` is retained as a
+  secondary jump key (matches the Java reference `SimpleGameKeyHandler`
+  `VK_SHIFT -> jump` mapping with `VK_SPACE` as an alternative). `Ctrl` is
+  retained as a secondary throw key for menu confirmation parity.
+- **Follow-up resolution**: `PlayerEntity::update` already routed
+  `InputCommand::ThrowItem` into a `CreateObject(object_type = 36)`
+  bullet spawn, but `BulletEntity::draw` returned `None` and no
+  bullet-vs-enemy collision pass existed, so pressing ALT looked like a
+  no-op even after the keybinding fix. `BulletEntity` now renders the
+  knife pickup sprite (tileset 14, tile 13) as a temporary stand-in for
+  the Java reference's tileset 46 `tileByState` rotating blade, and a
+  new `LevelScreen::dispatch_projectile_hits` pass calls `on_kill` on
+  every enemy whose bounding box overlaps a projectile (`is_projectile()
+  -> true` on the `ObjectEntity` trait), with the projectile itself
+  also reaped on the same tick.
+- **Status**: resolved (proper tileset 46 rotation deferred — see
+  follow-up below).
+
+### Bullet sprite uses knife icon as stand-in for tileset 46 rotation
+
+- **Symptom**: `BulletEntity::draw` renders tileset 14 tile 13 (the
+  knife pickup icon) regardless of the bullet's lifetime counter.
+- **Expected (Java reference)**: tileset 46 with 15 frames selected by
+  `tileByState = "8:12#16:9#24:6#32:3#40:0"` — a counter-driven rotating
+  blade.
+- **Status**: unresolved; cosmetic only. Gameplay works because
+  projectile-vs-enemy collision uses the bounding box, not the sprite.
+
+### Knife flies through walls and off-screen instead of returning
+
+- **Symptom**: a thrown knife either passed through walls or kept
+  flying until it left the screen and never returned, despite the
+  boomerang state machine being in place. A follow-up report observed
+  a landed knife disappearing on floor contact and a knife thrown
+  near the map edge vanishing for good.
+- **Root cause**: four bugs in `BulletEntity`. (1) `tick_launch`
+  self-removed on the first wall contact, so a knife that hit a wall
+  during its 14-tick launch phase died instead of staying alive long
+  enough for the follow phase to take over (Java
+  `KniveManager.moveLeftRight` stops at walls via
+  `UtilityObjectEntity.moveObject{Left,Right}` but does not kill the
+  entity). (2) `always_active()` defaulted to `false`, so a launched
+  knife that flew past the viewport update rectangle had its
+  `state_count` frozen and never transitioned into the follow phase
+  even when the launch path was clear. (3) `tick_launch` also
+  removed on map-edge exit, so a knife thrown near the right/left
+  map boundary was lost forever before the follow phase could pull
+  it back. (4) `tick_fall` removed on floor contact, which dropped
+  the recoverable pickup state Java models via
+  `KniveManager.moveDown` setting `stateCount = 0` (`NoMoveNoHit`).
+- **Resolution**:
+  - `tick_launch` clamps at both walls and map edges without
+    removing; only the natural `state_count` advance moves the knife
+    into the follow phase.
+  - `BulletEntity` overrides `always_active() -> true` so the
+    boomerang state machine keeps advancing off-screen.
+  - `tick_fall` snaps `state_count` back to `NO_MOVE_NO_HIT` on
+    floor contact, leaving the knife alive at rest as a pickup; only
+    map-bottom exit removes it permanently.
+  - `BulletEntity::update` short-circuits in the `NO_MOVE_NO_HIT`
+    pickup state: it sits still, awaiting a player overlap, and
+    dispatches `InventoryItem(add Knife)` plus `removed = true` when
+    the player walks over it.
+- **Applies to**: any always-active projectile whose lifetime depends
+  on a per-tick state counter. Reaping is left to the player-catch
+  path and the fall-phase map-bottom check.
+- **Status**: resolved.
+
+### Knife throw missing inventory gate and boomerang return
+
+- **Symptom**: pressing ALT/Ctrl spawned a projectile even when the
+  player carried no knife pickup, and the projectile flew straight
+  until it hit a wall — no boomerang return, no homing.
+- **Root cause**: `PlayerEntity::update` gated the throw on `can_fire`
+  and `fire_cooldown` only; `BulletEntity::update` integrated `xd`/`yd`
+  every tick and self-removed on the first wall contact, with no state
+  machine.
+- **Resolution**:
+  - `PlayerEntity::update` now also requires
+    `state.inventory.contains(&InventoryObject::Knife)` to spawn the
+    projectile, mirroring the Java reference's inventory-conditional
+    throw.
+  - `BulletEntity` implements the Java `KniveManager` boomerang state
+    machine: launch phase (`state_count` 1-14, linear flight,
+    self-removes on wall), follow phase (15-64, homes toward the
+    player position captured via `ObjectEntity::observe_player`, wall
+    contact stops motion but does not remove), fall phase (>64,
+    gravity at `moveDown = 1`). Hitting an enemy snaps the projectile
+    into the follow phase via `BulletEntity::on_kill` so the knife
+    returns to the player after the kill, matching Java's
+    `setStateCount(statecountLaunchEnd + 1)` on `msgTouch`. A
+    follow-phase overlap with the player is treated as a successful
+    catch (projectile removed) inside `observe_player`.
+- **Applies to**: any projectile spawned via the player-throw path
+  (object type 36 in the Rust port, `BulletObjectFactory` in Java).
+  Inventory subtraction on throw and re-addition on catch is not yet
+  implemented — the knife stays in the inventory regardless. The
+  cosmetic tileset 46 rotation remains an open item above.
+- **Status**: resolved for the inventory gate and boomerang motion;
+  inventory book-keeping and rotation sprite remain open.
+
+### Player <-> enemy contact damage regressed to one-sided lethal hit
+
+- **Symptom**: touching a firebird (and likely other enemies) used to
+  damage both Jill and the enemy on contact. After a recent change, the
+  mutual hit is gone: touching the firebird from behind has no effect,
+  touching it from the front kills Jill outright.
+- **Root cause (firebird)**: `FirebirdEnemyEntity::on_touch` only armed a
+  player kill (`pending_kill = Some(Enemy)`) and never set `self.dead =
+  true`. The Java reference's `FirebirdManager.touchPlayer` extends
+  `AbstractFireHitPlayerObject.msgTouch`, which calls `killMe()` on the
+  firebird after damaging the player; without that the firebird stays
+  alive and re-triggers `on_touch` on every subsequent overlap tick,
+  draining the player's full 6-point health bar in a few frames whenever
+  the bounding boxes happen to overlap.
+- **Resolution (firebird only)**: `on_touch` now sets `self.dead = true`
+  after arming the player kill so the firebird vanishes on contact,
+  matching the Java mutual outcome. The "behind = no hit" half of the
+  symptom is the absence of a player invincibility window combined with
+  bounding-box geometry: front-facing approaches overlap multiple ticks
+  before separation, back-facing approaches separate fast enough that
+  only one or zero ticks register.
+- **Expected (full fix, pending)**: a per-enemy player-invincibility
+  window so a single contact deals exactly one point of damage even when
+  the bounding boxes overlap for multiple ticks; this is the same
+  underlying gap as the gator finding above. The gem-scatter explosion
+  (`BulletObjectFactory.explode`) on firebird contact remains
+  unimplemented (`Firebird: on-touch explosion with gem scatter not
+  implemented` above).
+- **Applies to**: enemies whose Java reference extends
+  `AbstractFireHitPlayerObject` (firebird, flame). Flame already
+  self-removes via its frame-cycle counter so the player-touch
+  self-removal is less load-bearing there.
+- **Status**: partially resolved (firebird self-kill on touch); full
+  invincibility-window fix still open.
 
 ### Frog: does not chase player
 

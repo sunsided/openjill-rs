@@ -33,7 +33,7 @@ use openjill_data::jn::{JnFile, JnObject, JnReadError};
 
 use crate::asset_cache::AssetCache;
 use crate::entities::backgrounds::standard::StdBackgroundEntity;
-use crate::entities::objects::{BeesEntity, BulletEntity};
+use crate::entities::objects::{BeesEntity, BulletEntity, ScatterParticleEntity};
 use crate::entities::{make_background_entity, make_object_entity};
 use crate::screens::map_screen::render_map_background;
 use crate::status_bar::GAME_AREA_CLIP;
@@ -911,11 +911,49 @@ impl LevelScreen {
                 }
             }
         }
-        if let Some(kind) = pending_kill {
+        if let Some(kind) = pending_kill
+            && state.invincibility_ticks == 0
+        {
             state.health = (state.health - 1).max(0);
+            state.invincibility_ticks = openjill_core::PLAYER_INVINCIBILITY_TICKS;
             if state.health == 0 {
                 objects[player_idx].on_kill(1, kind);
             }
+        }
+    }
+
+    /// Dispatches a one-point hit from every player-spawned projectile to
+    /// every non-player non-projectile object whose bounding box overlaps.
+    ///
+    /// Mirrors the Java reference's bullet-vs-enemy collision pass: when a
+    /// thrown knife / bullet sprite overlaps an enemy, both the projectile
+    /// and the enemy receive [`ObjectEntity::on_kill`] so the enemy enters
+    /// its death state and the projectile is reaped on the same tick.
+    ///
+    /// Collected as `(projectile_idx, target_idx)` pairs first so the
+    /// mutable borrows can be applied sequentially without violating
+    /// Rust's aliasing rules. `DeathKind::Enemy` is used for both ends
+    /// because the projectile's own `on_kill` only flips its `removed`
+    /// flag and ignores the death-kind.
+    fn dispatch_projectile_hits(&mut self) {
+        let mut hits: Vec<(usize, usize)> = Vec::new();
+        for (p_idx, projectile) in self.objects.iter().enumerate() {
+            if !projectile.is_projectile() {
+                continue;
+            }
+            let p_bbox = projectile.bounding_box();
+            for (t_idx, target) in self.objects.iter().enumerate() {
+                if t_idx == p_idx || target.is_player() || target.is_projectile() {
+                    continue;
+                }
+                if target.bounding_box().intersects(&p_bbox) {
+                    hits.push((p_idx, t_idx));
+                }
+            }
+        }
+        for (p_idx, t_idx) in hits {
+            self.objects[t_idx].on_kill(1, DeathKind::Enemy);
+            self.objects[p_idx].on_kill(1, DeathKind::Enemy);
         }
     }
 
@@ -991,6 +1029,7 @@ impl LevelScreen {
         for (object_type, x, y, xd, yd) in spawns {
             let entity: Box<dyn ObjectEntity> = match object_type {
                 46 => Box::new(BeesEntity::spawn_at(x, y)),
+                49 => Box::new(ScatterParticleEntity::with_velocity(x, y, xd, yd)),
                 _ => Box::new(BulletEntity::with_velocity(
                     x,
                     y,
@@ -1441,9 +1480,16 @@ impl ScreenHandler for LevelScreen {
         //     reference draw order).
         // 12. Message-box overlay last so transitions paint over everything
         //     else.
+        // Decrement the post-hit invincibility window once per tick so the
+        // player regains vulnerability after `PLAYER_INVINCIBILITY_TICKS`
+        // ticks of contact immunity following an enemy touch.
+        if state.invincibility_ticks > 0 {
+            state.invincibility_ticks -= 1;
+        }
         self.update_objects(input, state);
         self.apply_platform_moves();
         self.dispatch_player_touches(state);
+        self.dispatch_projectile_hits();
         self.route_triggers();
         self.reap_removed_objects();
         self.spawn_objects();

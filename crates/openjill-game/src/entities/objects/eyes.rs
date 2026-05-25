@@ -16,10 +16,28 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset that owns the eyes frames.
+///
+/// REVERSE-ENGINEERED: design choice from the original DOS EXE; not in the
+/// Java reference's `object_conf.json`. Future engine config file should
+/// expose this.
 const TILESET_INDEX: u8 = 62;
+/// Base tile index within [`TILESET_INDEX`].
+///
+/// REVERSE-ENGINEERED.
 const TILE_BASE: u16 = 0;
+/// Number of animation frames cycled by the eyes sprite.
+///
+/// REVERSE-ENGINEERED: verified at construction by
+/// [`AssetCache::assert_tile_subset`].
 const NUMBER_TILE_SET: u16 = 2;
+/// Score awarded when the eyes are killed.
+///
+/// REVERSE-ENGINEERED.
 const SCORE_VALUE: i32 = 300;
+/// Horizontal chase speed toward the player in pixels per tick.
+///
+/// REVERSE-ENGINEERED.
 const CHASE_SPEED: i32 = 3;
 
 pub struct EyesEntity {
@@ -36,7 +54,12 @@ pub struct EyesEntity {
 }
 
 impl EyesEntity {
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            TILE_BASE + NUMBER_TILE_SET,
+            "EyesEntity NUMBER_TILE_SET",
+        );
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
         let x = i32::from(item.x());

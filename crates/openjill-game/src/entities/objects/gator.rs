@@ -26,19 +26,43 @@ use openjill_data::jn::JnObject;
 use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset that owns the gator frames.
+///
+/// REVERSE-ENGINEERED: `GatorManager.tileSet = 39` in `object_conf.json`.
+/// Tileset 39 carries 16 tiles total; gator animates 4-tile head/tail
+/// pairs per direction. Future engine config file should expose this.
 const TILESET_INDEX: u8 = 39;
 /// `rightTileTail` — drawn at x+0 when facing right.
+///
+/// REVERSE-ENGINEERED: from `GatorManager` config.
 const RIGHT_LEFT_TILE: u16 = 0;
 /// `rightTileHead` — drawn at x+TILE_W when facing right.
+///
+/// REVERSE-ENGINEERED: from `GatorManager` config.
 const RIGHT_RIGHT_TILE: u16 = 4;
 /// `leftTileHead` — drawn at x+0 when facing left.
+///
+/// REVERSE-ENGINEERED: from `GatorManager` config.
 const LEFT_LEFT_TILE: u16 = 12;
 /// `leftTileTail` — drawn at x+TILE_W when facing left.
+///
+/// REVERSE-ENGINEERED: from `GatorManager` config.
 const LEFT_RIGHT_TILE: u16 = 8;
-/// Width of one tile in pixels (SHA header[39]: 32px per tile).
+/// Width of one tile in pixels (SHA header[39]: 32 px per tile).
 const TILE_W: i32 = 32;
+/// Number of animation frames cycled per head/tail pair.
+///
+/// REVERSE-ENGINEERED: `GatorManager.numberTileSet = 4` in
+/// `object_conf.json`. Verified at construction by
+/// [`AssetCache::assert_tile_subset`].
 const NUMBER_TILE_SET: u16 = 4;
+/// Horizontal patrol speed in pixels per tick.
+///
+/// REVERSE-ENGINEERED.
 const X_SPEED: i32 = 3;
+/// Score awarded when the gator is killed.
+///
+/// REVERSE-ENGINEERED.
 const SCORE_VALUE: i32 = 200;
 
 pub struct GatorEntity {
@@ -56,6 +80,11 @@ pub struct GatorEntity {
 
 impl GatorEntity {
     pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            LEFT_LEFT_TILE + NUMBER_TILE_SET,
+            "GatorEntity NUMBER_TILE_SET",
+        );
         let (_, h) = sprite_dims(cache, TILESET_INDEX);
         let jn_h = i32::from(item.height());
         let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };

@@ -24,6 +24,7 @@ fn make_start_menu(cache: &AssetCache) -> StartMenuScreen {
         cache.dma.clone(),
         cache.vcl.clone(),
         cache.cfg.clone(),
+        &cache.sha,
     )
 }
 

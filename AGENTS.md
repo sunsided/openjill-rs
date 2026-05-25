@@ -62,6 +62,30 @@ items, trait impls authored in this repository, enum variants, struct fields
 rule does not relax for items that "look obvious" — the goal is for every
 identifier to document its purpose, not just exposed surface.
 
+## Reverse-engineered constants
+
+Gameplay values that originate from the original DOS EXE (via the Java
+reference's `object_conf.json`, `jill_const.properties`, hand-tuning, or
+playtesting) and that *cannot* be derived from the loaded game-data files
+(SHA / JN / DMA / VCL / CFG) carry a doc comment starting with
+`REVERSE-ENGINEERED:` together with the upstream reference. Search the
+codebase for `REVERSE-ENGINEERED:` to enumerate every such constant.
+
+Animation-subset constants (`NUMBER_TILE_SET`, `FRAME_COUNT`) are
+bounds-checked at construction with
+`AssetCache::assert_tile_subset(tileset_index, frame_count, label)` so a
+SHA tileset structure change is caught immediately in debug builds.
+
+Tile dimensions, tile counts, and tile heights *are* derivable from the
+loaded SHA; load them via `AssetCache::tile_dims`,
+`AssetCache::tile_count`, and `AssetCache::tile_height` instead of
+duplicating SHA values as Rust constants.
+
+Anticipated future work: the `REVERSE-ENGINEERED` values should move to
+a single engine-config file loaded at startup so episode 2/3 forks (or
+modders) can override them without recompiling. See the matching
+`PORT-FINDINGS.md` entry for context.
+
 Tests must carry a doc comment when they are nontrivial to reason about. For
 those tests the doc comment must spell out:
 
@@ -207,7 +231,7 @@ use shared Taskfile wrappers instead of per-command shell logic:
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **openjill-rs** (6970 symbols, 18841 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **openjill-rs** (6984 symbols, 18861 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

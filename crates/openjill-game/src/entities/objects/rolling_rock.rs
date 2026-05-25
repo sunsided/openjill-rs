@@ -34,26 +34,48 @@ use openjill_data::jn::JnObject;
 use crate::asset_cache::AssetCache;
 
 /// SHA tileset that owns the rolling-rock frames.
+///
+/// REVERSE-ENGINEERED: `RollingRockManager.tileSet = 14` in
+/// `object_conf.json`. Tileset 14 is multi-purpose (45 tiles total, shared
+/// with falling spikes, keys, etc.); rolling rock uses tiles 24-27. Not
+/// derivable from SHA structure; future engine config file should expose
+/// this.
 const TILESET_INDEX: u8 = 14;
 
 /// Base tile index for the four rolling-rock animation frames.
+///
+/// REVERSE-ENGINEERED: `RollingRockManager.tile = 24` in `object_conf.json`.
 const TILE_BASE: u16 = 24;
 
-/// Number of distinct frames in the animation (`RollingRockManager.numberTileSet`).
+/// Number of distinct frames in the animation.
+///
+/// REVERSE-ENGINEERED: `RollingRockManager.numberTileSet = 4` in
+/// `object_conf.json`. Verified at construction by
+/// [`AssetCache::assert_tile_subset`].
 const NUMBER_TILE_SET: u16 = 4;
 
-/// Counter slot reserved for the airborne / falling sprite
-/// (`RollingRockManager.counterFall`).
+/// Counter slot reserved for the airborne / falling sprite.
+///
+/// REVERSE-ENGINEERED: `RollingRockManager.counterFall = 0` in
+/// `object_conf.json`.
 const COUNTER_FALL: i32 = 0;
 
-/// Rolling animation counter cap (`RollingRockManager.counterMoveMax`).
+/// Rolling animation counter cap.
+///
+/// REVERSE-ENGINEERED: `RollingRockManager.counterMoveMax = 3` in
+/// `object_conf.json`.
 const COUNTER_MOVE_MAX: i32 = 3;
 
-/// Counter value the animation wraps to after exceeding [`COUNTER_MOVE_MAX`]
-/// (`RollingRockManager.counterMoveValue`).
+/// Counter value the animation wraps to after exceeding [`COUNTER_MOVE_MAX`].
+///
+/// REVERSE-ENGINEERED: `RollingRockManager.counterMoveValue = 1` in
+/// `object_conf.json`.
 const COUNTER_MOVE_VALUE: i32 = 1;
 
-/// Per-tick horizontal motion in pixels (`RollingRockManager.xSpeedFall`).
+/// Per-tick horizontal motion in pixels.
+///
+/// REVERSE-ENGINEERED: `RollingRockManager.xSpeedFall = 4` in
+/// `object_conf.json`.
 const X_SPEED_FALL: i32 = 4;
 
 /// Rolling rock entity.
@@ -81,7 +103,12 @@ pub struct RollingRockEntity {
 
 impl RollingRockEntity {
     /// Builds a rolling rock from a JN object record.
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            TILE_BASE + NUMBER_TILE_SET,
+            "RollingRockEntity NUMBER_TILE_SET",
+        );
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
         Self {

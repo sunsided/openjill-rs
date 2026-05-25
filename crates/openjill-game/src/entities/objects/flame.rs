@@ -26,18 +26,30 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
-/// SHA tileset index that owns every flame frame (`FlameManager.tileSet`).
+/// SHA tileset index that owns every flame frame.
+///
+/// REVERSE-ENGINEERED: `FlameManager.tileSet = 12` in `object_conf.json`.
+/// Tileset 12 carries 12 tiles total; flame animates the first 6. Future
+/// engine config file should expose this.
 const TILESET_INDEX: u8 = 12;
 
-/// Base tile index inside [`TILESET_INDEX`] (`FlameManager.tile`).
+/// Base tile index inside [`TILESET_INDEX`].
+///
+/// REVERSE-ENGINEERED: `FlameManager.tile = 0` in `object_conf.json`.
 const TILE_BASE: u16 = 0;
 
-/// Number of distinct flame source tiles (`FlameManager.numberTileSet`).
+/// Number of distinct flame source tiles.
+///
+/// REVERSE-ENGINEERED: `FlameManager.numberTileSet = 6` in
+/// `object_conf.json`. Verified at construction by
+/// [`AssetCache::assert_tile_subset`].
 const NUMBER_TILE_SET: i32 = 6;
 
 /// Total animation length in ticks; each source tile is held for two ticks so
 /// the frame count is `NUMBER_TILE_SET * 2` (mirrors the Java
 /// `imagesUp = new Optional[numberTileSet * 2]` slot count).
+///
+/// REVERSE-ENGINEERED: derived from `NUMBER_TILE_SET`.
 const FRAME_COUNT: i32 = NUMBER_TILE_SET * 2;
 
 /// Stationary lethal flame entity.
@@ -66,7 +78,12 @@ pub struct FlameEntity {
 
 impl FlameEntity {
     /// Builds a flame from a JN object record.
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            TILE_BASE + NUMBER_TILE_SET as u16,
+            "FlameEntity NUMBER_TILE_SET",
+        );
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
         Self {

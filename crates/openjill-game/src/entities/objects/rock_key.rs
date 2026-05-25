@@ -17,13 +17,24 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
-/// SHA tileset index for rock-key sprites (matches `RockKeyManager.tileSet = 9`).
+/// SHA tileset index for rock-key sprites.
+///
+/// REVERSE-ENGINEERED: `RockKeyManager.tileSet = 9` in `object_conf.json`.
+/// Not derivable from SHA structure; future engine config file should expose
+/// this.
 const TILESET: u8 = 9;
 
-/// Base tile index within [`TILESET`] (matches `RockKeyManager.tile = 4`).
+/// Base tile index within [`TILESET`].
+///
+/// REVERSE-ENGINEERED: `RockKeyManager.tile = 4` in `object_conf.json`.
 const BASE_TILE: u16 = 4;
 
-/// Number of animation frames (matches `RockKeyManager.numberTileSet = 4`).
+/// Number of animation frames cycled by the rock-key sprite.
+///
+/// REVERSE-ENGINEERED: `RockKeyManager.numberTileSet = 4` in
+/// `object_conf.json`. Tileset 9 carries 8 tiles total (verified at
+/// construction by [`AssetCache::assert_tile_subset`]); rock key animates
+/// tiles 4-7.
 const FRAME_COUNT: u16 = 4;
 
 /// Rock key pickup entity (the gem that opens map doors).
@@ -45,7 +56,12 @@ pub struct RockKeyEntity {
 
 impl RockKeyEntity {
     /// Builds a rock key pickup from a JN object record.
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET,
+            BASE_TILE + FRAME_COUNT,
+            "RockKeyEntity FRAME_COUNT",
+        );
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
         Self {

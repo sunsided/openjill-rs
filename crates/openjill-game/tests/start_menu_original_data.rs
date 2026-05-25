@@ -92,6 +92,7 @@ fn start_menu_constructs_and_renders_with_original_data() {
         cache.dma.clone(),
         cache.vcl.clone(),
         cache.cfg.clone(),
+        &cache.sha,
     );
 
     // Idle tick with no input.
@@ -161,6 +162,7 @@ fn start_menu_constructs_and_renders_with_original_data() {
         cache.dma.clone(),
         cache.vcl.clone(),
         cache.cfg.clone(),
+        &cache.sha,
     );
     let mut esc = ActiveInput::new();
     esc.insert(InputCommand::Pause);

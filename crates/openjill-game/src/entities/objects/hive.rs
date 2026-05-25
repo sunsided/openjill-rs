@@ -16,11 +16,30 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset that owns the hive frames.
+///
+/// REVERSE-ENGINEERED: Rust port choice. Note the Java reference's
+/// `HiveManager.tileSet = 37`; the Rust port currently uses tileset 8 with
+/// [`TILE_BASE`] = 8. Future engine config file should expose this and
+/// reconcile with the Java reference.
 const TILESET_INDEX: u8 = 8;
+/// Base tile index within [`TILESET_INDEX`].
+///
+/// REVERSE-ENGINEERED: paired with [`TILESET_INDEX`] above.
 const TILE_BASE: u16 = 8;
+/// Number of animation frames cycled by the hive sprite.
+///
+/// REVERSE-ENGINEERED: verified at construction by
+/// [`AssetCache::assert_tile_subset`].
 const NUMBER_TILE_SET: u16 = 2;
+/// Score awarded when the hive is killed.
+///
+/// REVERSE-ENGINEERED: derived from the Java reference's `HiveManager`
+/// `point` field.
 const SCORE_VALUE: i32 = 500;
 /// Ticks between bee spawns.
+///
+/// REVERSE-ENGINEERED: matches the Java reference's hive spawn cadence.
 const SPAWN_PERIOD: i32 = 60;
 
 pub struct HiveEntity {
@@ -36,7 +55,12 @@ pub struct HiveEntity {
 }
 
 impl HiveEntity {
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(
+            TILESET_INDEX,
+            TILE_BASE + NUMBER_TILE_SET,
+            "HiveEntity NUMBER_TILE_SET",
+        );
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
         Self {

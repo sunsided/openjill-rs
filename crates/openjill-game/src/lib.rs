@@ -27,13 +27,22 @@ pub mod status_bar;
 use orchestrator::GameOrchestrator;
 
 /// Default keyboard mapping from physical keys to logical input commands.
+///
+/// Matches the original DOS Jill of the Jungle bindings and the
+/// `keysControlText` entries in `control_area.json`: SHIFT jumps, ALT
+/// throws the held inventory item. SPACE is kept as a secondary jump key
+/// for Java-port parity (`SimpleGameKeyHandler` maps `VK_SHIFT` to jump),
+/// and CTRL is kept as a secondary throw-item key for menu confirmation
+/// in [`crate::screens::start_menu::StartMenuScreen`].
 static INPUT_COMMAND_KEY_MAP: &[(KeyCode, InputCommand)] = &[
     (KeyCode::ArrowLeft, InputCommand::MoveLeft),
     (KeyCode::ArrowRight, InputCommand::MoveRight),
     (KeyCode::ArrowUp, InputCommand::Up),
     (KeyCode::Space, InputCommand::Jump),
-    (KeyCode::AltLeft, InputCommand::Jump),
-    (KeyCode::AltRight, InputCommand::Jump),
+    (KeyCode::ShiftLeft, InputCommand::Jump),
+    (KeyCode::ShiftRight, InputCommand::Jump),
+    (KeyCode::AltLeft, InputCommand::ThrowItem),
+    (KeyCode::AltRight, InputCommand::ThrowItem),
     (KeyCode::ArrowDown, InputCommand::Duck),
     (KeyCode::ControlLeft, InputCommand::ThrowItem),
     (KeyCode::ControlRight, InputCommand::ThrowItem),
@@ -447,8 +456,12 @@ mod tests {
             Some(InputCommand::Jump)
         );
         assert_eq!(
-            GameApp::map_key_to_input_command(KeyCode::AltLeft),
+            GameApp::map_key_to_input_command(KeyCode::ShiftLeft),
             Some(InputCommand::Jump)
+        );
+        assert_eq!(
+            GameApp::map_key_to_input_command(KeyCode::AltLeft),
+            Some(InputCommand::ThrowItem)
         );
         assert_eq!(
             GameApp::map_key_to_input_command(KeyCode::ArrowDown),
@@ -528,8 +541,8 @@ mod tests {
     fn active_commands_persist_until_last_bound_key_released() {
         let mut pressed = BTreeSet::new();
         GameApp::update_pressed_keys(&mut pressed, KeyCode::Space, ElementState::Pressed);
-        GameApp::update_pressed_keys(&mut pressed, KeyCode::AltLeft, ElementState::Pressed);
-        GameApp::update_pressed_keys(&mut pressed, KeyCode::AltRight, ElementState::Pressed);
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ShiftLeft, ElementState::Pressed);
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ShiftRight, ElementState::Pressed);
         assert_eq!(
             GameApp::active_commands(&pressed),
             BTreeSet::from([InputCommand::Jump])
@@ -541,13 +554,13 @@ mod tests {
             BTreeSet::from([InputCommand::Jump])
         );
 
-        GameApp::update_pressed_keys(&mut pressed, KeyCode::AltLeft, ElementState::Released);
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ShiftLeft, ElementState::Released);
         assert_eq!(
             GameApp::active_commands(&pressed),
             BTreeSet::from([InputCommand::Jump])
         );
 
-        GameApp::update_pressed_keys(&mut pressed, KeyCode::AltRight, ElementState::Released);
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ShiftRight, ElementState::Released);
         assert!(GameApp::active_commands(&pressed).is_empty());
     }
 

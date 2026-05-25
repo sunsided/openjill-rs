@@ -49,7 +49,26 @@ pub struct RuntimeState {
     ///
     /// Slot 0 is always the active player-form token (`Jill` at start).
     pub inventory: Vec<InventoryObject>,
+    /// Remaining player-damage invincibility ticks.
+    ///
+    /// Decremented once per tick by the level loop. While non-zero,
+    /// enemy contact armed via `take_player_kill` is ignored so a single
+    /// touch deals exactly one point of damage even when the player and
+    /// enemy bounding boxes overlap for multiple consecutive ticks. The
+    /// counter is reset to [`PLAYER_INVINCIBILITY_TICKS`] whenever a hit
+    /// is actually applied.
+    pub invincibility_ticks: i32,
 }
+
+/// Player-side damage cooldown applied after a successful enemy hit.
+///
+/// REVERSE-ENGINEERED: tuned for episode-1 playthrough so the player can
+/// step away from an enemy after taking one point of damage instead of
+/// losing the full life bar within a second. The Java reference relies
+/// on the per-enemy `zapholdValueAfterTouchPlayer = 3` cooldown only,
+/// which is too short for the Rust port's collision rate. Future engine
+/// config file should expose this value.
+pub const PLAYER_INVINCIBILITY_TICKS: i32 = 30;
 
 impl RuntimeState {
     /// Creates default runtime state for the start of episode 1.
@@ -61,6 +80,7 @@ impl RuntimeState {
             health: 6,
             gem_count: 0,
             inventory: vec![InventoryObject::Jill],
+            invincibility_ticks: 0,
         }
     }
 }
