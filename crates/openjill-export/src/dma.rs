@@ -6,8 +6,8 @@ use std::fmt::Write;
 
 /// REVERSE-ENGINEERED: Known DMA/JN `iFlags` bits mapped to symbolic names.
 ///
-/// These names mirror the OpenJill Java flag naming used by the original
-/// extractor output and the repository's Jill format reference
+/// These names mirror the `openjill_data::dma` flag helper semantics and the
+/// repository's Jill format reference
 /// (`docs/port/00-format-reference.md`, DMA `iFlags` table).
 const FLAG_NAMES: &[(u16, &str)] = &[
     (0x0001, "PLAYERTHRU"),
