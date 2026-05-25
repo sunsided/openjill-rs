@@ -18,7 +18,7 @@ const FLAG_NAMES: &[(u16, &str)] = &[
     (0x0020, "MSGUPDATE"),
     (0x0040, "INSIDE"),
     (0x0080, "FRONT"),
-    (0x0200, "BACK/TINY"),
+    (0x0200, "BACK_TINY"),
     (0x0800, "KILLABLE"),
     (0x1000, "FIREBALL"),
     (0x2000, "WATER"),
