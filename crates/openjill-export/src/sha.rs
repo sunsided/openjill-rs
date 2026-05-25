@@ -124,12 +124,21 @@ impl Default for AtlasOptions {
 /// - [`TilesetColorOutput::Colored`] — resolves `i` through the supplied
 ///   palette and writes `R, G, B, A=255`.
 ///
-/// Returns a 1×1 black image when the tileset contains no tiles.
+/// Returns a 1×1 transparent black image when the tileset contains no tiles
+/// (or only zero-area tiles).
 ///
 /// Callers can encode the returned [`RgbaImage`] as PNG via the `image` crate
 /// without any additional PNG dependency.
 pub fn tileset_to_png(tileset: &ShaTileSet, output: TilesetColorOutput) -> RgbaImage {
-    let tiles = tileset.tiles();
+    let tiles: Vec<_> = tileset
+        .tiles()
+        .iter()
+        .filter_map(|tile| {
+            let w = usize::from(tile.width());
+            let h = usize::from(tile.height());
+            (w > 0 && h > 0).then_some((tile, w, h))
+        })
+        .collect();
     if tiles.is_empty() {
         return RgbaImage::new(1, 1);
     }
@@ -144,7 +153,7 @@ pub fn tileset_to_png(tileset: &ShaTileSet, output: TilesetColorOutput) -> RgbaI
     let mut atlas_width = 0usize;
     let mut col_idx = 0usize;
 
-    for tile in tiles {
+    for (_, w, h) in &tiles {
         if col_idx == cols {
             atlas_width = atlas_width.max(x);
             y += row_height;
@@ -152,11 +161,9 @@ pub fn tileset_to_png(tileset: &ShaTileSet, output: TilesetColorOutput) -> RgbaI
             row_height = 0;
             col_idx = 0;
         }
-        let w = usize::from(tile.width());
-        let h = usize::from(tile.height());
-        placements.push((x, y, w, h));
-        row_height = row_height.max(h);
-        x += w;
+        placements.push((x, y, *w, *h));
+        row_height = row_height.max(*h);
+        x += *w;
         col_idx += 1;
     }
     atlas_width = atlas_width.max(x);
@@ -168,7 +175,7 @@ pub fn tileset_to_png(tileset: &ShaTileSet, output: TilesetColorOutput) -> RgbaI
         atlas_height as u32,
     );
 
-    for ((px, py, pw, ph), tile) in placements.iter().zip(tiles) {
+    for ((px, py, pw, ph), (tile, ..)) in placements.iter().zip(&tiles) {
         let pixels = tile.indexed_pixels();
         for row in 0..*ph {
             for col in 0..*pw {
@@ -191,7 +198,8 @@ pub fn tileset_to_png(tileset: &ShaTileSet, output: TilesetColorOutput) -> RgbaI
 /// [`AtlasOptions::padding`] pixels. Pixel values are expanded according to
 /// [`AtlasOptions::output`].
 ///
-/// Returns a 1×1 black image when no tiles pass the filter.
+/// Returns a 1×1 transparent black image when no tiles pass the filter
+/// (including when all matching tiles are zero-area).
 ///
 /// Callers can encode the returned [`RgbaImage`] as PNG via the `image` crate
 /// without any additional PNG dependency.
@@ -204,12 +212,10 @@ pub fn atlas_to_png(sha: &ShaFile, options: &AtlasOptions) -> RgbaImage {
         .filter(|ts| tileset_matches_mode(ts, options.mode))
         .filter(|ts| tileset_matches_filter(ts, options.filter))
         .flat_map(|ts| {
-            ts.tiles().iter().map(|tile| {
-                (
-                    usize::from(tile.width()),
-                    usize::from(tile.height()),
-                    tile.indexed_pixels(),
-                )
+            ts.tiles().iter().filter_map(|tile| {
+                let w = usize::from(tile.width());
+                let h = usize::from(tile.height());
+                (w > 0 && h > 0).then_some((w, h, tile.indexed_pixels()))
             })
         })
         .collect();
@@ -323,7 +329,7 @@ mod tests {
     /// Builds minimal valid SHA bytes containing:
     ///
     /// - One 2-bit tileset (entry index 0) with a 4-entry colour map and two
-    ///   2×2 tiles (8 pixels each). Pixels are raw colour-map indices 0–3.
+    ///   2×2 tiles (4 pixels each). Pixels are raw colour-map indices 0–3.
     /// - One 8-bit tileset (entry index 1) flagged as a font with one 3×3 tile.
     ///   No colour map (8-bit + font).
     ///

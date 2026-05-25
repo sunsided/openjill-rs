@@ -71,7 +71,7 @@ fn renders_tilesets_from_original_jill_sha_when_available() {
         check!(image.width() >= 1);
         check!(image.height() >= 1);
 
-        // Non-empty tilesets produce images larger than 1×1.
+        // Non-empty tilesets produce an image that is at least 1×1.
         if !tileset.tiles().is_empty() {
             let max_tile_pixels = tileset
                 .tiles()
