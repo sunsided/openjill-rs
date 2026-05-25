@@ -3,8 +3,8 @@
 //! Mirrors `org.jill.game.entities.obj.SnakeManager`: horizontal floor patrol;
 //! reverses at walls and gaps; kills player on contact.
 //!
-//! Tileset/tile: `tileSet = 7`, `tile = 0`, `numberTileSet = 4`.
-//! SHA dump confirms: tileset 7 tile 0 is 16×16 px.
+//! Tileset/tile from `object_conf.json`: `tileSet = 15`, `tile = 0`,
+//! `numberTileSet = 4` (tiles 0-3 = snake walk-cycle frames).
 
 use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
 use openjill_core::{
@@ -16,7 +16,7 @@ use openjill_data::jn::JnObject;
 use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
 use crate::asset_cache::AssetCache;
 
-const TILESET_INDEX: u8 = 7;
+const TILESET_INDEX: u8 = 15;
 const TILE_BASE: u16 = 0;
 const NUMBER_TILE_SET: u16 = 4;
 const X_SPEED: i32 = 3;

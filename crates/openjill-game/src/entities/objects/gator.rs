@@ -4,9 +4,17 @@
 //! can briefly submerge (alternate tile range); reverses at walls and gaps;
 //! kills player on contact.
 //!
-//! Tileset/tile: `tileSet = 10`, `tile = 0`, `numberTileSet = 4`.
-//! Submerged tile base: tile 4 (alternate frame set).
-//! SHA dump confirms: tileset 10 tile 0 is 32×16 px.
+//! Tileset/tile from `object_conf.json`: `tileSet = 39`, `numberTileSet = 4`.
+//! The Java reference composites two tiles per frame: a left part and a right
+//! part drawn side-by-side to form the full-width body.
+//!
+//! Right-facing: left part = tile `rightTileTail` + frame (tiles 0-3),
+//!               right part = tile `rightTileHead` + frame (tiles 4-7).
+//! Left-facing:  left part = tile `leftTileHead` + frame (tiles 12-15),
+//!               right part = tile `leftTileTail` + frame (tiles 8-11).
+//!
+//! SHA header[39] confirms: 16 tiles, each 32×8 px.
+//! Full composite width = 64 px, height = 8 px.
 
 use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
 use openjill_core::{
@@ -18,14 +26,20 @@ use openjill_data::jn::JnObject;
 use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
 use crate::asset_cache::AssetCache;
 
-const TILESET_INDEX: u8 = 10;
-const TILE_BASE: u16 = 0;
-const TILE_SUBMERGE_BASE: u16 = 4;
+const TILESET_INDEX: u8 = 39;
+/// `rightTileTail` — drawn at x+0 when facing right.
+const RIGHT_LEFT_TILE: u16 = 0;
+/// `rightTileHead` — drawn at x+TILE_W when facing right.
+const RIGHT_RIGHT_TILE: u16 = 4;
+/// `leftTileHead` — drawn at x+0 when facing left.
+const LEFT_LEFT_TILE: u16 = 12;
+/// `leftTileTail` — drawn at x+TILE_W when facing left.
+const LEFT_RIGHT_TILE: u16 = 8;
+/// Width of one tile in pixels (SHA header[39]: 32px per tile).
+const TILE_W: i32 = 32;
 const NUMBER_TILE_SET: u16 = 4;
 const X_SPEED: i32 = 3;
 const SCORE_VALUE: i32 = 200;
-/// Ticks before a surface gator submerges.
-const SUBMERGE_PERIOD: i32 = 48;
 
 pub struct GatorEntity {
     x: i32,
@@ -34,8 +48,6 @@ pub struct GatorEntity {
     h: i32,
     x_speed: i32,
     counter: i32,
-    submerge_counter: i32,
-    submerged: bool,
     dead: bool,
     score_dispatched: bool,
     zaphold: i32,
@@ -44,18 +56,16 @@ pub struct GatorEntity {
 
 impl GatorEntity {
     pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
-        let (w, h) = sprite_dims(cache, TILESET_INDEX);
+        let (_, h) = sprite_dims(cache, TILESET_INDEX);
         let jn_h = i32::from(item.height());
         let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()) - y_adj,
-            w,
+            w: TILE_W * 2,
             h,
             x_speed: X_SPEED,
             counter: 0,
-            submerge_counter: 0,
-            submerged: false,
             dead: false,
             score_dispatched: false,
             zaphold: 0,
@@ -86,20 +96,12 @@ impl ObjectEntity for GatorEntity {
             self.zaphold -= 1;
         }
 
-        self.submerge_counter += 1;
-        if self.submerge_counter >= SUBMERGE_PERIOD {
-            self.submerge_counter = 0;
-            self.submerged = !self.submerged;
-        }
-
-        if !self.submerged {
-            if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-                && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-            {
-                self.x += self.x_speed;
-            } else {
-                self.x_speed = -self.x_speed;
-            }
+        if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
+            && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
+        {
+            self.x += self.x_speed;
+        } else {
+            self.x_speed = -self.x_speed;
         }
 
         self.counter += 1;
@@ -109,23 +111,37 @@ impl ObjectEntity for GatorEntity {
     }
 
     fn draw(&self) -> Option<RenderCommand> {
+        self.draw_multi().into_iter().next()
+    }
+
+    fn draw_multi(&self) -> Vec<RenderCommand> {
         if self.dead {
-            return None;
+            return vec![];
         }
         let frame = (self.counter as u16).min(NUMBER_TILE_SET - 1);
-        let base = if self.submerged {
-            TILE_SUBMERGE_BASE
+        let (left_tile, right_tile) = if self.x_speed > 0 {
+            (RIGHT_LEFT_TILE + frame, RIGHT_RIGHT_TILE + frame)
         } else {
-            TILE_BASE
+            (LEFT_LEFT_TILE + frame, LEFT_RIGHT_TILE + frame)
         };
-        Some(RenderCommand::Blit {
-            tileset: TILESET_INDEX,
-            tile: base + frame,
-            x: self.x,
-            y: self.y,
-            opaque: false,
-            clip: None,
-        })
+        vec![
+            RenderCommand::Blit {
+                tileset: TILESET_INDEX,
+                tile: left_tile,
+                x: self.x,
+                y: self.y,
+                opaque: false,
+                clip: None,
+            },
+            RenderCommand::Blit {
+                tileset: TILESET_INDEX,
+                tile: right_tile,
+                x: self.x + TILE_W,
+                y: self.y,
+                opaque: false,
+                clip: None,
+            },
+        ]
     }
 
     fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {

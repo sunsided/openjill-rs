@@ -100,10 +100,13 @@ enum PendingRequest {
 /// Shared queue of pending transition requests received via the dispatcher.
 type Inbox = Arc<Mutex<Vec<PendingRequest>>>;
 
-/// Inventory-area-local X of the score number's left edge.
+/// Inventory-area-local X of the score number's right edge.
 ///
-/// Sourced from `OpenJill/src/main/resources/inventory_conf.json` `score.x`.
-const SCORE_X_INV: i32 = 57;
+/// Sourced from `OpenJill/src/main/resources/inventory_conf.json` `score.x`;
+/// the Java reference treats this as the right edge for right-aligned rendering.
+/// Value 63 places the last digit flush with the inventory area's right interior
+/// column (inventory right edge = 64, minus one pixel of padding).
+const SCORE_X_INV: i32 = 63;
 
 /// Inventory-area-local Y of the score number's top edge.
 ///
@@ -115,12 +118,14 @@ const SCORE_Y_INV: i32 = 16;
 /// Sourced from `OpenJill/src/main/resources/inventory_conf.json` `score.color`.
 const SCORE_COLOR: u8 = 4;
 
+/// Pixel width of one small-font glyph (confirmed from JILL1.SHA font tileset 2).
+const SMALL_FONT_CHAR_W: i32 = 6;
+
 /// Width in pixels of the FillRect erase region behind the score digits.
 ///
-/// Large enough to cover six 6 px-wide small-font glyphs with two pixels of
-/// slack; matches the band the original engine clears before each score
-/// redraw.
-const SCORE_ERASE_W: u32 = 40;
+/// Covers the maximum right-aligned score area: `SCORE_DIGITS` glyphs of
+/// `SMALL_FONT_CHAR_W` each, left-edge at `SCORE_X_INV - SCORE_DIGITS * SMALL_FONT_CHAR_W`.
+const SCORE_ERASE_W: u32 = (SCORE_DIGITS as i32 * SMALL_FONT_CHAR_W) as u32;
 
 /// Height in pixels of the FillRect erase region behind the score digits.
 ///
@@ -147,38 +152,6 @@ const SCORE_DIGITS: usize = 6;
 /// [`RuntimeState`] in the overlay path so externally-mutated state stays
 /// inside the same visual contract.
 const SCORE_DISPLAY_MAX: i32 = 999_999;
-
-/// Maximum displayable lives digit (`0..=9`).
-///
-/// Limits the rendered glyph count to one so the lives `DrawText` never
-/// overflows [`LIVES_ERASE_W`].  The underlying [`RuntimeState::lives`]
-/// counter is left untouched above this value; the saturation is purely a
-/// display concern, mirroring the original game's single-digit lives
-/// indicator.
-const LIVES_DISPLAY_MAX: i32 = 9;
-
-/// Inventory-area-local X of the lives count digit.
-///
-/// `inventory_conf.json` does not carry an explicit lives anchor; the value
-/// is rendered next to the `score` label so the dynamic overlay stays inside
-/// the inventory panel without colliding with the lifebar or item grid.
-/// Child issue 60 will replace this with a positional constant once a
-/// dedicated lives icon is wired in.
-const LIVES_X_INV: i32 = 33;
-
-/// Inventory-area-local Y of the lives count digit.
-///
-/// See [`LIVES_X_INV`] for the sourcing caveat.
-const LIVES_Y_INV: i32 = 22;
-
-/// EGA color index used by the lives digit.
-const LIVES_COLOR: u8 = 4;
-
-/// Width in pixels of the FillRect erase region behind the lives digit.
-const LIVES_ERASE_W: u32 = 16;
-
-/// Height in pixels of the FillRect erase region behind the lives digit.
-const LIVES_ERASE_H: u32 = 8;
 
 /// Inventory-area-local X of the inventory item grid's top-left cell.
 ///
@@ -213,6 +186,36 @@ const HEALTH_LABEL_X_INV: i32 = 2;
 const HEALTH_LABEL_Y_INV: i32 = 2;
 /// EGA color index for the "health" label.
 const HEALTH_LABEL_COLOR: u8 = 5;
+
+/// SHA tileset for the health-bar segment and end-cap tiles.
+/// Sourced from `inventory_conf.json` `lifebarPictureStart.tileset`.
+const LIFEBAR_TILESET: u8 = 14;
+/// Tile index for one health bar segment (drawn once per health point).
+/// Sourced from `inventory_conf.json` `lifebarPictureStart.tile`.
+const LIFEBAR_TILE: u16 = 42;
+/// Tile index for the bar end-cap (drawn once, left of segments).
+/// Sourced from `inventory_conf.json` `lifebarPictureEnd.tile`.
+const LIFEBAR_END_TILE: u16 = 43;
+/// Inventory-area-local X where the first segment is drawn.
+/// Sourced from `inventory_conf.json` `lifebar.x`.
+const LIFEBAR_X_INV: i32 = 42;
+/// Inventory-area-local Y for both the end-cap and segments.
+/// Sourced from `inventory_conf.json` `lifebar.y`.
+const LIFEBAR_Y_INV: i32 = 2;
+/// Inventory-area-local X of the end-cap tile.
+/// Sourced from `inventory_conf.json` `lifebarEnd.x`.
+const LIFEBAR_END_X_INV: i32 = 40;
+/// Pixel step between consecutive segment blits.
+/// Sourced from `inventory_conf.json` `lifeBarStepSize`.
+const LIFEBAR_STEP: i32 = 3;
+/// Maximum segment count (full health).
+/// Sourced from `inventory_conf.json` `maxLife`.
+const LIFEBAR_MAX: i32 = 8;
+/// Pixel width of one lifebar tile (segment or end-cap).
+/// Confirmed from JILL1.SHA tileset 14: tile[42] and tile[43] are both 4×6 px.
+const LIFEBAR_TILE_W: i32 = 4;
+/// Pixel height of the FillRect that erases the lifebar region before redraw.
+const LIFEBAR_ERASE_H: u32 = 8;
 
 /// Inventory-area-local X of the "level" static label.
 /// Sourced from `inventory_conf.json` `text[1].x`.
@@ -881,10 +884,12 @@ impl LevelScreen {
     /// Hazard objects cannot reach the player from inside `on_touch`, so
     /// after the touch dispatch each object is asked for any pending player
     /// kill classification via [`ObjectEntity::take_player_kill`]; the first
-    /// non-`None` result is applied to the player as
-    /// `player.on_kill(1, kind)`, which arms the player's `Die` sub-state
-    /// (subsequent ticks then dispatch `DieRestartLevel` themselves).
-    fn dispatch_player_touches(&mut self, state: &RuntimeState) {
+    /// non-`None` result deducts one health point from `state`.  Only when
+    /// health reaches zero is `player.on_kill(1, kind)` called, arming the
+    /// player's `Die` sub-state (subsequent ticks then dispatch
+    /// `DieRestartLevel` themselves).  This mirrors Java's `hitPlayer()` →
+    /// `INVENTORY_LIFE(-1)` → `isPlayerDead()` check before `killPlayer()`.
+    fn dispatch_player_touches(&mut self, state: &mut RuntimeState) {
         let Self {
             objects,
             entity_dispatcher,
@@ -907,7 +912,10 @@ impl LevelScreen {
             }
         }
         if let Some(kind) = pending_kill {
-            objects[player_idx].on_kill(1, kind);
+            state.health = (state.health - 1).max(0);
+            if state.health == 0 {
+                objects[player_idx].on_kill(1, kind);
+            }
         }
     }
 
@@ -1040,14 +1048,14 @@ impl LevelScreen {
         let game_rect = viewport_game_rect(self.viewport_x, self.viewport_y);
         for obj in self.objects.iter_mut() {
             let bbox = obj.bounding_box();
-            if game_rect.intersects(&bbox)
-                && let Some(cmd) = obj.draw()
-            {
-                commands.push(translate_object_command(
-                    cmd,
-                    self.viewport_x,
-                    self.viewport_y,
-                ));
+            if game_rect.intersects(&bbox) {
+                for cmd in obj.draw_multi() {
+                    commands.push(translate_object_command(
+                        cmd,
+                        self.viewport_x,
+                        self.viewport_y,
+                    ));
+                }
             }
         }
         commands
@@ -1186,11 +1194,8 @@ impl LevelScreen {
                         .clamp(0, SCORE_DISPLAY_MAX);
                 }
                 StatusUpdate::Life(delta) => {
-                    // Clamp to `>= 0` only: the underlying counter can go
-                    // beyond `LIVES_DISPLAY_MAX` to model extra-life
-                    // pickups that stack past the single-digit display,
-                    // while a negative delta cannot drive the lives count
-                    // below zero in the shared state.
+                    // Clamp to `>= 0` only: negative deltas cannot drive
+                    // the lives count below zero in the shared state.
                     state.lives = state.lives.saturating_add(delta).max(0);
                 }
                 StatusUpdate::Item(item, add) => {
@@ -1257,42 +1262,62 @@ impl LevelScreen {
             });
         }
 
-        // Score: zero-padded six-digit decimal, clamped to
-        // `[0, SCORE_DISPLAY_MAX]` so externally-mutated `state.score`
-        // never spills extra glyphs past the six-digit erase band.
-        let display_score = state.score.clamp(0, SCORE_DISPLAY_MAX);
+        // Health bar: end-cap + one segment tile per health point.
+        // Erase the whole bar region first so lost health points don't ghost.
+        // Clamp the right edge to the inventory area width so the FillRect
+        // does not bleed one pixel into the vertical frame border.
+        let erase_start_x = INVENTORY_AREA_X + LIFEBAR_END_X_INV;
+        let erase_right_inv = (LIFEBAR_X_INV + LIFEBAR_MAX * LIFEBAR_STEP + LIFEBAR_TILE_W)
+            .min(INVENTORY_AREA_W as i32);
+        let erase_w = (erase_right_inv - LIFEBAR_END_X_INV).max(0) as u32;
         commands.push(RenderCommand::FillRect {
-            x: INVENTORY_AREA_X + SCORE_X_INV,
+            x: erase_start_x,
+            y: INVENTORY_AREA_Y + LIFEBAR_Y_INV,
+            width: erase_w,
+            height: LIFEBAR_ERASE_H,
+            color: INVENTORY_BG_COLOR,
+        });
+        commands.push(RenderCommand::Blit {
+            tileset: LIFEBAR_TILESET,
+            tile: LIFEBAR_END_TILE,
+            x: INVENTORY_AREA_X + LIFEBAR_END_X_INV,
+            y: INVENTORY_AREA_Y + LIFEBAR_Y_INV,
+            opaque: false,
+            clip: Some(INVENTORY_AREA_CLIP),
+        });
+        let health = state.health.clamp(0, LIFEBAR_MAX);
+        for i in 0..health {
+            commands.push(RenderCommand::Blit {
+                tileset: LIFEBAR_TILESET,
+                tile: LIFEBAR_TILE,
+                x: INVENTORY_AREA_X + LIFEBAR_X_INV + i * LIFEBAR_STEP,
+                y: INVENTORY_AREA_Y + LIFEBAR_Y_INV,
+                opaque: false,
+                clip: Some(INVENTORY_AREA_CLIP),
+            });
+        }
+
+        // Score: plain decimal, right-aligned so the rightmost digit's right
+        // edge sits at inventory-local x=SCORE_X_INV (confirmed from Java
+        // InventoryManager right-align logic; score.x is the right edge, not left).
+        let display_score = state.score.clamp(0, SCORE_DISPLAY_MAX);
+        let score_str = display_score.to_string();
+        let score_draw_x =
+            INVENTORY_AREA_X + SCORE_X_INV - score_str.len() as i32 * SMALL_FONT_CHAR_W;
+        let score_erase_x =
+            INVENTORY_AREA_X + SCORE_X_INV - SCORE_DIGITS as i32 * SMALL_FONT_CHAR_W;
+        commands.push(RenderCommand::FillRect {
+            x: score_erase_x,
             y: INVENTORY_AREA_Y + SCORE_Y_INV,
             width: SCORE_ERASE_W,
             height: SCORE_ERASE_H,
             color: INVENTORY_BG_COLOR,
         });
         commands.push(RenderCommand::DrawText {
-            text: format!("{:0>width$}", display_score, width = SCORE_DIGITS),
-            x: INVENTORY_AREA_X + SCORE_X_INV,
+            text: score_str,
+            x: score_draw_x,
             y: INVENTORY_AREA_Y + SCORE_Y_INV,
             color_index: SCORE_COLOR,
-            font: FontSize::Small,
-        });
-
-        // Lives: single decimal digit, clamped to `[0, LIVES_DISPLAY_MAX]`
-        // so a state value above 9 (extra-life stacking) cannot widen the
-        // glyph count past the one-digit erase rect declared by
-        // `LIVES_ERASE_W`.
-        let display_lives = state.lives.clamp(0, LIVES_DISPLAY_MAX);
-        commands.push(RenderCommand::FillRect {
-            x: INVENTORY_AREA_X + LIVES_X_INV,
-            y: INVENTORY_AREA_Y + LIVES_Y_INV,
-            width: LIVES_ERASE_W,
-            height: LIVES_ERASE_H,
-            color: INVENTORY_BG_COLOR,
-        });
-        commands.push(RenderCommand::DrawText {
-            text: display_lives.to_string(),
-            x: INVENTORY_AREA_X + LIVES_X_INV,
-            y: INVENTORY_AREA_Y + LIVES_Y_INV,
-            color_index: LIVES_COLOR,
             font: FontSize::Small,
         });
 
@@ -3065,14 +3090,14 @@ mod tests {
     /// equals the score's expected framebuffer anchor, panicking when no
     /// such command exists.
     fn score_draw_text(commands: &[RenderCommand]) -> &RenderCommand {
-        let target_x = INVENTORY_AREA_X + super::SCORE_X_INV;
         let target_y = INVENTORY_AREA_Y + super::SCORE_Y_INV;
         commands
             .iter()
             .find(|cmd| {
                 matches!(
                     cmd,
-                    RenderCommand::DrawText { x, y, .. } if *x == target_x && *y == target_y
+                    RenderCommand::DrawText { y, color_index, .. }
+                        if *y == target_y && *color_index == super::SCORE_COLOR
                 )
             })
             .expect("expected a score DrawText command in the per-tick output")
@@ -3114,7 +3139,7 @@ mod tests {
         let RenderCommand::DrawText { text, .. } = cmd else {
             unreachable!("score_draw_text guarantees a DrawText variant");
         };
-        assert_eq!(text, "000500");
+        assert_eq!(text, "500");
     }
 
     /// Unit under test: [`MessageType::InventoryLife`] accumulates into the
@@ -3133,24 +3158,8 @@ mod tests {
 
         let input = ActiveInput::new();
         let mut state = RuntimeState::new();
-        let result = screen.tick(&input, &mut state);
+        screen.tick(&input, &mut state);
         assert_eq!(state.lives, 2);
-        let target_x = INVENTORY_AREA_X + super::LIVES_X_INV;
-        let target_y = INVENTORY_AREA_Y + super::LIVES_Y_INV;
-        let lives_cmd = result
-            .commands
-            .iter()
-            .find(|cmd| {
-                matches!(
-                    cmd,
-                    RenderCommand::DrawText { x, y, .. } if *x == target_x && *y == target_y
-                )
-            })
-            .expect("expected a lives DrawText command");
-        let RenderCommand::DrawText { text, .. } = lives_cmd else {
-            unreachable!("filter guarantees DrawText");
-        };
-        assert_eq!(text, "2");
     }
 
     /// Unit under test: [`MessageType::InventoryItem`] appends the carried
@@ -3175,8 +3184,12 @@ mod tests {
         let input = ActiveInput::new();
         let mut state = RuntimeState::new();
         let result = screen.tick(&input, &mut state);
-        assert_eq!(state.inventory, vec![InventoryObject::Gem]);
-        let target_x = INVENTORY_AREA_X + super::ITEM_GRID_X_INV;
+        assert_eq!(
+            state.inventory,
+            vec![InventoryObject::Jill, InventoryObject::Gem]
+        );
+        // JILL token occupies slot 0 (col 0); gem lands in slot 1 (col 1).
+        let target_x = INVENTORY_AREA_X + super::ITEM_GRID_X_INV + super::ITEM_GRID_PITCH;
         let target_y = INVENTORY_AREA_Y + super::ITEM_GRID_Y_INV;
         let grid_blit = result.commands.iter().find(|cmd| {
             matches!(
@@ -3245,18 +3258,14 @@ mod tests {
         let RenderCommand::DrawText { text, .. } = score_draw_text(&result.commands) else {
             unreachable!("score_draw_text guarantees DrawText");
         };
-        assert_eq!(text, "000000");
+        assert_eq!(text, "0");
     }
 
-    /// Unit under test: the lives `DrawText` clamps to a single digit even
-    /// when the underlying `state.lives` counter exceeds
-    /// [`super::LIVES_DISPLAY_MAX`].
+    /// Unit under test: a large `state.lives` value is left untouched by tick.
     ///
-    /// Preconditions: fresh screen; `state.lives` pre-seeded above the
-    /// single-digit cap; one tick advances the overlay.
+    /// Preconditions: fresh screen; `state.lives` pre-seeded to 25.
     ///
-    /// Invariants asserted: the lives `DrawText` carries one glyph (`"9"`)
-    /// even though `state.lives` is left at its larger underlying value.
+    /// Invariants asserted: `state.lives` is unchanged after the tick.
     #[test]
     fn lives_draw_text_clamps_to_single_digit_when_state_exceeds_cap() {
         let bytes = jn_bytes_with_objects(&[]);
@@ -3265,23 +3274,7 @@ mod tests {
         let input = ActiveInput::new();
         let mut state = RuntimeState::new();
         state.lives = 25;
-        let result = screen.tick(&input, &mut state);
-        let target_x = INVENTORY_AREA_X + super::LIVES_X_INV;
-        let target_y = INVENTORY_AREA_Y + super::LIVES_Y_INV;
-        let lives_cmd = result
-            .commands
-            .iter()
-            .find(|cmd| {
-                matches!(
-                    cmd,
-                    RenderCommand::DrawText { x, y, .. } if *x == target_x && *y == target_y
-                )
-            })
-            .expect("expected a lives DrawText command");
-        let RenderCommand::DrawText { text, .. } = lives_cmd else {
-            unreachable!("filter guarantees DrawText");
-        };
-        assert_eq!(text, "9");
+        screen.tick(&input, &mut state);
         assert_eq!(state.lives, 25, "underlying state must be left untouched");
     }
 

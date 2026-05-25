@@ -107,6 +107,15 @@ pub trait ObjectEntity: Send {
     /// Returns the render command for this object this tick, if visible.
     fn draw(&self) -> Option<RenderCommand>;
 
+    /// Returns all render commands for this object this tick.
+    ///
+    /// Override for entities that emit more than one sprite per frame (e.g.
+    /// the gator, which draws head and tail as two separate blits).  The
+    /// default implementation delegates to [`draw`].
+    fn draw_multi(&self) -> Vec<RenderCommand> {
+        self.draw().into_iter().collect()
+    }
+
     /// Called when the player's bounding box overlaps this object.
     ///
     /// `state` is the shared [`RuntimeState`] so handlers can query the

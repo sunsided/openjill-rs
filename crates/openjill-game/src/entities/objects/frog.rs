@@ -1,12 +1,16 @@
 //! Frog enemy entity (JN object type 22).
 //!
-//! Mirrors `org.jill.game.entities.obj.FrogManager`: horizontal patrol that
-//! reverses direction at walls or gaps, jumps periodically, and kills the
-//! player on contact.
+//! Mirrors `org.jill.game.entities.obj.FrogManager`: two-state machine.
+//! On floor (`on_floor = true`): counts ticks; after `counterBeforeJump`
+//! ticks launches a gravity arc toward the player.  In air (`on_floor =
+//! false`): moves horizontally (stops against walls, no direction reversal),
+//! applies gravity (+1 per tick), lands when `floor_below` returns true while
+//! descending.
 //!
 //! Tileset/tile from `object_conf.json`: `tileSet = 63`, `tile = 0`,
-//! `numberTileSet = 6` (tiles 0-2 = floor walk, tiles 3-5 = jump arc).
-//! SHA dump confirms: tileset 63 tile 0 is 14×10 px (6 tiles total).
+//! `numberTileSet = 6`.  Three tiles per direction (right/left):
+//!   tile 0/3 = on-floor frame, tile 1/4 = airborne frame, tile 2/5 = apex.
+//! SHA header[63] confirms: 6 tiles, 14×10 px each.
 
 use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
 use openjill_core::{
@@ -19,20 +23,16 @@ use super::enemy_shared::{blocked_ahead, floor_below, floor_under_next, sprite_d
 use crate::asset_cache::AssetCache;
 
 const TILESET_INDEX: u8 = 63;
-const NUMBER_TILE_SET: u16 = 6;
-/// Frames per animation state (floor and jump each use 3 tiles).
-const FRAMES_PER_STATE: u16 = 3;
+/// Tiles per direction (right: 0-2, left: 3-5).
+const FRAMES_PER_DIR: u16 = 3;
 const X_SPEED: i32 = 4;
 const SCORE_VALUE: i32 = 100;
-/// Ticks on the ground before initiating a jump (`counterBeforeJump`).
+/// Ticks on floor before jumping (`counterBeforeJump`).
 const JUMP_PERIOD: i32 = 17;
-const JUMP_INIT_YD: i32 = -12;
-const GRAVITY: i32 = 2;
+/// Initial upward velocity at jump time (`ySpeedChangePicture`).
+const JUMP_INIT_YD: i32 = -10;
 /// Max downward speed per tick (`ySpeedMax`).
 const FALL_SPEED_MAX: i32 = 12;
-/// y_speed threshold below which the jump-arc tile set is shown
-/// (`ySpeedChangePicture`).
-const JUMP_Y_THRESHOLD: i32 = -10;
 
 pub struct FrogEntity {
     x: i32,
@@ -41,8 +41,8 @@ pub struct FrogEntity {
     h: i32,
     x_speed: i32,
     y_speed: i32,
-    counter: i32,
     jump_counter: i32,
+    on_floor: bool,
     dead: bool,
     score_dispatched: bool,
     zaphold: i32,
@@ -61,8 +61,8 @@ impl FrogEntity {
             h,
             x_speed: X_SPEED,
             y_speed: 0,
-            counter: 0,
             jump_counter: 0,
+            on_floor: true,
             dead: false,
             score_dispatched: false,
             zaphold: 0,
@@ -93,39 +93,40 @@ impl ObjectEntity for FrogEntity {
             self.zaphold -= 1;
         }
 
-        // Vertical (airborne arc).
-        if self.y_speed != 0 || !floor_below(backgrounds, self.x, self.y, self.w, self.h) {
-            self.y += self.y_speed;
-            self.y_speed += GRAVITY;
-            if self.y_speed > FALL_SPEED_MAX {
-                self.y_speed = FALL_SPEED_MAX;
+        if self.on_floor {
+            // Floor state: patrol with gap and wall checks; reverse on fail.
+            if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
+                && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
+            {
+                self.x += self.x_speed;
+            } else {
+                self.x_speed = -self.x_speed;
             }
-            if self.y_speed > 0 && floor_below(backgrounds, self.x, self.y, self.w, self.h) {
-                self.y_speed = 0;
-            }
-        }
 
-        // Horizontal patrol.
-        if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-            && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-        {
-            self.x += self.x_speed;
-        } else {
-            self.x_speed = -self.x_speed;
-        }
-
-        // Periodic jump when grounded.
-        if self.y_speed == 0 {
             self.jump_counter += 1;
             if self.jump_counter >= JUMP_PERIOD {
                 self.jump_counter = 0;
                 self.y_speed = JUMP_INIT_YD;
+                self.on_floor = false;
             }
-        }
+        } else {
+            // Air state: move horizontally without gap check; stop at walls (no reversal).
+            if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed) {
+                self.x += self.x_speed;
+            }
 
-        self.counter += 1;
-        if self.counter >= NUMBER_TILE_SET as i32 {
-            self.counter = 0;
+            // Vertical arc: apply movement then gravity.
+            self.y += self.y_speed;
+            if self.y_speed < FALL_SPEED_MAX {
+                self.y_speed += 1;
+            }
+
+            // Land when descending and floor reached.
+            if self.y_speed > 0 && floor_below(backgrounds, self.x, self.y, self.w, self.h) {
+                self.y_speed = 0;
+                self.on_floor = true;
+                self.jump_counter = 0;
+            }
         }
     }
 
@@ -133,11 +134,15 @@ impl ObjectEntity for FrogEntity {
         if self.dead {
             return None;
         }
-        let frame = (self.counter as u16) % FRAMES_PER_STATE;
-        let base = if self.y_speed < JUMP_Y_THRESHOLD {
-            FRAMES_PER_STATE
-        } else {
+        // Direction: right = tiles 0-2, left = tiles 3-5.
+        let base = if self.x_speed < 0 { FRAMES_PER_DIR } else { 0 };
+        // Frame within direction: 0 = floor, 1 = airborne, 2 = apex.
+        let frame = if self.on_floor {
             0
+        } else if self.y_speed == 0 {
+            2
+        } else {
+            1
         };
         Some(RenderCommand::Blit {
             tileset: TILESET_INDEX,

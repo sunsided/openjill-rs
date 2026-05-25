@@ -1,8 +1,7 @@
 //! Static VGA status bar render commands and game-area offset helpers.
 
 use openjill_core::layout::{
-    CONTROL_AREA_W, CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y, INVENTORY_AREA_X,
-    INVENTORY_AREA_Y,
+    CONTROL_AREA_W, CONTROL_AREA_X, CONTROL_AREA_Y, GAME_AREA_X, GAME_AREA_Y,
 };
 use openjill_core::{FontSize, RenderCommand};
 use std::sync::LazyLock;
@@ -30,8 +29,11 @@ pub fn status_bar_commands() -> Vec<RenderCommand> {
 /// Parses the embedded JSON resources into static status bar render commands.
 ///
 /// Sources three JSON files:
-/// - `status_bar_vga.json`: frame/border tiles (`images`), the Jill face portrait
-///   (`imagesInvenroy`), and the "CONTROLS" / "INVENTORY" labels.
+/// - `status_bar_vga.json`: frame/border tiles (`images`), the inventory area
+///   background fill (`inventoryArea`), and the "CONTROLS" / "INVENTORY" labels.
+///   The `imagesInvenroy` portrait tiles are intentionally skipped - the portrait
+///   is a main-menu-only graphic; during gameplay the inventory area is filled by
+///   `inventoryArea` and overdrawn by the dynamic inventory overlay.
 /// - `inventory_conf.json`: "health", "level", "map", "score" labels drawn in the
 ///   inventory area.
 /// - `control_area.json`: the control-panel text content (movement hint, SHIFT/ALT/F1
@@ -41,9 +43,9 @@ pub fn status_bar_commands() -> Vec<RenderCommand> {
 /// Missing or structurally invalid entries in any of the three files are silently
 /// skipped without discarding the other entries.
 ///
-/// Emit order: all `Blit` commands first (frame tiles, then Jill face), then the
-/// control-area separator `FillRect`, then all `DrawText` commands so text always
-/// paints over tiles.
+/// Emit order: all `Blit` commands first (frame tiles), then the inventory area
+/// `FillRect`, then the control-area separator `FillRect`, then all `DrawText`
+/// commands so text always paints over tiles.
 fn parse_status_bar_commands() -> Vec<RenderCommand> {
     let value: serde_json::Value = match serde_json::from_str(STATUS_BAR_JSON) {
         Ok(v) => v,
@@ -56,14 +58,36 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
         commands.extend(images.iter().filter_map(parse_blit_entry));
     }
 
-    // Jill face portrait: 4×4 tile mosaic placed in the inventory area.
-    // Coordinates in `imagesInvenroy` are relative to the inventory area origin.
-    if let Some(images_inv) = value.get("imagesInvenroy").and_then(|v| v.as_array()) {
-        commands.extend(
-            images_inv
-                .iter()
-                .filter_map(|img| parse_blit_entry_offset(img, INVENTORY_AREA_X, INVENTORY_AREA_Y)),
-        );
+    // Inventory area background fill.
+    // The `inventoryArea` entry in status_bar_vga.json carries the geometry and
+    // background color; emitted after the frame tiles so the fill sits on top of
+    // any overlapping border pixels.
+    if let Some(inv) = value.get("inventoryArea")
+        && let (Some(x), Some(y), Some(w), Some(h), Some(color)) = (
+            inv.get("x")
+                .and_then(|v| v.as_i64())
+                .and_then(|v| i32::try_from(v).ok()),
+            inv.get("y")
+                .and_then(|v| v.as_i64())
+                .and_then(|v| i32::try_from(v).ok()),
+            inv.get("width")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok()),
+            inv.get("height")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok()),
+            inv.get("color")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u8::try_from(v).ok()),
+        )
+    {
+        commands.push(RenderCommand::FillRect {
+            x,
+            y,
+            width: w,
+            height: h,
+            color,
+        });
     }
 
     // Control-area horizontal separator line (separates controls from key bindings).
@@ -142,25 +166,6 @@ fn parse_blit_entry(img: &serde_json::Value) -> Option<RenderCommand> {
     let tile = u16::try_from(img.get("tile")?.as_u64()?).ok()?;
     let x = i32::try_from(img.get("x")?.as_i64()?).ok()?;
     let y = i32::try_from(img.get("y")?.as_i64()?).ok()?;
-    Some(RenderCommand::Blit {
-        tileset,
-        tile,
-        x,
-        y,
-        opaque: false,
-        clip: None,
-    })
-}
-
-/// Parses one blit entry with a framebuffer coordinate offset applied to `x` and `y`.
-///
-/// Used for arrays whose coordinates are relative to a sub-area origin (e.g.
-/// `imagesInvenroy` entries are relative to the inventory area top-left).
-fn parse_blit_entry_offset(img: &serde_json::Value, dx: i32, dy: i32) -> Option<RenderCommand> {
-    let tileset = u8::try_from(img.get("tileset")?.as_u64()?).ok()?;
-    let tile = u16::try_from(img.get("tile")?.as_u64()?).ok()?;
-    let x = i32::try_from(img.get("x")?.as_i64()?).ok()? + dx;
-    let y = i32::try_from(img.get("y")?.as_i64()?).ok()? + dy;
     Some(RenderCommand::Blit {
         tileset,
         tile,
@@ -258,35 +263,30 @@ mod tests {
     use openjill_core::RenderCommand;
     use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
 
-    /// Unit under test: `status_bar_commands` Blit count against the JSON `images` and
-    /// `imagesInvenroy` arrays.
+    /// Unit under test: `status_bar_commands` Blit count against the JSON `images` array.
     ///
-    /// Preconditions: `STATUS_BAR_JSON` is the embedded `status_bar_vga.json` with valid
-    /// top-level `images` and `imagesInvenroy` arrays.
+    /// Preconditions: `STATUS_BAR_JSON` is the embedded `status_bar_vga.json` with a valid
+    /// top-level `images` array.
     ///
     /// Invariants asserted: the number of `Blit` commands returned equals the number of entries
-    /// in both arrays combined (`images` frame tiles + `imagesInvenroy` Jill portrait tiles).
+    /// in `images` (frame/border tiles only). The `imagesInvenroy` portrait tiles are intentionally
+    /// excluded from static bar commands since the portrait is main-menu-only.
     #[test]
     fn status_bar_commands_blit_count_matches_json_images() {
         let commands = status_bar_commands();
         let json: serde_json::Value =
             serde_json::from_str(STATUS_BAR_JSON).expect("STATUS_BAR_JSON must be valid JSON");
-        let images_len = json["images"]
+        let expected = json["images"]
             .as_array()
             .expect("images must be an array")
             .len();
-        let images_inv_len = json["imagesInvenroy"]
-            .as_array()
-            .map(|a| a.len())
-            .unwrap_or(0);
-        let expected = images_len + images_inv_len;
         let blit_count = commands
             .iter()
             .filter(|cmd| matches!(cmd, RenderCommand::Blit { .. }))
             .count();
         assert_eq!(
             blit_count, expected,
-            "Blit count must match images + imagesInvenroy array lengths"
+            "Blit count must match images array length (portrait excluded)"
         );
     }
 

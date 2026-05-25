@@ -3,6 +3,9 @@
 //! Mirrors `org.jill.game.entities.obj.KniveManager` from the Java reference:
 //! when the player overlaps the knife, the entity dispatches an
 //! `InventoryItem(Knife, add)` message and flags itself for removal.
+//!
+//! Sprite: tileset 14, tile 13 (12×12 px knife icon), same index used by
+//! `BonusManager` for `KNIVE` in `object_conf.json` (`"14,13"`).
 
 use openjill_core::layout::BLOCK_SIZE_I;
 use openjill_core::{
@@ -13,6 +16,11 @@ use openjill_core::{
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
+
+/// SHA tileset for the knife sprite (matches `object_conf.json` `"14,13"`).
+const TILESET: u8 = 14;
+/// Tile index within tileset 14 for the knife icon.
+const TILE: u16 = 13;
 
 /// Knife pickup entity.
 pub struct KnifeEntity {
@@ -54,9 +62,18 @@ impl ObjectEntity for KnifeEntity {
     ) {
     }
 
-    /// Sprite rendering deferred until pickup tile binding lands.
     fn draw(&self) -> Option<RenderCommand> {
-        None
+        if self.removed {
+            return None;
+        }
+        Some(RenderCommand::Blit {
+            tileset: TILESET,
+            tile: TILE,
+            x: self.x,
+            y: self.y,
+            opaque: false,
+            clip: None,
+        })
     }
 
     /// Dispatches the knife inventory pickup and flags the entity for removal.

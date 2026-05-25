@@ -3,8 +3,9 @@
 //! Mirrors `org.jill.game.entities.obj.GiantAntManager`: horizontal floor
 //! patrol; reverses at walls and gaps; kills player on contact.
 //!
-//! Tileset/tile: `tileSet = 6`, `tile = 0`, `numberTileSet = 4`.
-//! SHA dump confirms: tileset 6 tile 0 is 32×8 px.
+//! Tileset/tile from `object_conf.json`: `tileSet = 10`, `tile = 0`,
+//! `numberTileSet = 4` (tiles 0-9 total; 0-3 used for walk cycle).
+//! SHA header[10] confirms: 10 tiles, 32×16 px each.
 
 use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
 use openjill_core::{
@@ -16,7 +17,7 @@ use openjill_data::jn::JnObject;
 use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
 use crate::asset_cache::AssetCache;
 
-const TILESET_INDEX: u8 = 6;
+const TILESET_INDEX: u8 = 10;
 const TILE_BASE: u16 = 0;
 const NUMBER_TILE_SET: u16 = 4;
 const X_SPEED: i32 = 4;

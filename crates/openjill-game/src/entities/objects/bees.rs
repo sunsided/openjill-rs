@@ -4,8 +4,8 @@
 //! the player horizontally; moves toward last known player X at a fixed speed;
 //! also has a slow vertical drift; kills player on contact.
 //!
-//! Tileset/tile: `tileSet = 8`, `tile = 10`, `numberTileSet = 2`.
-//! FIXME(epic-6): confirm tileset 8 tiles 10..=11 against JILL1.SHA dump.
+//! Tileset/tile from `object_conf.json`: `tileSet = 37`, `tile = 10`,
+//! `numberTileSet = 2` (tiles 10-11 = bee animation frames).
 
 use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
 use openjill_core::{
@@ -16,7 +16,7 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
-const TILESET_INDEX: u8 = 8;
+const TILESET_INDEX: u8 = 37;
 const TILE_BASE: u16 = 10;
 const NUMBER_TILE_SET: u16 = 2;
 const SCORE_VALUE: i32 = 100;

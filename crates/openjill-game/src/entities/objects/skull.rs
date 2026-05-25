@@ -4,8 +4,8 @@
 //! travels diagonally and reverses either component on hitting a wall,
 //! floor, or ceiling; kills player on contact.
 //!
-//! Tileset/tile: `tileSet = 11`, `tile = 0`, `numberTileSet = 2`.
-//! FIXME(epic-6): confirm tileset 11 tiles 0..=1 against JILL1.SHA dump.
+//! Tileset/tile from `object_conf.json`: `tileSet = 47`, `tile = 0`,
+//! `numberTileSet = 2` (tiles 0-1 = skull animation frames).
 
 use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
 use openjill_core::{
@@ -16,7 +16,7 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
-const TILESET_INDEX: u8 = 11;
+const TILESET_INDEX: u8 = 47;
 const TILE_BASE: u16 = 0;
 const NUMBER_TILE_SET: u16 = 2;
 const SCORE_VALUE: i32 = 400;

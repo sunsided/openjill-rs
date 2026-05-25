@@ -130,6 +130,13 @@ pub struct GameOrchestrator {
     /// fire a game tick. Actual command execution via `execute_and_present` is
     /// wired in child issue 3.
     last_commands: Vec<RenderCommand>,
+    /// Snapshot of [`RuntimeState`] taken the moment a new level is entered.
+    ///
+    /// Used by `RestartLevel` to restore health and inventory to their
+    /// level-entry values while preserving accumulated score.  Mirrors the
+    /// Java reference behavior where dying resets inventory to the pre-level
+    /// state rather than the game-start state.
+    level_entry_state: Option<RuntimeState>,
     /// Set to `true` when the active handler requests [`ScreenTransition::Quit`].
     quitting: bool,
 }
@@ -158,6 +165,7 @@ impl GameOrchestrator {
             level_jn_number: None,
             dispatcher: MessageDispatcher::new(),
             last_commands: Vec::new(),
+            level_entry_state: None,
             quitting: false,
         })
     }
@@ -338,6 +346,7 @@ impl GameOrchestrator {
                         self.level_jn_bytes = screen.level_jn_bytes();
                         self.level_jn_file = Some(file);
                         self.level_jn_number = Some(number);
+                        self.level_entry_state = Some(self.state.clone());
                         self.handler = Box::new(screen);
                     }
                     Err(err) => {
@@ -366,6 +375,11 @@ impl GameOrchestrator {
                     EPISODE_1_SKY_COLOR,
                 ) {
                     Ok(screen) => {
+                        if let Some(entry) = &self.level_entry_state {
+                            self.state.lives = self.state.lives.saturating_sub(1);
+                            self.state.health = entry.health;
+                            self.state.inventory = entry.inventory.clone();
+                        }
                         self.handler = Box::new(screen);
                     }
                     Err(err) => {
@@ -476,6 +490,7 @@ mod tests {
             level_jn_number: None,
             dispatcher: openjill_core::MessageDispatcher::new(),
             last_commands: Vec::new(),
+            level_entry_state: None,
             quitting: false,
         }
     }

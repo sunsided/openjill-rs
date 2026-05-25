@@ -29,6 +29,28 @@ Findings are grouped by area, not chronology, and link back to the
 
 ## Gameplay engine
 
+### Enemy patrol must skip gap-detection during airborne phases
+
+- **Symptom**: `FrogEntity` jumps straight up instead of arcing forward. Any
+  enemy with a jumping mechanic reverses horizontal direction on every airborne
+  tick if it applies `floor_under_next` unconditionally.
+- **Root cause**: `floor_under_next` probes for a solid cell immediately below
+  the entity's *next* horizontal position. When the entity is airborne its feet
+  are not adjacent to any floor cell, so `floor_under_next` always returns
+  `false`, triggering direction reversal every tick. The result is zero net
+  horizontal displacement and a purely vertical arc.
+- **Resolution**: gate the gap-detection probe on the grounded state. When
+  `y_speed == 0` (grounded), apply the full `blocked_ahead && floor_under_next`
+  check. When `y_speed != 0` (airborne), use only `blocked_ahead` for wall
+  bouncing. The Java `FrogManager` implicitly encodes this structure by entering
+  a separate `stateOnJump` code path that calls only `moveObjectRight` /
+  `moveObjectLeft` with no gap check.
+- **Applies to**: any `ObjectEntity` that patrols on the floor and has a jump
+  or gravity mechanic. Floor-aware probes are only valid when the entity is
+  grounded.
+- **Reference**: discovered during episode-1 playthrough verification; fixed
+  after PR #95.
+
 ### Hazard kills must arm `player.on_kill`, not dispatch `DieRestartLevel`
 
 - **Symptom**: a hazard touch starts the level-transition message-box
@@ -78,6 +100,49 @@ Findings are grouped by area, not chronology, and link back to the
   [r3292585185](https://github.com/sunsided/openjill-rs/pull/90#discussion_r3292585185),
   [r3292585189](https://github.com/sunsided/openjill-rs/pull/90#discussion_r3292585189);
   fix in commit `e2753c1`.
+
+### Enemy hit must deduct health, not kill the player outright
+
+- **Symptom**: touching any enemy immediately kills the player and restarts
+  the level, regardless of remaining health. The health bar never decrements.
+- **Root cause**: `dispatch_player_touches` called `player.on_kill(1, kind)`
+  directly. `PlayerEntity::on_kill` ignores the `_damage: i32` argument and
+  immediately arms the `Die` sub-state. No health deduction occurred anywhere
+  in the path.
+- **Resolution**: `dispatch_player_touches` now takes `&mut RuntimeState`.
+  On a pending kill it decrements `state.health` by 1 and calls
+  `player.on_kill(1, kind)` only when `state.health` reaches zero. This
+  mirrors Java's `AbstractHitPlayerObjectEntity.hitPlayer()` flow:
+  `INVENTORY_LIFE(-1)` reduces the health bar, then `isPlayerDead()` is
+  checked before `killPlayer()` is invoked.
+- **Applies to**: any future code path that wants to damage the player. Never
+  call `player.on_kill` directly from a touch handler; always route through
+  `state.health` first.
+- **Reference**: bug found during episode-1 playthrough verification; fixed
+  after PR #95.
+
+### Inventory and health must be restored from a level-entry snapshot on restart
+
+- **Symptom**: items picked up during a failed run persist across death and
+  respawn. After one death the player already has all items from the failed
+  attempt; after two deaths duplicates accumulate without limit.
+- **Root cause**: `GameOrchestrator::apply_transition(RestartLevel)` recreated
+  the `LevelScreen` from the cached JN bytes but never touched `self.state`.
+  `RuntimeState` is orthogonal to the level data; pickups are appended to
+  `state.inventory` via `StatusUpdate::Item` messages and those changes survive
+  any number of level reloads.
+- **Resolution**: the orchestrator now stores a `level_entry_state:
+  Option<RuntimeState>` snapshot the moment a `Level` transition succeeds
+  (i.e. when the player first enters the level). On `RestartLevel` it restores
+  `state.health` and `state.inventory` to the snapshot values and decrements
+  `state.lives` by 1. `state.score` is intentionally NOT restored: Jill of the
+  Jungle retains score across deaths.
+- **Applies to**: any future state that should reset on death but not on level
+  exit (e.g. a rage-meter, a per-level power-up). Anything that should be
+  preserved beyond a death belongs in `RuntimeState`; anything that should
+  reset belongs in the snapshot-restore path.
+- **Reference**: bug found during episode-1 playthrough verification; fixed
+  after PR #95.
 
 ---
 
@@ -133,11 +198,35 @@ _No findings yet._
 
 ## Data files (DMA, SHA, JN, MAC, CFG, VCL, CMF)
 
-_No findings yet._
-
 See [`docs/port/00-format-reference.md`](docs/port/00-format-reference.md)
 and the `jill-data-formats` skill for the canonical byte-layout
 reference; record only deviations / reviewer-flagged surprises here.
+
+### SHA tileset indices in `object_conf.json` are header-table indices, not sequential counts
+
+- **Symptom**: enemy entities render the wrong sprite. Examples before the fix:
+  a gator looked like a giant ant, a firebird enemy looked like a blue flag, a
+  snake rendered as a different enemy. All shared the same root cause: their
+  `TILESET_INDEX` constant was derived from a sequential SHA dump rather than
+  from the header table.
+- **Root cause**: the SHA file starts with a 128-entry header table (128 x u32
+  offsets + 128 x u16 sizes = 768 bytes). Entry 0 is conventionally invalid;
+  valid tilesets begin at index 1. A one-off dump script that enumerated only
+  valid entries and numbered them 0, 1, 2, ... produced `seq k = header index
+  k+1`. Any entity constant derived from that script is off by at least one
+  position. `object_conf.json` always stores the true header entry index (e.g.
+  `"tileSet": 39` reads from `offsets[39]`).
+- **Resolution**: treat `object_conf.json` `"tileSet"` values as the ground
+  truth header index; do not derive them from sequential SHA dumps. The
+  `openjill-data` SHA parser is correct (it uses the header table); the bug was
+  in a one-off inspection script. Confirmed corrections for all episode-1
+  entities: FirebirdEnemy 5->11, Gator 10->39, GiantAnt 6->10, Crab 9->38,
+  Ghost 12->50, Skull 11->47, Bees 8->37, Snake 7->15, Eyes 13->62.
+- **Applies to**: every entity that hard-codes a `TILESET_INDEX` constant. When
+  porting a new entity, always cross-check the constant against
+  `object_conf.json` (not a sequential SHA dump).
+- **Reference**: discovered during episode-1 playthrough verification; fixed
+  after PR #95.
 
 ---
 

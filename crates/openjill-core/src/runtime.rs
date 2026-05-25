@@ -39,9 +39,15 @@ pub struct RuntimeState {
     pub score: i32,
     /// Remaining lives.
     pub lives: i32,
+    /// Current health (lifebar segment count).
+    ///
+    /// Starts at `defaultLife = 6` from `inventory_conf.json`; maximum is 8.
+    pub health: i32,
     /// Number of gems collected.
     pub gem_count: i32,
     /// Items currently held in the player's inventory.
+    ///
+    /// Slot 0 is always the active player-form token (`Jill` at start).
     pub inventory: Vec<InventoryObject>,
 }
 
@@ -52,8 +58,9 @@ impl RuntimeState {
             level: MAP_LEVEL,
             score: 0,
             lives: 3,
+            health: 6,
             gem_count: 0,
-            inventory: Vec::new(),
+            inventory: vec![InventoryObject::Jill],
         }
     }
 }

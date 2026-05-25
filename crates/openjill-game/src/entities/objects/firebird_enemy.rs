@@ -1,12 +1,13 @@
 //! Firebird enemy entity (JN object type 30).
 //!
-//! Mirrors `org.jill.game.entities.obj.FirebirdManager`: flying enemy with
-//! a configurable path driven by `x_speed`/`y_speed` from the JN object
-//! record; reverses vertical component when hitting a ceiling or floor;
-//! kills player on contact.
+//! Mirrors `org.jill.game.entities.obj.FirebirdManager`: flying enemy that
+//! moves purely horizontally; reverses when hitting a wall or after cycling
+//! through its full animation sequence; kills player on contact.
 //!
-//! Tileset/tile: `tileSet = 5`, `tile = 0`, `numberTileSet = 4`.
-//! SHA dump confirms: tileset 5 tile 0 is 32×16 px.
+//! Tileset/tile from `object_conf.json`: `tileSet = 11`, `tile = 0`,
+//! `baseTileNumber = 4`, `turnTileNumber = 1`.
+//! Right-facing: tiles 0-3.  Left-facing: tiles 4-7.
+//! SHA header[11] confirms: 12 tiles, 16×16 px each.
 
 use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
 use openjill_core::{
@@ -18,12 +19,14 @@ use openjill_data::jn::JnObject;
 use crate::asset_cache::AssetCache;
 use crate::entities::objects::enemy_shared::sprite_dims;
 
-const TILESET_INDEX: u8 = 5;
-const TILE_BASE: u16 = 0;
+const TILESET_INDEX: u8 = 11;
+/// First tile for right-facing frames (tiles 0-3).
+const TILE_BASE_RIGHT: u16 = 0;
+/// First tile for left-facing frames (tiles 4-7, = baseTileNumber offset).
+const TILE_BASE_LEFT: u16 = 4;
 const NUMBER_TILE_SET: u16 = 4;
 const SCORE_VALUE: i32 = 300;
 const DEFAULT_X_SPEED: i32 = 4;
-const DEFAULT_Y_SPEED: i32 = 2;
 
 pub struct FirebirdEnemyEntity {
     x: i32,
@@ -31,7 +34,6 @@ pub struct FirebirdEnemyEntity {
     w: i32,
     h: i32,
     x_speed: i32,
-    y_speed: i32,
     counter: i32,
     dead: bool,
     score_dispatched: bool,
@@ -43,14 +45,12 @@ impl FirebirdEnemyEntity {
     pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
         let (w, h) = sprite_dims(cache, TILESET_INDEX);
         let xd = i32::from(item.x_speed());
-        let yd = i32::from(item.y_speed());
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()),
             w,
             h,
             x_speed: if xd != 0 { xd } else { DEFAULT_X_SPEED },
-            y_speed: if yd != 0 { yd } else { DEFAULT_Y_SPEED },
             counter: 0,
             dead: false,
             score_dispatched: false,
@@ -112,20 +112,11 @@ impl ObjectEntity for FirebirdEnemyEntity {
         }
 
         let nx = self.x + self.x_speed;
-        let ny = self.y + self.y_speed;
 
-        // Reverse horizontal on wall.
         if self.collides_solid(backgrounds, nx, self.y) {
             self.x_speed = -self.x_speed;
         } else {
             self.x = nx;
-        }
-
-        // Reverse vertical on ceiling/floor.
-        if self.collides_solid(backgrounds, self.x, ny) {
-            self.y_speed = -self.y_speed;
-        } else {
-            self.y = ny;
         }
 
         self.counter += 1;
@@ -139,9 +130,14 @@ impl ObjectEntity for FirebirdEnemyEntity {
             return None;
         }
         let frame = (self.counter as u16).min(NUMBER_TILE_SET - 1);
+        let base = if self.x_speed < 0 {
+            TILE_BASE_LEFT
+        } else {
+            TILE_BASE_RIGHT
+        };
         Some(RenderCommand::Blit {
             tileset: TILESET_INDEX,
-            tile: TILE_BASE + frame,
+            tile: base + frame,
             x: self.x,
             y: self.y,
             opaque: false,
