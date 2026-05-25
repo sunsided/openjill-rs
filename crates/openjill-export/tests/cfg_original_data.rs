@@ -71,9 +71,10 @@ fn exports_original_jill_cfg_high_scores_and_save_slots_when_available() {
 
     for (line_index, line) in score_lines.iter().skip(2).enumerate() {
         let rank = line_index + 1;
+        let rank_str = rank.to_string();
         check!(
-            line.contains(&rank.to_string()),
-            "row {rank} must contain rank number"
+            line.split_whitespace().next() == Some(rank_str.as_str()),
+            "row {rank} must start with rank number"
         );
     }
 
@@ -106,6 +107,11 @@ fn exports_original_jill_cfg_high_scores_and_save_slots_when_available() {
 
     for (line_index, line) in slot_lines.iter().skip(2).enumerate() {
         let expected_file = format!("JN1SAVE.{line_index}");
+        let slot_str = line_index.to_string();
+        check!(
+            line.split_whitespace().next() == Some(slot_str.as_str()),
+            "slot {line_index} row must start with slot index {line_index}"
+        );
         check!(
             line.contains(&expected_file),
             "slot {line_index} row must contain '{expected_file}'"

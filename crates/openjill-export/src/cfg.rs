@@ -5,7 +5,11 @@ use openjill_data::cfg::CfgFile;
 use std::fmt::Write;
 
 /// Converts parsed `JILL1.CFG` content into tabular export rows.
-pub fn file_to_rows(_file: &CfgFile) -> Vec<Row> {
+///
+/// **Note:** this function is not yet implemented and will panic at runtime.
+/// It is retained as an internal placeholder for a future follow-up issue.
+#[allow(dead_code)]
+pub(crate) fn file_to_rows(_file: &CfgFile) -> Vec<Row> {
     unimplemented!("CFG export wiring lands in a follow-up issue")
 }
 
@@ -146,8 +150,9 @@ mod tests {
     use assert2::check;
     use openjill_data::cfg::CfgFile;
 
-    /// Builds a synthetic `CfgFile` fixture with two high-score entries and two
-    /// save slots for unit-testing the text-table exporters.
+    /// Builds a synthetic `CfgFile` fixture with 10 high-score entries (only the
+    /// first two are non-zero) and 6 save slots (only the first two are non-zero)
+    /// for unit-testing the text-table exporters.
     fn fixture_cfg() -> CfgFile {
         // 254-byte CFG layout:
         //   10 × 10-byte high-score names   (bytes 0..100)

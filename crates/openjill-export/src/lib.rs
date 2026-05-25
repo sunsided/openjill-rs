@@ -76,8 +76,8 @@ mod tests {
 
     /// Unit under test: [`cfg::file_to_rows`].
     ///
-    /// Invariants asserted: the export function keeps accepting a parsed
-    /// `CfgFile` reference and returning `Vec<Row>`.
+    /// Invariants asserted: the (not-yet-implemented) internal function keeps
+    /// accepting a parsed `CfgFile` reference and returning `Vec<Row>`.
     #[test]
     fn cfg_smoke_test_pins_signature() {
         let _: fn(&CfgFile) -> Vec<super::Row> = cfg::file_to_rows;
