@@ -152,6 +152,10 @@ impl ObjectEntity for HiveEntity {
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
     }
+
+    fn is_dead(&self) -> bool {
+        self.dead
+    }
 }
 
 // ---------------------------------------------------------------------------

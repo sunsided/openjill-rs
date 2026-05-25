@@ -157,6 +157,19 @@ pub trait ObjectEntity: Send {
         false
     }
 
+    /// Returns `true` when this object has already entered its
+    /// death/removal state and should not absorb further hits.
+    ///
+    /// The level loop's projectile-vs-enemy hit pass uses this to gate
+    /// the death-shatter burst: it skips targets that are already dead
+    /// so a projectile resting on a corpse does not re-fire the burst
+    /// on every overlap tick. Enemies with a `dead` flag override this
+    /// to return that flag; pickups and inert entities inherit the
+    /// default `false`.
+    fn is_dead(&self) -> bool {
+        false
+    }
+
     /// Returns `true` when this object has signalled that it should be removed
     /// from the active object list.
     ///

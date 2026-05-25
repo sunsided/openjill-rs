@@ -190,6 +190,10 @@ impl ObjectEntity for GhostEntity {
         Rect::new(self.x, self.y, self.w, self.h)
     }
 
+    fn is_dead(&self) -> bool {
+        self.dead
+    }
+
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
     }

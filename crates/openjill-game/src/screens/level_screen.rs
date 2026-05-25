@@ -943,7 +943,12 @@ impl LevelScreen {
             }
             let p_bbox = projectile.bounding_box();
             for (t_idx, target) in self.objects.iter().enumerate() {
-                if t_idx == p_idx || target.is_player() || target.is_projectile() {
+                if t_idx == p_idx
+                    || target.is_player()
+                    || target.is_projectile()
+                    || target.is_dead()
+                    || target.should_remove()
+                {
                     continue;
                 }
                 if target.bounding_box().intersects(&p_bbox) {
@@ -953,18 +958,20 @@ impl LevelScreen {
         }
         for (p_idx, t_idx) in hits {
             let target_bbox = self.objects[t_idx].bounding_box();
+            let was_dead = self.objects[t_idx].is_dead();
             self.objects[t_idx].on_kill(1, DeathKind::Enemy);
             self.objects[p_idx].on_kill(1, DeathKind::Enemy);
-            // Visible death shatter: spawn the colored-bullet burst from
-            // the target's bbox centre so any enemy taken down by a
-            // projectile visibly explodes regardless of whether the
-            // Java reference's specific manager calls
-            // `BulletObjectFactory.explode` on death.
-            crate::entities::objects::scatter_particle::spawn_burst_at(
-                target_bbox.x + target_bbox.w / 2,
-                target_bbox.y + target_bbox.h / 2,
-                &mut self.entity_dispatcher,
-            );
+            // Visible death shatter: spawn the colored-bullet burst
+            // only on the alive -> dead transition so a projectile
+            // lingering on a corpse does not re-fire the burst every
+            // tick.
+            if !was_dead && self.objects[t_idx].is_dead() {
+                crate::entities::objects::scatter_particle::spawn_burst_at(
+                    target_bbox.x + target_bbox.w / 2,
+                    target_bbox.y + target_bbox.h / 2,
+                    &mut self.entity_dispatcher,
+                );
+            }
         }
     }
 
