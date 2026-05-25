@@ -1,0 +1,11 @@
+[package]
+name = "openjill-export"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+image = { version = "0.25.8", default-features = false }
+openjill-data = { path = "../openjill-data" }
