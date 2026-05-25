@@ -22,11 +22,13 @@ pub enum TilesetColorOutput {
     },
 }
 
-/// Converts one parsed `*.SHA` tileset into an in-memory RGBA PNG image.
+/// Converts one parsed `*.SHA` tileset into an in-memory RGBA image.
 ///
 /// The `output` mode controls whether export preserves raw indices
 /// ([`TilesetColorOutput::Indexed`]) or resolves them using an explicit palette
 /// ([`TilesetColorOutput::Colored`]).
+///
+/// Callers can encode the returned pixels as PNG if needed.
 pub fn tileset_to_png(_tileset: &ShaTileSet, _output: TilesetColorOutput) -> RgbaImage {
     unimplemented!("SHA export wiring lands in a follow-up issue")
 }
