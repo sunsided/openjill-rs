@@ -23,8 +23,8 @@ const SHA_ATLAS_INDEXED_FILE: &str = "atlas-indexed.png";
 /// File name used by `dump sha` for the RGB atlas rendered through the Jill VGA palette.
 const SHA_ATLAS_RGB_FILE: &str = "atlas-rgb.png";
 
-/// Unit under test: end-to-end `openjill-rs dump dma`, `openjill-rs dump vcl`,
-/// and `openjill-rs dump sha` execution against original episode-1 files.
+/// Unit under test: end-to-end `openjill dump dma`, `openjill dump vcl`,
+/// and `openjill dump sha` execution against original episode-1 files.
 ///
 /// Preconditions: either `OPENJILL_DATA_DIR` points at a directory containing
 /// `JILL.DMA` and `JILL1.VCL`, or the workspace-relative
@@ -83,7 +83,7 @@ fn dumps_original_dma_vcl_and_sha_payloads_when_available() {
 
 /// Runs one CLI dump command and panics with captured output on failure.
 fn run_dump_command(kind: &str, data_dir: &Path, output: &Path) {
-    let command_output = Command::new(env!("CARGO_BIN_EXE_openjill-rs"))
+    let command_output = Command::new(env!("CARGO_BIN_EXE_openjill"))
         .args([
             "dump",
             kind,

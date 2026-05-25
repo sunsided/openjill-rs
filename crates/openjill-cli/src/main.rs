@@ -48,7 +48,7 @@ fn required_files(episode: &Episode) -> Vec<(String, ParserDomain)> {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "openjill-rs", about = "OpenJill Rust port CLI (stub)")]
+#[command(name = "openjill", about = "OpenJill Rust port CLI (stub)")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -1527,13 +1527,13 @@ mod tests {
 
     #[test]
     fn accepts_run_command() {
-        let cli = Cli::try_parse_from(["openjill-rs", "run"]).expect("run command should parse");
+        let cli = Cli::try_parse_from(["openjill", "run"]).expect("run command should parse");
         check!(matches!(cli.command, Command::Run(_)));
     }
 
     #[test]
     fn accepts_data_verify_command() {
-        let cli = Cli::try_parse_from(["openjill-rs", "data", "verify"])
+        let cli = Cli::try_parse_from(["openjill", "data", "verify"])
             .expect("data verify command should parse");
         check!(matches!(
             cli.command,
@@ -1546,7 +1546,7 @@ mod tests {
     #[test]
     fn accepts_dump_command() {
         let cli =
-            Cli::try_parse_from(["openjill-rs", "dump", "dma"]).expect("dump command should parse");
+            Cli::try_parse_from(["openjill", "dump", "dma"]).expect("dump command should parse");
         check!(matches!(cli.command, Command::Dump(_)));
     }
 
@@ -1554,14 +1554,14 @@ mod tests {
     fn accepts_all_dump_kinds() {
         for kind in ["dma", "vcl", "sha", "jn"] {
             let cli =
-                Cli::try_parse_from(["openjill-rs", "dump", kind]).expect("dump kind should parse");
+                Cli::try_parse_from(["openjill", "dump", kind]).expect("dump kind should parse");
             check!(matches!(cli.command, Command::Dump(_)));
         }
     }
 
     #[test]
     fn accepts_dump_format_flag() {
-        let cli = Cli::try_parse_from(["openjill-rs", "dump", "dma", "--format", "json"])
+        let cli = Cli::try_parse_from(["openjill", "dump", "dma", "--format", "json"])
             .expect("dump format flag should parse");
         check!(matches!(cli.command, Command::Dump(_)));
     }
@@ -1790,7 +1790,7 @@ mod tests {
         fs::remove_file(temp_dir.path().join("MAP.JN1")).expect("remove MAP.JN1");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "data",
             "verify",
             "--data-dir",
@@ -1819,7 +1819,7 @@ mod tests {
         fs::remove_file(temp_dir.path().join("MAP.JN1")).expect("remove MAP.JN1");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "jn",
             "--data-dir",
@@ -1851,7 +1851,7 @@ mod tests {
         let output = temp_dir.path().join("dma.json");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "dma",
             "--data-dir",
@@ -1901,7 +1901,7 @@ mod tests {
         let output = temp_dir.path().join("vcl-text.json");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "vcl",
             "--data-dir",
@@ -1945,7 +1945,7 @@ mod tests {
         let output = temp_dir.path().join("sha-dump");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "sha",
             "--data-dir",
@@ -2049,7 +2049,7 @@ mod tests {
         let output = temp_dir.path().join("jn-dump");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "jn",
             "--data-dir",
@@ -2122,7 +2122,7 @@ mod tests {
             .expect("write malformed BADLEVEL.jn1");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "jn",
             "--data-dir",
@@ -2155,7 +2155,7 @@ mod tests {
         fs::write(&output, "{}").expect("write existing output");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "dma",
             "--data-dir",
@@ -2187,7 +2187,7 @@ mod tests {
         fs::write(&output, "{}").expect("write existing output");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "dma",
             "--data-dir",
@@ -2224,7 +2224,7 @@ mod tests {
             .expect("write existing atlas");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "sha",
             "--data-dir",
@@ -2262,7 +2262,7 @@ mod tests {
             .expect("write existing rgb atlas");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "sha",
             "--data-dir",
@@ -2295,7 +2295,7 @@ mod tests {
             .expect("write malformed jill.dma");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "dma",
             "--data-dir",
@@ -2327,7 +2327,7 @@ mod tests {
         fs::write(temp_dir.path().join("JILL1.vcl"), [0u8; 20]).expect("write malformed JILL1.vcl");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "vcl",
             "--data-dir",
@@ -2359,7 +2359,7 @@ mod tests {
         fs::write(temp_dir.path().join("JILL1.SHA"), [0u8; 16]).expect("write malformed JILL1.SHA");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "sha",
             "--data-dir",
@@ -2392,7 +2392,7 @@ mod tests {
         let output = temp_dir.path().join("sha.json");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "sha",
             "--data-dir",
@@ -2423,7 +2423,7 @@ mod tests {
         fs::write(&output, "not a directory").expect("write existing file");
 
         let cli = Cli::try_parse_from([
-            "openjill-rs",
+            "openjill",
             "dump",
             "jn",
             "--data-dir",

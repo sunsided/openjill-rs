@@ -7,7 +7,7 @@ license.workspace = true
 authors.workspace = true
 
 [[bin]]
-name = "openjill-rs"
+name = "openjill"
 path = "src/main.rs"
 
 [dependencies]

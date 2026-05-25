@@ -75,7 +75,7 @@ tasks:
   run:
     desc: Run the default binary (pass args via -- arg1 arg2)
     cmds:
-      - cargo run --bin openjill-rs -- run {{.CLI_ARGS}}
+      - cargo run --bin openjill -- run {{.CLI_ARGS}}
 
   ci:
     desc: Run the checks expected in CI (fmt, lint, test)
@@ -107,7 +107,7 @@ tasks:
         if [ -z "$DATA_DIR" ] && [ -z "$OPENJILL_DATA_DIR" ] && [ ! -d data/original/JILL1 ]; then
           task binary:fetch
         fi
-        cargo run -p openjill-cli --bin openjill-rs -- {{.COMMAND}} {{.CLI_ARGS}}
+        cargo run -p openjill-cli --bin openjill -- {{.COMMAND}} {{.CLI_ARGS}}
 
   data:clean:
     desc: Remove downloaded ZIP and extracted data under data/
