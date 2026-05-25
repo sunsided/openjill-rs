@@ -47,6 +47,24 @@ mod tests {
         let _: fn(&DmaFile) -> Vec<super::Row> = dma::file_to_rows;
     }
 
+    /// Unit under test: [`dma::table_to_csv`].
+    ///
+    /// Invariants asserted: the export function keeps accepting a parsed
+    /// `DmaFile` reference and returning `String`.
+    #[test]
+    fn dma_csv_smoke_test_pins_signature() {
+        let _: fn(&DmaFile) -> String = dma::table_to_csv;
+    }
+
+    /// Unit under test: [`dma::table_to_text`].
+    ///
+    /// Invariants asserted: the export function keeps accepting a parsed
+    /// `DmaFile` reference and returning `String`.
+    #[test]
+    fn dma_text_smoke_test_pins_signature() {
+        let _: fn(&DmaFile) -> String = dma::table_to_text;
+    }
+
     /// Unit under test: [`vcl::file_to_string`].
     ///
     /// Invariants asserted: the export function keeps accepting a parsed
