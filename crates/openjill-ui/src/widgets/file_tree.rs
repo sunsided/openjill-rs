@@ -268,8 +268,7 @@ fn show_entry(ui: &mut Ui, entry: &FileTreeEntry, selected: &mut Option<PathBuf>
                     *selected = Some(path.clone());
                     response.mark_changed();
                 }
-                // `selected` now reliably holds `Some(path)`.
-                selected.clone()
+                Some(path.clone())
             } else {
                 None
             };
