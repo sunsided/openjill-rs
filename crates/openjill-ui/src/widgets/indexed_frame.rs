@@ -129,18 +129,17 @@ impl CallbackTrait for IndexedFrameCallback {
     ) -> Vec<egui_wgpu::wgpu::CommandBuffer> {
         let [width, height] =
             viewport_size_in_pixels(self.viewport, screen_descriptor.pixels_per_point);
-        let mut painter = self
-            .painter
-            .lock()
-            .expect("openjill-ui canvas painter mutex poisoned");
+        let mut painter = match self.painter.lock() {
+            Ok(painter) => painter,
+            Err(error) => {
+                eprintln!("openjill-ui canvas painter mutex poisoned: {error}");
+                return Vec::new();
+            }
+        };
         painter.resize(queue, width, height);
-        painter
-            .prepare(queue, &self.framebuffer, &self.palette)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "openjill-ui canvas framebuffer preparation failed unexpectedly: {error}"
-                )
-            });
+        if let Err(error) = painter.prepare(queue, &self.framebuffer, &self.palette) {
+            eprintln!("openjill-ui canvas framebuffer preparation failed: {error}");
+        }
         Vec::new()
     }
 
@@ -150,10 +149,13 @@ impl CallbackTrait for IndexedFrameCallback {
         render_pass: &mut egui_wgpu::wgpu::RenderPass<'static>,
         _callback_resources: &CallbackResources,
     ) {
-        let painter = self
-            .painter
-            .lock()
-            .expect("openjill-ui canvas painter mutex poisoned");
+        let painter = match self.painter.lock() {
+            Ok(painter) => painter,
+            Err(error) => {
+                eprintln!("openjill-ui canvas painter mutex poisoned: {error}");
+                return;
+            }
+        };
         painter.paint(render_pass);
     }
 }

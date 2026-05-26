@@ -222,6 +222,8 @@ pub struct IndexedFramePainter {
     present_pipeline: RenderPipeline,
     /// Uniform buffer storing aspect-ratio scaling factors for the vertex shader.
     scale_uniform_buffer: Buffer,
+    /// Last surface size used for scale uniforms.
+    scale_surface_size: [u32; 2],
 }
 
 impl IndexedFramePainter {
@@ -364,17 +366,22 @@ impl IndexedFramePainter {
             frame_bind_group,
             present_pipeline,
             scale_uniform_buffer,
+            scale_surface_size: [width, height],
         }
     }
 
     /// Updates the viewport scaling factors for a new target size.
     pub fn resize(&mut self, queue: &Queue, width: u32, height: u32) {
         let (width, height) = clamp_surface_size(width, height);
+        if self.scale_surface_size == [width, height] {
+            return;
+        }
         let uniform = ScaleUniform {
             scale: calculate_present_scale(width, height),
             _padding: [0.0, 0.0],
         };
         queue.write_buffer(&self.scale_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        self.scale_surface_size = [width, height];
     }
 
     /// Expands one indexed framebuffer and uploads it to the painter texture.
