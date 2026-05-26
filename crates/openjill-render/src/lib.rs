@@ -222,7 +222,7 @@ pub struct IndexedFramePainter {
     present_pipeline: RenderPipeline,
     /// Uniform buffer storing aspect-ratio scaling factors for the vertex shader.
     scale_uniform_buffer: Buffer,
-    /// Last surface size used for scale uniforms.
+    /// Last clamped surface size used to skip redundant scale uniform GPU writes in `resize`.
     scale_surface_size: [u32; 2],
 }
 
