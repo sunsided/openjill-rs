@@ -659,9 +659,9 @@ fn expand_indexed_framebuffer(framebuffer: &[u8], rgba_buffer: &mut [u8], palett
 /// RGBA textures.
 ///
 /// `rgba_buffer` must be pre-allocated to exactly `indexed_pixels.len() * 4`
-/// bytes. In debug builds this invariant is asserted.
+/// bytes.
 pub fn expand_indexed_pixels(indexed_pixels: &[u8], rgba_buffer: &mut [u8], palette: &Palette) {
-    debug_assert_eq!(rgba_buffer.len(), indexed_pixels.len() * 4);
+    assert_eq!(rgba_buffer.len(), indexed_pixels.len() * 4);
     for (source, destination) in indexed_pixels.iter().zip(rgba_buffer.chunks_exact_mut(4)) {
         destination.copy_from_slice(&palette.rgba(*source));
     }

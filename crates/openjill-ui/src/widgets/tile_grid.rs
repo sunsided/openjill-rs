@@ -34,8 +34,15 @@ impl TileGridTexture {
             .unwrap_or(1)
             .max(1);
         let tile_count = tileset.tiles().len();
-        let atlas_width = (cell_width.saturating_mul(tile_count as u32)).max(1);
+        let tile_count_u32 =
+            u32::try_from(tile_count).expect("tile count must fit into u32 for GPU texture atlas");
+        let atlas_width = cell_width.saturating_mul(tile_count_u32).max(1);
         let atlas_height = cell_height.max(1);
+        let max_texture_dimension = render_state.device.limits().max_texture_dimension_2d;
+        assert!(
+            atlas_width <= max_texture_dimension && atlas_height <= max_texture_dimension,
+            "tile atlas dimensions must fit GPU max texture size"
+        );
         let mut atlas_rgba = vec![0_u8; (atlas_width as usize) * (atlas_height as usize) * 4];
 
         for (tile_index, tile) in tileset.tiles().iter().enumerate() {
@@ -74,11 +81,29 @@ impl TileGridTexture {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: egui_wgpu::wgpu::TextureDimension::D2,
-                format: egui_wgpu::wgpu::TextureFormat::Rgba8Unorm,
+                format: egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
                 usage: egui_wgpu::wgpu::TextureUsages::TEXTURE_BINDING
                     | egui_wgpu::wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
+        let bytes_per_row = atlas_width * 4;
+        let align = egui_wgpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = bytes_per_row.div_ceil(align) * align;
+        let upload_data = if padded_bytes_per_row == bytes_per_row {
+            atlas_rgba
+        } else {
+            let mut padded = vec![0_u8; (padded_bytes_per_row * atlas_height) as usize];
+            let bytes_per_row = bytes_per_row as usize;
+            let padded_bytes_per_row = padded_bytes_per_row as usize;
+            for row in 0..atlas_height as usize {
+                let src_start = row * bytes_per_row;
+                let src_end = src_start + bytes_per_row;
+                let dst_start = row * padded_bytes_per_row;
+                padded[dst_start..dst_start + bytes_per_row]
+                    .copy_from_slice(&atlas_rgba[src_start..src_end]);
+            }
+            padded
+        };
         render_state.queue.write_texture(
             egui_wgpu::wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -86,10 +111,10 @@ impl TileGridTexture {
                 origin: egui_wgpu::wgpu::Origin3d::ZERO,
                 aspect: egui_wgpu::wgpu::TextureAspect::All,
             },
-            &atlas_rgba,
+            &upload_data,
             egui_wgpu::wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(atlas_width * 4),
+                bytes_per_row: Some(padded_bytes_per_row),
                 rows_per_image: Some(atlas_height),
             },
             egui_wgpu::wgpu::Extent3d {
