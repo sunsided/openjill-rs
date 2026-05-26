@@ -23,13 +23,18 @@ fn main() -> Result<()> {
 }
 
 struct DemoApp {
+    /// Loaded TileGrid texture atlas for `JILL1.SHA` tileset 24.
     tile_grid: Option<TileGridTexture>,
+    /// Currently selected tile index.
     selected_tile: Option<usize>,
+    /// Most recent click event tile index emitted by the widget.
     last_clicked_tile: Option<usize>,
+    /// Status/error message shown when loading fails.
     status: String,
 }
 
 impl DemoApp {
+    /// Constructs the demo app and attempts to load tileset 24 from `JILL1.SHA`.
     fn new(creation_context: &eframe::CreationContext<'_>) -> Self {
         match load_tileset_texture(creation_context) {
             Ok(tile_grid) => Self {
@@ -70,6 +75,10 @@ impl eframe::App for DemoApp {
     }
 }
 
+/// Loads tileset 24 from `JILL1.SHA` into a GPU-backed [`TileGridTexture`].
+///
+/// The loader resolves the data directory from `OPENJILL_DATA_DIR`, falling
+/// back to `data/original/JILL1`.
 fn load_tileset_texture(creation_context: &eframe::CreationContext<'_>) -> Result<TileGridTexture, String> {
     let render_state = creation_context
         .wgpu_render_state
@@ -91,6 +100,9 @@ fn load_tileset_texture(creation_context: &eframe::CreationContext<'_>) -> Resul
     Ok(TileGridTexture::from_tileset(render_state, tileset, &palette))
 }
 
+/// Resolves the expected `JILL1.SHA` file path under a data directory.
+///
+/// Returns a descriptive error when the file is missing.
 fn resolve_sha_path(data_dir: &Path) -> Result<PathBuf, String> {
     let candidate = data_dir.join("JILL1.SHA");
     if candidate.exists() {

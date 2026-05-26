@@ -6,9 +6,13 @@ use openjill_render::{Palette, expand_indexed_pixels};
 
 /// GPU-backed texture atlas for a SHA tileset used by [`TileGrid`].
 pub struct TileGridTexture {
+    /// Egui texture handle referencing the registered atlas texture.
     texture_id: TextureId,
+    /// Number of tiles available in this atlas.
     tile_count: usize,
+    /// Uniform tile cell size in atlas texels `[width, height]`.
     cell_size: [u32; 2],
+    /// Owned GPU texture backing the egui texture registration.
     _texture: egui_wgpu::wgpu::Texture,
 }
 
@@ -124,7 +128,7 @@ impl TileGridTexture {
 
 /// Output from [`TileGrid::show`].
 pub struct TileGridOutput {
-    /// Combined widget response.
+    /// Combined egui response produced from all tile interactions in this grid.
     pub response: Response,
     /// Tile index that was clicked this frame.
     pub clicked_tile: Option<usize>,
@@ -132,10 +136,15 @@ pub struct TileGridOutput {
 
 /// Egui widget that renders a clickable uniform tile grid from a tileset texture atlas.
 pub struct TileGrid<'a> {
+    /// Texture atlas to display.
     texture: &'a TileGridTexture,
+    /// Mutable selected tile index updated when a tile is clicked.
     selected: &'a mut Option<usize>,
+    /// Number of tiles per row.
     columns: usize,
+    /// Per-tile scale factor.
     zoom: f32,
+    /// Whether hovered tiles receive a highlight outline.
     hover_highlight: bool,
 }
 
@@ -249,6 +258,7 @@ impl egui::Widget for TileGrid<'_> {
     }
 }
 
+/// Computes normalized UV coordinates for one tile in a single-row atlas layout.
 fn tile_uv(tile_index: usize, tile_count: usize) -> Rect {
     let tile_count = tile_count.max(1) as f32;
     let min_x = tile_index as f32 / tile_count;
