@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use openjill_core::{ClipRect, FontSize, Palette, RenderCommand};
+pub use openjill_core::Palette;
+use openjill_core::{ClipRect, FontSize, RenderCommand};
 use openjill_data::sha::{ShaFile, ShaTile, ShaTileSet};
 use thiserror::Error;
 use wgpu::{
@@ -21,11 +22,11 @@ use wgpu::{
 use winit::window::Window;
 
 /// Width of the indexed framebuffer in pixels.
-const FRAMEBUFFER_WIDTH: usize = 320;
+pub const FRAMEBUFFER_WIDTH: usize = 320;
 /// Height of the indexed framebuffer in pixels.
-const FRAMEBUFFER_HEIGHT: usize = 200;
+pub const FRAMEBUFFER_HEIGHT: usize = 200;
 /// Total number of pixels in the indexed framebuffer.
-const FRAMEBUFFER_PIXELS: usize = FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT;
+pub const FRAMEBUFFER_PIXELS: usize = FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT;
 /// Total number of bytes in the expanded RGBA framebuffer.
 const RGBA_BUFFER_BYTES: usize = FRAMEBUFFER_PIXELS * 4;
 /// Native game aspect ratio used for letterbox and pillarbox scaling.
@@ -196,21 +197,22 @@ pub enum TileDecodeError {
     },
 }
 
-/// Owns the wgpu instance, surface, and presentation state for the active window.
-pub struct Presenter {
-    /// WGPU instance that created this presenter surface.
-    _instance: Instance,
-    /// Surface bound to the active native window.
-    surface: Surface<'static>,
-    /// Logical GPU device used to encode and submit rendering commands.
-    device: Device,
-    /// GPU queue used to submit encoded command buffers.
-    queue: Queue,
-    /// Active swap-chain configuration used for presentation.
-    surface_config: SurfaceConfiguration,
-    /// Indexed 320x200 framebuffer updated by clear and blit operations.
-    framebuffer: Box<[u8]>,
-    /// Expanded RGBA buffer uploaded to the GPU each present call.
+/// Errors returned when preparing indexed framebuffer data for presentation.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum FramebufferError {
+    /// The indexed framebuffer length did not match the fixed 320×200 contract.
+    #[error("indexed framebuffer must contain {expected} bytes, got {actual}")]
+    InvalidLength {
+        /// The required framebuffer byte length.
+        expected: usize,
+        /// The actual slice length provided by the caller.
+        actual: usize,
+    },
+}
+
+/// Reusable WGPU resources for presenting OpenJill's indexed 320×200 framebuffer.
+pub struct IndexedFramePainter {
+    /// Expanded RGBA buffer uploaded to the GPU each frame.
     rgba_buffer: Box<[u8]>,
     /// GPU texture that stores the expanded RGBA frame.
     frame_texture: Texture,
@@ -222,56 +224,16 @@ pub struct Presenter {
     scale_uniform_buffer: Buffer,
 }
 
-/// Packed uniform values sent to the vertex shader for aspect-ratio scaling.
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct ScaleUniform {
-    /// Horizontal and vertical scale factors in NDC space.
-    scale: [f32; 2],
-    /// Padding to satisfy 16-byte alignment requirements.
-    _padding: [f32; 2],
-}
-
-impl Presenter {
-    /// Creates a presenter by resolving instance, surface, adapter, device, and queue.
-    pub async fn new(window: Arc<Window>) -> Result<Self, PresenterError> {
-        let instance = Instance::new(InstanceDescriptor {
-            backends: Backends::all(),
-            ..InstanceDescriptor::new_without_display_handle()
-        });
-        let window_size = clamp_surface_size(window.inner_size().width, window.inner_size().height);
-        let surface = instance.create_surface(window)?;
-        let adapter = instance
-            .request_adapter(&RequestAdapterOptions {
-                power_preference: PowerPreference::None,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await?;
-        let (device, queue) = adapter
-            .request_device(&DeviceDescriptor {
-                label: Some("openjill-render-device"),
-                required_features: Features::empty(),
-                required_limits: Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                trace: wgpu::Trace::Off,
-            })
-            .await?;
-        let capabilities = surface.get_capabilities(&adapter);
-        let format = select_surface_format(&capabilities.formats)?;
-        let surface_config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: window_size.0,
-            height: window_size.1,
-            present_mode: PresentMode::Fifo,
-            alpha_mode: CompositeAlphaMode::Auto,
-            view_formats: Vec::new(),
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &surface_config);
-
+impl IndexedFramePainter {
+    /// Creates a new indexed-frame painter for a target format and viewport size.
+    pub fn new(
+        device: &Device,
+        queue: &Queue,
+        target_format: TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let (width, height) = clamp_surface_size(width, height);
         let frame_texture = device.create_texture(&TextureDescriptor {
             label: Some("openjill-render-frame-texture"),
             size: Extent3d {
@@ -299,7 +261,7 @@ impl Presenter {
         });
 
         let initial_scale = ScaleUniform {
-            scale: calculate_present_scale(surface_config.width, surface_config.height),
+            scale: calculate_present_scale(width, height),
             _padding: [0.0, 0.0],
         };
         let scale_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -383,7 +345,7 @@ impl Presenter {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(ColorTargetState {
-                    format: surface_config.format,
+                    format: target_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: ColorWrites::ALL,
                 })],
@@ -396,6 +358,144 @@ impl Presenter {
             cache: None,
         });
 
+        Self {
+            rgba_buffer: vec![0_u8; RGBA_BUFFER_BYTES].into_boxed_slice(),
+            frame_texture,
+            frame_bind_group,
+            present_pipeline,
+            scale_uniform_buffer,
+        }
+    }
+
+    /// Updates the viewport scaling factors for a new target size.
+    pub fn resize(&mut self, queue: &Queue, width: u32, height: u32) {
+        let (width, height) = clamp_surface_size(width, height);
+        let uniform = ScaleUniform {
+            scale: calculate_present_scale(width, height),
+            _padding: [0.0, 0.0],
+        };
+        queue.write_buffer(&self.scale_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    /// Expands one indexed framebuffer and uploads it to the painter texture.
+    pub fn prepare(
+        &mut self,
+        queue: &Queue,
+        framebuffer: &[u8],
+        palette: &Palette,
+    ) -> Result<(), FramebufferError> {
+        if framebuffer.len() != FRAMEBUFFER_PIXELS {
+            return Err(FramebufferError::InvalidLength {
+                expected: FRAMEBUFFER_PIXELS,
+                actual: framebuffer.len(),
+            });
+        }
+        expand_indexed_framebuffer(framebuffer, &mut self.rgba_buffer, palette);
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &self.frame_texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            &self.rgba_buffer,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some((FRAMEBUFFER_WIDTH * 4) as u32),
+                rows_per_image: Some(FRAMEBUFFER_HEIGHT as u32),
+            },
+            Extent3d {
+                width: FRAMEBUFFER_WIDTH as u32,
+                height: FRAMEBUFFER_HEIGHT as u32,
+                depth_or_array_layers: 1,
+            },
+        );
+        Ok(())
+    }
+
+    /// Draws the prepared framebuffer into the active render pass.
+    pub fn paint(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        render_pass.set_pipeline(&self.present_pipeline);
+        render_pass.set_bind_group(0, &self.frame_bind_group, &[]);
+        render_pass.draw(0..6, 0..1);
+    }
+}
+
+/// Owns the wgpu instance, surface, and presentation state for the active window.
+pub struct Presenter {
+    /// WGPU instance that created this presenter surface.
+    _instance: Instance,
+    /// Surface bound to the active native window.
+    surface: Surface<'static>,
+    /// Logical GPU device used to encode and submit rendering commands.
+    device: Device,
+    /// GPU queue used to submit encoded command buffers.
+    queue: Queue,
+    /// Active swap-chain configuration used for presentation.
+    surface_config: SurfaceConfiguration,
+    /// Indexed 320x200 framebuffer updated by clear and blit operations.
+    framebuffer: Box<[u8]>,
+    /// Reusable indexed-frame GPU resources shared by window and egui presentation paths.
+    frame_painter: IndexedFramePainter,
+}
+
+/// Packed uniform values sent to the vertex shader for aspect-ratio scaling.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ScaleUniform {
+    /// Horizontal and vertical scale factors in NDC space.
+    scale: [f32; 2],
+    /// Padding to satisfy 16-byte alignment requirements.
+    _padding: [f32; 2],
+}
+
+impl Presenter {
+    /// Creates a presenter by resolving instance, surface, adapter, device, and queue.
+    pub async fn new(window: Arc<Window>) -> Result<Self, PresenterError> {
+        let instance = Instance::new(InstanceDescriptor {
+            backends: Backends::all(),
+            ..InstanceDescriptor::new_without_display_handle()
+        });
+        let window_size = clamp_surface_size(window.inner_size().width, window.inner_size().height);
+        let surface = instance.create_surface(window)?;
+        let adapter = instance
+            .request_adapter(&RequestAdapterOptions {
+                power_preference: PowerPreference::None,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await?;
+        let (device, queue) = adapter
+            .request_device(&DeviceDescriptor {
+                label: Some("openjill-render-device"),
+                required_features: Features::empty(),
+                required_limits: Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::Off,
+            })
+            .await?;
+        let capabilities = surface.get_capabilities(&adapter);
+        let format = select_surface_format(&capabilities.formats)?;
+        let surface_config = SurfaceConfiguration {
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: window_size.0,
+            height: window_size.1,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Auto,
+            view_formats: Vec::new(),
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &surface_config);
+        let frame_painter = IndexedFramePainter::new(
+            &device,
+            &queue,
+            surface_config.format,
+            surface_config.width,
+            surface_config.height,
+        );
+
         Ok(Self {
             _instance: instance,
             surface,
@@ -403,11 +503,7 @@ impl Presenter {
             queue,
             surface_config,
             framebuffer: vec![0_u8; FRAMEBUFFER_PIXELS].into_boxed_slice(),
-            rgba_buffer: vec![0_u8; RGBA_BUFFER_BYTES].into_boxed_slice(),
-            frame_texture,
-            frame_bind_group,
-            present_pipeline,
-            scale_uniform_buffer,
+            frame_painter,
         })
     }
 
@@ -420,12 +516,7 @@ impl Presenter {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
-        let uniform = ScaleUniform {
-            scale: calculate_present_scale(width, height),
-            _padding: [0.0, 0.0],
-        };
-        self.queue
-            .write_buffer(&self.scale_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        self.frame_painter.resize(&self.queue, width, height);
     }
 
     /// Reconfigures the surface with the current configuration, used for `Lost`/`Outdated` recovery.
@@ -473,27 +564,8 @@ impl Presenter {
 
     /// Expands the indexed framebuffer to RGBA, uploads it, and presents one frame.
     pub fn present(&mut self, palette: &Palette) -> Result<(), PresenterError> {
-        expand_indexed_framebuffer(&self.framebuffer, &mut self.rgba_buffer, palette);
-        self.queue.write_texture(
-            TexelCopyTextureInfo {
-                texture: &self.frame_texture,
-                mip_level: 0,
-                origin: Origin3d::ZERO,
-                aspect: TextureAspect::All,
-            },
-            &self.rgba_buffer,
-            TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some((FRAMEBUFFER_WIDTH * 4) as u32),
-                rows_per_image: Some(FRAMEBUFFER_HEIGHT as u32),
-            },
-            Extent3d {
-                width: FRAMEBUFFER_WIDTH as u32,
-                height: FRAMEBUFFER_HEIGHT as u32,
-                depth_or_array_layers: 1,
-            },
-        );
-
+        self.frame_painter
+            .prepare(&self.queue, &self.framebuffer, palette)?;
         let frame = acquire_surface_texture(self.surface.get_current_texture())?;
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
         let mut encoder = self
@@ -518,9 +590,7 @@ impl Presenter {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            render_pass.set_pipeline(&self.present_pipeline);
-            render_pass.set_bind_group(0, &self.frame_bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
+            self.frame_painter.paint(&mut render_pass);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
@@ -852,6 +922,9 @@ pub enum PresenterError {
     /// Surface capability enumeration returned no usable formats.
     #[error("wgpu surface reported no supported texture formats")]
     NoSurfaceFormats,
+    /// Indexed framebuffer data was invalid for presentation.
+    #[error(transparent)]
+    Framebuffer(#[from] FramebufferError),
     /// Frame acquisition or presentation failed.
     #[error("surface presentation failed: {0}")]
     SurfaceError(#[from] SurfaceError),
