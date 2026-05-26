@@ -264,11 +264,12 @@ fn show_entry(ui: &mut Ui, entry: &FileTreeEntry, selected: &mut Option<PathBuf>
             let is_selected = selected.as_deref() == Some(path.as_path());
             let mut response = ui.add(egui::Button::selectable(is_selected, name.as_str()));
             let clicked_path = if response.clicked() {
-                if *selected != Some(path.clone()) {
+                if selected.as_deref() != Some(path.as_path()) {
                     *selected = Some(path.clone());
                     response.mark_changed();
                 }
-                Some(path.clone())
+                // `selected` now reliably holds `Some(path)`.
+                selected.clone()
             } else {
                 None
             };
