@@ -114,8 +114,12 @@ impl<'a> PalettePicker<'a> {
 
             let mut swatch_response =
                 ui.interact(swatch_rect, response.id.with(palette_index), Sense::click());
-            swatch_response =
-                swatch_response.on_hover_text(swatch_tooltip(palette_index as u8, [r, g, b]));
+            swatch_response = swatch_response.on_hover_ui(|ui| {
+                ui.label(format!(
+                    "#{:02X}{:02X}{:02X}\nRGB({r}, {g}, {b})\nIndex {}",
+                    r, g, b, palette_index
+                ));
+            });
 
             if swatch_response.clicked() {
                 clicked_index = Some(palette_index as u8);
@@ -158,18 +162,9 @@ impl egui::Widget for PalettePicker<'_> {
     }
 }
 
-/// Formats one swatch tooltip as hex, decimal RGB tuple, and palette index.
-fn swatch_tooltip(index: u8, rgb: [u8; 3]) -> String {
-    let [r, g, b] = rgb;
-    format!(
-        "#{:02X}{:02X}{:02X}\nRGB({r}, {g}, {b})\nIndex {index}",
-        r, g, b
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{PaletteFilter, swatch_tooltip};
+    use super::PaletteFilter;
 
     #[test]
     fn filter_ranges_match_jill_palette_layout() {
@@ -177,13 +172,5 @@ mod tests {
         assert_eq!(PaletteFilter::Ega.index_range(), 0..16);
         assert_eq!(PaletteFilter::Greyscale.index_range(), 16..24);
         assert_eq!(PaletteFilter::Vga.index_range(), 24..256);
-    }
-
-    #[test]
-    fn tooltip_shows_hex_rgb_and_index() {
-        assert_eq!(
-            swatch_tooltip(42, [0xAB, 0xCD, 0xEF]),
-            "#ABCDEF\nRGB(171, 205, 239)\nIndex 42"
-        );
     }
 }
