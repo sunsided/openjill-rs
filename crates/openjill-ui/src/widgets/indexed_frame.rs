@@ -136,7 +136,11 @@ impl CallbackTrait for IndexedFrameCallback {
         painter.resize(queue, width, height);
         painter
             .prepare(queue, &self.framebuffer, &self.palette)
-            .expect("openjill-ui canvas framebuffer length must match framebuffer geometry");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "openjill-ui canvas framebuffer preparation failed unexpectedly: {error}"
+                )
+            });
         Vec::new()
     }
 
