@@ -35,6 +35,10 @@ impl IndexedFrameCanvas {
     }
 
     /// Shows the framebuffer at its native 320×200 logical size.
+    ///
+    /// This copies the indexed framebuffer into a fresh `Arc<[u8]>` and clones the palette into a
+    /// fresh `Arc<Palette>` for the paint callback. For repeated updates, prefer [`show_shared`] or
+    /// [`show_shared_sized`] to reuse shared ownership.
     pub fn show(&self, ui: &mut Ui, framebuffer: &[u8], palette: &Palette) -> Response {
         self.show_shared_sized(
             ui,
@@ -45,6 +49,10 @@ impl IndexedFrameCanvas {
     }
 
     /// Shows the framebuffer inside a sized egui paint callback.
+    ///
+    /// This copies the indexed framebuffer into a fresh `Arc<[u8]>` and clones the palette into a
+    /// fresh `Arc<Palette>` for the paint callback. For repeated updates, prefer [`show_shared`] or
+    /// [`show_shared_sized`] to reuse shared ownership.
     pub fn show_sized(
         &self,
         ui: &mut Ui,
@@ -126,7 +134,9 @@ impl CallbackTrait for IndexedFrameCallback {
             .lock()
             .expect("openjill-ui canvas painter mutex poisoned");
         painter.resize(queue, width, height);
-        let _ = painter.prepare(queue, &self.framebuffer, &self.palette);
+        painter
+            .prepare(queue, &self.framebuffer, &self.palette)
+            .expect("openjill-ui canvas framebuffer length must match framebuffer geometry");
         Vec::new()
     }
 
