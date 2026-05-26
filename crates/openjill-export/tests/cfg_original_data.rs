@@ -61,13 +61,19 @@ fn exports_original_jill_cfg_high_scores_and_save_slots_when_available() {
     let score_lines: Vec<&str> = scores_text.lines().collect();
 
     // header + divider + 10 data rows
-    check!(score_lines.len() == 12, "scores table must have 12 lines (header + divider + 10 rows)");
+    check!(
+        score_lines.len() == 12,
+        "scores table must have 12 lines (header + divider + 10 rows)"
+    );
 
     let header = score_lines[0];
     check!(header.contains("rank"), "header must contain 'rank'");
     check!(header.contains("name"), "header must contain 'name'");
     check!(header.contains("score"), "header must contain 'score'");
-    check!(score_lines[1].contains("---"), "divider must contain dashes");
+    check!(
+        score_lines[1].contains("---"),
+        "divider must contain dashes"
+    );
 
     for (line_index, line) in score_lines.iter().skip(2).enumerate() {
         let rank = line_index + 1;
@@ -94,7 +100,10 @@ fn exports_original_jill_cfg_high_scores_and_save_slots_when_available() {
     let slot_lines: Vec<&str> = slots_text.lines().collect();
 
     // header + divider + 6 data rows
-    check!(slot_lines.len() == 8, "save-slots table must have 8 lines (header + divider + 6 rows)");
+    check!(
+        slot_lines.len() == 8,
+        "save-slots table must have 8 lines (header + divider + 6 rows)"
+    );
 
     let slot_header = slot_lines[0];
     check!(slot_header.contains("slot"), "header must contain 'slot'");

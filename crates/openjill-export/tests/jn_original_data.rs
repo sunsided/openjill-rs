@@ -4,8 +4,8 @@
 //! environments without copyrighted game assets.
 
 use assert2::check;
-use openjill_core::entity::Rect;
 use openjill_core::Palette;
+use openjill_core::entity::Rect;
 use openjill_data::DataDirectory;
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::JnFile;
@@ -40,7 +40,10 @@ fn renders_original_map_jn_to_expected_dimensions_when_available() {
         }
     };
 
-    check!(data_dir.is_dir(), "data directory must exist when configured");
+    check!(
+        data_dir.is_dir(),
+        "data directory must exist when configured"
+    );
 
     let directory = DataDirectory::new(&data_dir);
 

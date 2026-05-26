@@ -42,7 +42,10 @@ fn renders_tilesets_from_original_jill_sha_when_available() {
         }
     };
 
-    check!(data_dir.is_dir(), "data directory must exist when configured");
+    check!(
+        data_dir.is_dir(),
+        "data directory must exist when configured"
+    );
 
     let directory = DataDirectory::new(&data_dir);
     let mut reader = directory.open_reader("JILL1.SHA").unwrap_or_else(|error| {
@@ -53,7 +56,10 @@ fn renders_tilesets_from_original_jill_sha_when_available() {
     });
 
     let sha = ShaFile::parse(&mut reader).expect("JILL1.SHA from original data should parse");
-    check!(!sha.tilesets().is_empty(), "JILL1.SHA must contain at least one tileset");
+    check!(
+        !sha.tilesets().is_empty(),
+        "JILL1.SHA must contain at least one tileset"
+    );
 
     // Build a minimal identity palette (index i → [i, i, i]) for the colored
     // output path. The original palette is not required for this structural
@@ -95,7 +101,10 @@ fn renders_tilesets_from_original_jill_sha_when_available() {
         check!(colored.width() == image.width());
         check!(colored.height() == image.height());
     }
-    check!(nonempty_count > 0, "at least one non-empty tileset must exist");
+    check!(
+        nonempty_count > 0,
+        "at least one non-empty tileset must exist"
+    );
 
     // --- atlas_to_png: VGA mode (all tilesets) ----------------------------
     let vga_atlas = atlas_to_png(
@@ -107,7 +116,10 @@ fn renders_tilesets_from_original_jill_sha_when_available() {
             padding: 0,
         },
     );
-    check!(vga_atlas.width() > 1 || vga_atlas.height() > 1, "VGA atlas must be non-trivial");
+    check!(
+        vga_atlas.width() > 1 || vga_atlas.height() > 1,
+        "VGA atlas must be non-trivial"
+    );
 
     let vga_tile_count: usize = sha.tilesets().iter().map(|ts| ts.tiles().len()).sum();
 

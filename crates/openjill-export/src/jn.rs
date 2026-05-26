@@ -1,8 +1,8 @@
 //! JN export helpers — map background PNG rendering.
 
 use image::{Rgba, RgbaImage};
-use openjill_core::entity::Rect;
 use openjill_core::Palette;
+use openjill_core::entity::Rect;
 use openjill_data::dma::{DmaEntry, DmaFile};
 use openjill_data::jn::{BACKGROUND_HEIGHT, BACKGROUND_WIDTH, JnFile};
 use openjill_data::sha::{ShaFile, ShaTile, ShaTileSet};
@@ -168,8 +168,8 @@ mod tests {
     use super::{CELL_SIZE_PX, MAP_HEIGHT_PX, MAP_WIDTH_PX, map_to_png, map_to_png_with_viewport};
     use assert2::check;
     use image::Rgba;
-    use openjill_core::entity::Rect;
     use openjill_core::Palette;
+    use openjill_core::entity::Rect;
     use openjill_data::dma::DmaFile;
     use openjill_data::jn::JnFile;
     use openjill_data::sha::ShaFile;
@@ -212,13 +212,8 @@ mod tests {
         let sha = ShaFile::from_bytes(sha_bytes_single_tile(9)).expect("SHA should parse");
         let palette = palette_with_index_color(9, [0xaa, 0xbb, 0xcc]);
 
-        let image = map_to_png_with_viewport(
-            &jn,
-            &sha,
-            &dma,
-            &palette,
-            Some(Rect::new(16, 16, 16, 16)),
-        );
+        let image =
+            map_to_png_with_viewport(&jn, &sha, &dma, &palette, Some(Rect::new(16, 16, 16, 16)));
 
         check!(image.width() == 16);
         check!(image.height() == 16);
@@ -251,7 +246,8 @@ mod tests {
     /// Invariants asserted: saturation preserves a valid clipped result.
     #[test]
     fn intersect_rect_saturates_endpoint_overflow() {
-        let overlap = super::intersect_rect(Rect::new(i32::MAX - 1, 0, 10, 10), Rect::new(0, 0, 10, 10));
+        let overlap =
+            super::intersect_rect(Rect::new(i32::MAX - 1, 0, 10, 10), Rect::new(0, 0, 10, 10));
 
         check!(overlap == Rect::new(i32::MAX - 1, 0, 0, 10));
     }
@@ -304,7 +300,8 @@ mod tests {
         tileset_bytes.push(0); // data_format
         tileset_bytes.extend(tile_pixels);
 
-        let tileset_size = u16::try_from(tileset_bytes.len()).expect("synthetic tileset fits in u16");
+        let tileset_size =
+            u16::try_from(tileset_bytes.len()).expect("synthetic tileset fits in u16");
         bytes[0..4].copy_from_slice(&tileset_offset.to_le_bytes());
         let size_offset = 128 * 4;
         bytes[size_offset..size_offset + 2].copy_from_slice(&tileset_size.to_le_bytes());

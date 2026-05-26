@@ -29,8 +29,8 @@ pub struct Row {
 #[cfg(test)]
 mod tests {
     use super::{cfg, dma, jn, sha, vcl};
-    use openjill_core::entity::Rect;
     use openjill_core::Palette;
+    use openjill_core::entity::Rect;
     use openjill_data::cfg::CfgFile;
     use openjill_data::dma::DmaFile;
     use openjill_data::jn::JnFile;

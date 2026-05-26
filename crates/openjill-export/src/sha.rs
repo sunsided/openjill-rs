@@ -170,10 +170,7 @@ pub fn tileset_to_png(tileset: &ShaTileSet, output: TilesetColorOutput) -> RgbaI
     let atlas_height = y + row_height;
 
     // Second pass: blit pixels into the RGBA image.
-    let mut image = RgbaImage::new(
-        atlas_width as u32,
-        atlas_height as u32,
-    );
+    let mut image = RgbaImage::new(atlas_width as u32, atlas_height as u32);
 
     for ((px, py, pw, ph), (tile, ..)) in placements.iter().zip(&tiles) {
         let pixels = tile.indexed_pixels();
@@ -519,19 +516,31 @@ mod tests {
         let pic = &tilesets[0];
         let fnt = &tilesets[1];
 
-        let all = TileFilter { fonts: true, pictures: true };
+        let all = TileFilter {
+            fonts: true,
+            pictures: true,
+        };
         assert!(tileset_matches_filter(pic, all));
         assert!(tileset_matches_filter(fnt, all));
 
-        let fonts_only = TileFilter { fonts: true, pictures: false };
+        let fonts_only = TileFilter {
+            fonts: true,
+            pictures: false,
+        };
         assert!(!tileset_matches_filter(pic, fonts_only));
         assert!(tileset_matches_filter(fnt, fonts_only));
 
-        let pictures_only = TileFilter { fonts: false, pictures: true };
+        let pictures_only = TileFilter {
+            fonts: false,
+            pictures: true,
+        };
         assert!(tileset_matches_filter(pic, pictures_only));
         assert!(!tileset_matches_filter(fnt, pictures_only));
 
-        let none = TileFilter { fonts: false, pictures: false };
+        let none = TileFilter {
+            fonts: false,
+            pictures: false,
+        };
         assert!(!tileset_matches_filter(pic, none));
         assert!(!tileset_matches_filter(fnt, none));
     }
