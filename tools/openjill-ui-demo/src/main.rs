@@ -21,9 +21,5 @@ fn main() -> Result<()> {
 struct DemoApp;
 
 impl eframe::App for DemoApp {
-    fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
-        context.set_theme(egui::ThemePreference::System);
-    }
-
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
 }

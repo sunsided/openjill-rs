@@ -127,12 +127,11 @@ mod tests {
             serde_json::from_str(&entries_to_json(&vcl)).expect("json output should parse");
 
         check!(
-            json
-                == serde_json::json!([
-                    {"index": 3, "payload": "HELLO"},
-                    {"index": 12, "payload": "A\\B"},
-                    {"index": 39, "payload": "DONE"},
-                ])
+            json == serde_json::json!([
+                {"index": 3, "payload": "HELLO"},
+                {"index": 12, "payload": "A\\B"},
+                {"index": 39, "payload": "DONE"},
+            ])
         );
     }
 

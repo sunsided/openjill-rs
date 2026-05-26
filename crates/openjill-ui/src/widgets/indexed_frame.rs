@@ -36,11 +36,11 @@ impl IndexedFrameCanvas {
 
     /// Shows the framebuffer at its native 320×200 logical size.
     pub fn show(&self, ui: &mut Ui, framebuffer: &[u8], palette: &Palette) -> Response {
-        self.show_sized(
+        self.show_shared_sized(
             ui,
             Vec2::new(FRAMEBUFFER_WIDTH as f32, FRAMEBUFFER_HEIGHT as f32),
-            framebuffer,
-            palette,
+            Arc::<[u8]>::from(framebuffer),
+            Arc::new(palette.clone()),
         )
     }
 
@@ -51,6 +51,37 @@ impl IndexedFrameCanvas {
         desired_size: Vec2,
         framebuffer: &[u8],
         palette: &Palette,
+    ) -> Response {
+        self.show_shared_sized(
+            ui,
+            desired_size,
+            Arc::<[u8]>::from(framebuffer),
+            Arc::new(palette.clone()),
+        )
+    }
+
+    /// Shows shared framebuffer data without cloning it for the paint callback.
+    pub fn show_shared(
+        &self,
+        ui: &mut Ui,
+        framebuffer: Arc<[u8]>,
+        palette: Arc<Palette>,
+    ) -> Response {
+        self.show_shared_sized(
+            ui,
+            Vec2::new(FRAMEBUFFER_WIDTH as f32, FRAMEBUFFER_HEIGHT as f32),
+            framebuffer,
+            palette,
+        )
+    }
+
+    /// Shows shared framebuffer data inside a sized egui paint callback.
+    pub fn show_shared_sized(
+        &self,
+        ui: &mut Ui,
+        desired_size: Vec2,
+        framebuffer: Arc<[u8]>,
+        palette: Arc<Palette>,
     ) -> Response {
         let (rect, response) =
             ui.allocate_exact_size(desired_size.max(Vec2::splat(1.0)), Sense::hover());
@@ -63,8 +94,8 @@ impl IndexedFrameCanvas {
             IndexedFrameCallback {
                 painter: Arc::clone(&self.painter),
                 viewport: rect,
-                framebuffer: framebuffer.to_vec().into_boxed_slice(),
-                palette: palette.clone(),
+                framebuffer,
+                palette,
             },
         ));
 
@@ -75,8 +106,8 @@ impl IndexedFrameCanvas {
 struct IndexedFrameCallback {
     painter: Arc<Mutex<IndexedFramePainter>>,
     viewport: Rect,
-    framebuffer: Box<[u8]>,
-    palette: Palette,
+    framebuffer: Arc<[u8]>,
+    palette: Arc<Palette>,
 }
 
 impl CallbackTrait for IndexedFrameCallback {

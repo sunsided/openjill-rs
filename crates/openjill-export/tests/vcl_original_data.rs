@@ -38,7 +38,10 @@ fn exports_original_jill_vcl_entries_when_available() {
         }
     };
 
-    check!(data_dir.is_dir(), "data directory must exist when configured");
+    check!(
+        data_dir.is_dir(),
+        "data directory must exist when configured"
+    );
 
     let directory = DataDirectory::new(&data_dir);
     let mut reader = directory.open_reader("JILL1.VCL").unwrap_or_else(|error| {
