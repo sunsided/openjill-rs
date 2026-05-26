@@ -14,4 +14,6 @@ path = "src/main.rs"
 anyhow.workspace = true
 eframe.workspace = true
 egui.workspace = true
+openjill-core = { path = "../../crates/openjill-core" }
+openjill-data = { path = "../../crates/openjill-data" }
 openjill-ui = { path = "../../crates/openjill-ui" }

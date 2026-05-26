@@ -2079,6 +2079,8 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui",
+ "openjill-core",
+ "openjill-data",
  "openjill-ui",
 ]
 

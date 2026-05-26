@@ -650,7 +650,16 @@ fn acquire_surface_texture(current: CurrentSurfaceTexture) -> Result<SurfaceText
 fn expand_indexed_framebuffer(framebuffer: &[u8], rgba_buffer: &mut [u8], palette: &Palette) {
     debug_assert_eq!(framebuffer.len(), FRAMEBUFFER_PIXELS);
     debug_assert_eq!(rgba_buffer.len(), RGBA_BUFFER_BYTES);
-    for (source, destination) in framebuffer.iter().zip(rgba_buffer.chunks_exact_mut(4)) {
+    expand_indexed_pixels(framebuffer, rgba_buffer, palette);
+}
+
+/// Expands indexed pixels into RGBA bytes using a palette lookup per pixel.
+///
+/// This helper is shared by render/UI paths that upload indexed source data into
+/// RGBA textures.
+pub fn expand_indexed_pixels(indexed_pixels: &[u8], rgba_buffer: &mut [u8], palette: &Palette) {
+    debug_assert_eq!(rgba_buffer.len(), indexed_pixels.len() * 4);
+    for (source, destination) in indexed_pixels.iter().zip(rgba_buffer.chunks_exact_mut(4)) {
         destination.copy_from_slice(&palette.rgba(*source));
     }
 }
