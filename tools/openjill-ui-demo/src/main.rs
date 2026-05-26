@@ -78,7 +78,7 @@ fn load_tileset_texture(creation_context: &eframe::CreationContext<'_>) -> Resul
     let data_dir = std::env::var("OPENJILL_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("data/original/JILL1"));
-    let sha_path = resolve_sha_path(&data_dir);
+    let sha_path = resolve_sha_path(&data_dir)?;
     let bytes = fs::read(&sha_path).map_err(|error| format!("failed to read {}: {error}", sha_path.display()))?;
     let sha = ShaFile::from_bytes(bytes)
         .map_err(|error| format!("failed to parse {}: {error}", sha_path.display()))?;
@@ -91,10 +91,13 @@ fn load_tileset_texture(creation_context: &eframe::CreationContext<'_>) -> Resul
     Ok(TileGridTexture::from_tileset(render_state, tileset, &palette))
 }
 
-fn resolve_sha_path(data_dir: &Path) -> PathBuf {
+fn resolve_sha_path(data_dir: &Path) -> Result<PathBuf, String> {
     let candidate = data_dir.join("JILL1.SHA");
     if candidate.exists() {
-        return candidate;
+        return Ok(candidate);
     }
-    data_dir.to_path_buf()
+    Err(format!(
+        "failed to locate JILL1.SHA at {} (set OPENJILL_DATA_DIR to the Jill data directory)",
+        candidate.display()
+    ))
 }

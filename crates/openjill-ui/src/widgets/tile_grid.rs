@@ -46,7 +46,7 @@ impl TileGridTexture {
             }
 
             let mut tile_rgba = vec![0_u8; expected_pixels * 4];
-            expand_indexed_pixels(&tile.indexed_pixels()[..expected_pixels], &mut tile_rgba, palette);
+            expand_indexed_pixels(tile.indexed_pixels(), &mut tile_rgba, palette);
             let dst_x = (tile_index as u32) * cell_width;
 
             for row in 0..tile_height as usize {
@@ -178,7 +178,7 @@ impl<'a> TileGrid<'a> {
             };
         }
 
-        let columns = self.columns.max(1);
+        let columns = self.columns;
         let rows = self.texture.tile_count.div_ceil(columns);
         let tile_size = Vec2::new(
             self.texture.cell_size[0] as f32 * self.zoom,
