@@ -158,6 +158,7 @@ impl egui::Widget for PalettePicker<'_> {
     }
 }
 
+/// Formats one swatch tooltip as hex, decimal RGB tuple, and palette index.
 fn swatch_tooltip(index: u8, rgb: [u8; 3]) -> String {
     let [r, g, b] = rgb;
     format!(
