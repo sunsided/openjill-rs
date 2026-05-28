@@ -7,6 +7,46 @@ use openjill_core::{BackgroundGrid, layout::BLOCK_SIZE_I};
 
 use crate::asset_cache::AssetCache;
 
+/// Tiny dependency-free xorshift32 PRNG for enemy behaviour that mirrors the
+/// Java reference's `Math.random()` calls (bee speed ranges, crab climb
+/// trigger).
+///
+/// Seeded per entity (typically from its spawn coordinates) so behaviour is
+/// reproducible in tests while still varying between instances, standing in
+/// for Java's global `Math.random()`.
+pub(crate) struct EnemyRng {
+    state: u32,
+}
+
+impl EnemyRng {
+    /// Creates an RNG from `seed` (forced non-zero so xorshift never sticks
+    /// at zero).
+    pub(crate) fn new(seed: u32) -> Self {
+        Self {
+            state: seed | 0x9E37_79B9,
+        }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.state = x;
+        x
+    }
+
+    /// Uniform integer in `[lo, hi)`, mirroring Java
+    /// `(int)(Math.random() * (hi - lo)) + lo`.  Returns `lo` when the range
+    /// is empty.
+    pub(crate) fn range(&mut self, lo: i32, hi: i32) -> i32 {
+        if hi <= lo {
+            return lo;
+        }
+        lo + (self.next_u32() % ((hi - lo) as u32)) as i32
+    }
+}
+
 /// Returns the pixel dimensions `(w, h)` of the first tile in the SHA
 /// tileset identified by `tileset_index`.
 ///
