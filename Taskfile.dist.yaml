@@ -156,6 +156,20 @@ tasks:
     cmds:
       - cargo run -p openjill-cfg-view -- --file {{.DATA_DIR}}/JILL1.CFG {{.CLI_ARGS}}
 
+  data:extract:all:
+    desc: Run every per-format extractor into OUT (default extract/; DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1, JN defaults to 1.JN1)
+    vars:
+      DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
+      OUT: '{{.OUT | default "extract"}}'
+      JN: '{{.JN | default "1.JN1"}}'
+    cmds:
+      - mkdir -p {{.OUT}}/sha
+      - cargo run -p openjill-sha-extract -- --file {{.DATA_DIR}}/JILL1.SHA --out {{.OUT}}/sha
+      - cargo run -p openjill-jn-extract -- --file {{.DATA_DIR}}/{{.JN}} --out {{.OUT}}/{{.JN}}.png
+      - cargo run -p openjill-dma-extract -- --file {{.DATA_DIR}}/JILL.DMA --csv --out {{.OUT}}/dma.csv
+      - cargo run -p openjill-vcl-extract -- --file {{.DATA_DIR}}/JILL1.VCL --out {{.OUT}}/vcl.txt
+      - cargo run -p openjill-cfg-extract -- --file {{.DATA_DIR}}/JILL1.CFG --out {{.OUT}}/cfg.txt
+
   data:run:
     internal: true
     env:
