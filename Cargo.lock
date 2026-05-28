@@ -2062,6 +2062,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "openjill-sha-extract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert2",
+ "clap",
+ "image",
+ "openjill-core",
+ "openjill-data",
+ "openjill-export",
+]
+
+[[package]]
 name = "openjill-ui"
 version = "0.1.0"
 dependencies = [
