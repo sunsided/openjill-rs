@@ -299,19 +299,16 @@ impl BulletEntity {
     /// the projectile on map exit would permanently consume the
     /// player's only knife when throwing near the screen edge.
     fn tick_launch(&mut self, backgrounds: &BackgroundGrid) {
-        let nx = self.x + self.xd;
-        let ny = self.y + self.yd;
-        if !self.in_map(nx, ny) || overlaps_solid(backgrounds, nx, ny, self.w, self.h) {
-            return;
-        }
-        self.x = nx;
-        self.y = ny;
+        self.step_x(backgrounds, self.xd);
+        self.step_y(backgrounds, self.yd);
     }
 
     /// Follow phase: adjust `xd`/`yd` one pixel per tick toward the last
-    /// observed player position, clamped to the per-axis maximum speeds.
-    /// Wall contact stops further motion this tick but does not remove
-    /// the projectile so the return trajectory survives bumping a wall.
+    /// observed player position, clamped to the per-axis maximum speeds, then
+    /// move each axis independently so the boomerang slides flush along a wall
+    /// back toward the player instead of wedging when one axis is blocked.
+    /// Mirrors Java `KniveManager.followPlayer`, which calls `moveLeftRight`
+    /// and `moveUpDown` as two separate snapping moves.
     fn tick_follow(&mut self, backgrounds: &BackgroundGrid) {
         let (px, py) = (self.player_bbox.x, self.player_bbox.y);
         if self.x < px && self.xd < RIGHT_MAX_X {
@@ -324,10 +321,35 @@ impl BulletEntity {
         } else if self.y > py && self.yd > UP_MAX_Y {
             self.yd -= 1;
         }
-        let nx = self.x + self.xd;
-        let ny = self.y + self.yd;
-        if self.in_map(nx, ny) && !overlaps_solid(backgrounds, nx, ny, self.w, self.h) {
+        self.step_x(backgrounds, self.xd);
+        self.step_y(backgrounds, self.yd);
+    }
+
+    /// Slides the projectile horizontally by `dx`, one pixel at a time, stopping
+    /// flush against a solid cell or the map edge.  Mirrors Java
+    /// `UtilityObjectEntity.moveObjectLeft`/`moveObjectRight` (a partial move
+    /// that snaps to the wall) rather than refusing the whole step.
+    fn step_x(&mut self, backgrounds: &BackgroundGrid, dx: i32) {
+        let step = dx.signum();
+        for _ in 0..dx.abs() {
+            let nx = self.x + step;
+            if !self.in_map(nx, self.y) || overlaps_solid(backgrounds, nx, self.y, self.w, self.h) {
+                break;
+            }
             self.x = nx;
+        }
+    }
+
+    /// Slides the projectile vertically by `dy`, one pixel at a time, stopping
+    /// flush against a solid cell or the map edge.  Mirrors Java
+    /// `moveObjectUp`/`moveObjectDown`.
+    fn step_y(&mut self, backgrounds: &BackgroundGrid, dy: i32) {
+        let step = dy.signum();
+        for _ in 0..dy.abs() {
+            let ny = self.y + step;
+            if !self.in_map(self.x, ny) || overlaps_solid(backgrounds, self.x, ny, self.w, self.h) {
+                break;
+            }
             self.y = ny;
         }
     }
@@ -712,16 +734,47 @@ mod tests {
         // `BulletEntity::in_map` uses the constant
         // BACKGROUND_GRID_WIDTH * BLOCK_SIZE_I = 2048 px. Place the
         // bullet just inside the right edge so one tick at xd = 16
-        // pushes it past 2048.
+        // pushes it past 2048; it should slide flush to the edge
+        // (2048 - width = 2032) rather than overrun or be removed.
         let mut bullet = BulletEntity::with_velocity(2030, 32, 16, 16, 16, 0);
         let input = openjill_core::ActiveInput::new();
         let state = RuntimeState::new();
         let mut dispatcher = MessageDispatcher::new();
         bullet.update(&input, &state, &grid, &mut dispatcher);
-        assert_eq!(bullet.x, 2030, "launch must clamp at the map edge");
+        assert_eq!(bullet.x, 2032, "launch must slide flush to the map edge");
         assert!(
             !bullet.should_remove(),
             "off-map launch clamp must not remove the projectile"
         );
+    }
+
+    /// Unit under test: the follow phase resolves X and Y independently so a
+    /// returning boomerang slides flush along a wall instead of wedging.
+    ///
+    /// Regression: the old combined all-or-nothing step froze BOTH axes when
+    /// the combined destination overlapped a wall, stranding the knife. Java
+    /// `KniveManager.followPlayer` moves left/right and up/down separately.
+    #[test]
+    fn follow_slides_each_axis_independently_against_wall() {
+        let mut grid = synthetic_grid(8, 8, CellKind::Air);
+        // Solid wall column at cell x = 1 (pixels 16..32), full height.
+        for cy in 0..8 {
+            set_cell(&mut grid, 1, cy, CellKind::Solid);
+        }
+        // 8x8 knife just right of the wall, homing up-left toward the player.
+        let mut bullet = BulletEntity::with_velocity(34, 40, 8, 8, -8, -4);
+        bullet.state_count = LAUNCH_END + 1; // follow phase
+        bullet.observe_player(Rect::new(0, 0, 8, 8));
+
+        let input = openjill_core::ActiveInput::new();
+        let state = RuntimeState::new();
+        let mut dispatcher = MessageDispatcher::new();
+        bullet.update(&input, &state, &grid, &mut dispatcher);
+
+        // X slides flush to the wall's right edge (32) instead of refusing; Y
+        // still advances upward by the full step (40 - 4 = 36).
+        assert_eq!(bullet.x, 32, "knife slides flush against the wall");
+        assert_eq!(bullet.y, 36, "knife still climbs on the unblocked Y axis");
+        assert!(!bullet.should_remove(), "knife must not be lost");
     }
 }
