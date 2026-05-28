@@ -142,6 +142,20 @@ tasks:
     cmds:
       - cargo run -p openjill-vcl-extract -- --file {{.DATA_DIR}}/JILL1.VCL {{.CLI_ARGS}}
 
+  data:cfg:extract:
+    desc: Dump JILL1.CFG high scores and save slots (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1; pass flags like --scores/--saves/--json via --)
+    vars:
+      DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
+    cmds:
+      - cargo run -p openjill-cfg-extract -- --file {{.DATA_DIR}}/JILL1.CFG {{.CLI_ARGS}}
+
+  data:cfg:view:
+    desc: Open the read-only CFG inspector GUI (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1; pass flags via --)
+    vars:
+      DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
+    cmds:
+      - cargo run -p openjill-cfg-view -- --file {{.DATA_DIR}}/JILL1.CFG {{.CLI_ARGS}}
+
   data:run:
     internal: true
     env:
