@@ -33,4 +33,5 @@
 JILL1/
 **.local*.*
 *.png
+/extract/
 .gitnexus
