@@ -15,7 +15,7 @@ pub const DEFAULT_EXTENSIONS: &[&str] = &["sha", "jn1", "dma", "vcl", "cfg"];
 enum FileTreeEntry {
     /// A directory node rendered as a collapsible header.
     Dir {
-        /// Path to this directory.
+        /// Absolute path to this directory (canonicalized when possible).
         path: PathBuf,
         /// Display name (last path component).
         name: String,
@@ -25,7 +25,7 @@ enum FileTreeEntry {
     },
     /// A file whose extension matched the active filter.
     File {
-        /// Path to this file.
+        /// Absolute path to this file (canonicalized when possible).
         path: PathBuf,
         /// Display name (filename only).
         name: String,
@@ -186,7 +186,7 @@ pub struct FileTreeOutput {
 pub struct FileTree<'a> {
     /// Pre-scanned file tree state.
     state: &'a mut FileTreeState,
-    /// Currently selected absolute path; updated on click.
+    /// Currently selected path; updated on click.
     selected: &'a mut Option<PathBuf>,
 }
 
