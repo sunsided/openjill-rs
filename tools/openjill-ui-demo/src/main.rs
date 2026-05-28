@@ -125,10 +125,7 @@ impl eframe::App for DemoApp {
 
         ui.separator();
         ui.heading("openjill_ui::widgets::FileTree");
-        ui.label(format!(
-            "Root: {}",
-            self.file_tree_state.root().display()
-        ));
+        ui.label(format!("Root: {}", self.file_tree_state.root().display()));
         egui::ScrollArea::vertical()
             .id_salt("file_tree_scroll")
             .max_height(300.0)

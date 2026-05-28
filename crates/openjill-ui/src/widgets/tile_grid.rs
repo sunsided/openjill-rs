@@ -18,7 +18,11 @@ pub struct TileGridTexture {
 
 impl TileGridTexture {
     /// Builds a GPU texture atlas for one SHA tileset.
-    pub fn from_tileset(render_state: &RenderState, tileset: &ShaTileSet, palette: &Palette) -> Self {
+    pub fn from_tileset(
+        render_state: &RenderState,
+        tileset: &ShaTileSet,
+        palette: &Palette,
+    ) -> Self {
         let cell_width = tileset
             .tiles()
             .iter()
