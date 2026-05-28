@@ -13,6 +13,7 @@ members = [
     "tools/openjill-sha-edit",
     "tools/openjill-jn-extract",
     "tools/openjill-jn-view",
+    "tools/openjill-dma-extract",
     "crates/openjill-export",
 ]
 resolver = "3"

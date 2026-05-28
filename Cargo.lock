@@ -2014,6 +2014,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "openjill-dma-extract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert2",
+ "clap",
+ "openjill-data",
+ "openjill-export",
+ "serde_json",
+]
+
+[[package]]
 name = "openjill-dump"
 version = "0.1.0"
 dependencies = [
