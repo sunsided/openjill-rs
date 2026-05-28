@@ -20,7 +20,8 @@ From `PORT.md`, this phase references the Java modules below to map initial Rust
   - `crates/openjill-render`
   - `crates/openjill-audio`
   - `crates/openjill-cli`
-  - `tools/openjill-dump`
+  - `tools/openjill-dump` (foundation stub; retired in Epic 17 once the
+    per-format `tools/openjill-*` binaries superseded it)
 - Port planning docs location:
   - `docs/port/`
   - `docs/port/01-workspace-foundation.md`

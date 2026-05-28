@@ -37,8 +37,8 @@ Rust crates that this phase expects to touch:
   `[workspace.dependencies]`.
 
 Do not add `wgpu`, `winit`, or any GPU crate as a dependency of
-`openjill-data`, `openjill-core`, or `tools/openjill-dump`. The renderer must
-remain absent from pure logic and parser crates.
+`openjill-data`, `openjill-core`, or the `tools/openjill-*-extract` CLIs. The
+renderer must remain absent from pure logic and parser crates.
 
 ## Required data files for manual checks
 

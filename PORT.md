@@ -163,7 +163,12 @@ crates/
   openjill-audio/
   openjill-cli/
 tools/
-  openjill-dump/
+  openjill-sha-extract/   openjill-sha-edit/
+  openjill-jn-extract/    openjill-jn-view/
+  openjill-dma-extract/
+  openjill-vcl-extract/
+  openjill-cfg-extract/   openjill-cfg-view/
+  openjill-ui-demo/
 ```
 
 Suggested crate responsibilities:
@@ -187,8 +192,12 @@ Suggested crate responsibilities:
   sound/music decoding once the DOS data format is understood.
 - `openjill-cli`: user entrypoint. Commands should include `run`,
   `data verify`, and eventually `dump`.
-- `tools/openjill-dump`: optional developer tool for dumping JN maps, SHA
-  atlases, DMA tables, and VCL text. This replaces Java extractor modules.
+- `tools/openjill-*-extract` / `tools/openjill-*-{edit,view}`: per-format
+  developer tools that replace the Java extractor modules. The `*-extract`
+  binaries dump SHA atlases, JN maps, DMA tables, VCL text, and CFG
+  scores/saves; `sha-edit`, `jn-view`, and `cfg-view` are read-only egui
+  viewers built on the shared `openjill-ui` widgets and `openjill-export`
+  converters.
 
 Use dependency direction:
 
@@ -196,7 +205,8 @@ Use dependency direction:
 openjill-cli -> openjill-game -> openjill-core -> openjill-data
                          \-> openjill-render
                          \-> openjill-audio
-tools/openjill-dump -> openjill-data -> openjill-render
+tools/openjill-*-extract -> openjill-export -> openjill-data
+tools/openjill-{sha-edit,jn-view,cfg-view} -> openjill-ui + openjill-export
 ```
 
 `openjill-data` must not depend on rendering or gameplay. `openjill-core` should

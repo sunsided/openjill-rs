@@ -25,10 +25,13 @@ The Rust implementation should inspect and touch these areas:
   belong below the CLI.
 - `crates/openjill-cli`: user-facing `openjill-rs data verify` and
   `openjill-rs dump ...` commands.
-- `tools/openjill-dump`: developer convenience binary only, with no separate
-  command contract for this epic. Child issues target `openjill-rs` command
-  shapes exclusively; `openjill-dump` may remain a stub or become a thin
-  passthrough wrapper without adding new flags or output behavior.
+- Per-format developer tools under `tools/` (added in Epics 12-16:
+  `openjill-sha-extract`, `openjill-jn-extract`, `openjill-dma-extract`,
+  `openjill-vcl-extract`, `openjill-cfg-extract`, plus the `sha-edit`,
+  `jn-view`, and `cfg-view` viewers) provide the standalone dumping and
+  inspection tooling. The earlier `tools/openjill-dump` stub has been removed
+  (Epic 17); the in-engine aggregate dump remains the `openjill-rs dump ...`
+  command described below.
 - `docs/port/03-asset-debug-tools.md`: this decision-complete subplan.
 
 Do not add dependencies from `openjill-data` to `openjill-cli`,
@@ -47,8 +50,8 @@ openjill-rs dump sha [--data-dir <path>] [--output <dir>] [--format json] [--for
 openjill-rs dump jn [--data-dir <path>] [--output <dir>] [--format json] [--force]
 ```
 
-There are no additional required user-facing commands in
-`tools/openjill-dump` for this epic.
+Standalone per-format dumping now lives in the dedicated `tools/openjill-*`
+binaries (Epics 12-16) rather than a single aggregate dump crate.
 
 `--data-dir` resolution is shared by verification and dumps:
 
