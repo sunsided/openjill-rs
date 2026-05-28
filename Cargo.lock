@@ -2052,15 +2052,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openjill-dump"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "openjill-data",
- "openjill-render",
-]
-
-[[package]]
 name = "openjill-export"
 version = "0.1.0"
 dependencies = [
