@@ -3,23 +3,23 @@
 //! Mirrors `org.jill.game.entities.obj.FrogManager`: two-state machine.
 //! On floor (`on_floor = true`): counts ticks; after `counterBeforeJump`
 //! ticks launches a gravity arc toward the player.  In air (`on_floor =
-//! false`): moves horizontally (stops against walls, no direction reversal),
-//! applies gravity (+1 per tick), lands when `floor_below` returns true while
-//! descending.
+//! false`): slides horizontally (flush against walls, no direction reversal)
+//! and vertically (flush against ceilings/floors via [`slide_y`]), applies
+//! gravity (+1 per tick), and lands when a downward slide is fully blocked.
 //!
 //! Tileset/tile from `object_conf.json`: `tileSet = 63`, `tile = 0`,
 //! `numberTileSet = 6`.  Three tiles per direction (right/left):
 //!   tile 0/3 = on-floor frame, tile 1/4 = airborne frame, tile 2/5 = apex.
 //! SHA header[63] confirms: 6 tiles, 14×10 px each.
 
-use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
+use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
 use openjill_core::{
     ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
     ObjectEntity, Rect, RenderCommand, RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
-use super::enemy_shared::{blocked_ahead, floor_below, sprite_dims};
+use super::enemy_shared::{slide_x, slide_y, sprite_dims};
 use crate::asset_cache::AssetCache;
 
 /// SHA tileset that owns the frog frames.
@@ -148,31 +148,43 @@ impl ObjectEntity for FrogEntity {
                 self.y -= 1;
             }
         } else {
-            // Air state: move horizontally without gap check; stop at walls (no reversal).
-            if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed) {
-                self.x += self.x_speed;
-            }
+            // Air state: mirrors Java `FrogManager.msgUpdate`'s airborne branch.
+            // Horizontal: slide flush, stopping at walls (no reversal in air).
+            slide_x(
+                backgrounds,
+                &mut self.x,
+                self.y,
+                self.w,
+                self.h,
+                self.x_speed,
+            );
 
-            // Vertical arc: apply movement then gravity.
-            self.y += self.y_speed;
-            if self.y_speed < FALL_SPEED_MAX {
-                self.y_speed += 1;
-            }
-
-            // Land when descending and floor reached. The Java reference
-            // `UtilityObjectEntity.moveObjectDown` walks pixel-by-pixel
-            // and stops on first contact; the Rust port integrates
-            // `y += y_speed` in one step, which can overshoot a fast
-            // fall into the floor cell. Snap the frog so its bottom
-            // edge aligns with the top of the landed-on cell, otherwise
-            // the next-tick patrol probes report `blocked_ahead` and
-            // the frog wiggles in place.
-            if self.y_speed > 0 && floor_below(backgrounds, self.x, self.y, self.w, self.h) {
-                let foot_cell = (self.y + self.h).div_euclid(BLOCK_SIZE_I);
-                self.y = foot_cell * BLOCK_SIZE_I - self.h;
+            // Vertical: slide flush per axis so the frog cannot pass through a
+            // ceiling on the way up nor overshoot into the floor on the way
+            // down (Java `moveObjectUp`/`moveObjectDown`).
+            let moved = slide_y(
+                backgrounds,
+                self.x,
+                &mut self.y,
+                self.w,
+                self.h,
+                self.y_speed,
+            );
+            if self.y_speed < 0 && moved == 0 {
+                // Hit a ceiling while rising: cancel upward speed
+                // (`if (!moveObjectUp(...)) ySpeed = Y_SPEED_MIDDLE`).
+                self.y_speed = 0;
+            } else if self.y_speed > 0 && moved == 0 {
+                // Could not descend: landed (`if (!moveObjectDown(...))
+                // state = stateOnFloor; counter = 0`).
                 self.y_speed = 0;
                 self.on_floor = true;
                 self.jump_counter = 0;
+            }
+
+            // Gravity, applied after the move (`if (ySpeed < ySpeedMax) ySpeed++`).
+            if self.y_speed < FALL_SPEED_MAX {
+                self.y_speed += 1;
             }
         }
     }
