@@ -2153,6 +2153,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "openjill-vcl-extract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert2",
+ "clap",
+ "openjill-data",
+ "openjill-export",
+ "serde_json",
+]
+
+[[package]]
 name = "orbclient"
 version = "0.3.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
