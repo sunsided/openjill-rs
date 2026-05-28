@@ -1995,6 +1995,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "openjill-cfg-view"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "eframe",
+ "egui",
+ "openjill-data",
+ "openjill-export",
+ "openjill-ui",
+ "serde_json",
+]
+
+[[package]]
 name = "openjill-cli"
 version = "0.1.0"
 dependencies = [
