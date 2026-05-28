@@ -187,6 +187,13 @@ tasks:
       - rm -rf data/original
       - rm -f data/jill-of-the-jungle.zip
 
+  data:extract:clean:
+    desc: Remove the output directory written by data:extract:all (OUT, default extract/)
+    vars:
+      OUT: '{{.OUT | default "extract"}}'
+    cmds:
+      - rm -rf {{.OUT}}
+
   binary:fetch:
     desc: Download Jill of the Jungle ZIP and unpack it into data/original
     deps: [data:clean]
