@@ -14,6 +14,7 @@ members = [
     "tools/openjill-jn-extract",
     "tools/openjill-jn-view",
     "tools/openjill-dma-extract",
+    "tools/openjill-vcl-extract",
     "crates/openjill-export",
 ]
 resolver = "3"
