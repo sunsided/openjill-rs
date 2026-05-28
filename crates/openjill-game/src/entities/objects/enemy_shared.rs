@@ -3,7 +3,7 @@
 //! These are direct translations of `UtilityObjectEntity.giveBlockAtRight`,
 //! `giveBlockAtLeft`, and `checkIfFloorUnderObject` from the Java reference.
 
-use openjill_core::{BackgroundGrid, layout::BLOCK_SIZE_I};
+use openjill_core::{BackgroundEntity, BackgroundGrid, layout::BLOCK_SIZE_I};
 
 use crate::asset_cache::AssetCache;
 
@@ -121,6 +121,36 @@ pub(crate) fn floor_under_next(
         .get(cell_x, cell_y)
         .map(|c| c.blocks_vertical(1))
         .unwrap_or(false)
+}
+
+/// `true` when the entity can grab a vine at this position.
+///
+/// Mirror of `UtilityObjectEntity.isClimbing`: the grab only engages when the
+/// entity's X is aligned to a block column (`x % blockSize == 0`); then any
+/// climbable (`isVine`) cell spanned by the bounding box counts.
+pub(crate) fn is_on_vine(backgrounds: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
+    if x.rem_euclid(BLOCK_SIZE_I) != 0 {
+        return false;
+    }
+    let start_x = x.div_euclid(BLOCK_SIZE_I);
+    let end_x = (x + w - 1).div_euclid(BLOCK_SIZE_I);
+    let start_y = y.div_euclid(BLOCK_SIZE_I);
+    let end_y = (y + h - 1).div_euclid(BLOCK_SIZE_I);
+    for cx in start_x..=end_x {
+        for cy in start_y..=end_y {
+            if cx < 0 || cy < 0 {
+                continue;
+            }
+            if backgrounds
+                .get(cx as usize, cy as usize)
+                .map(BackgroundEntity::is_climbable)
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Slides the bounding box horizontally toward `dx`, one pixel at a time,
