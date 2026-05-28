@@ -11,6 +11,7 @@ members = [
     "tools/openjill-ui-demo",
     "tools/openjill-sha-extract",
     "tools/openjill-sha-edit",
+    "tools/openjill-jn-extract",
     "crates/openjill-export",
 ]
 resolver = "3"
