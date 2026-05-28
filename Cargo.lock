@@ -2063,6 +2063,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "openjill-jn-view"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "eframe",
+ "egui",
+ "image",
+ "openjill-core",
+ "openjill-data",
+ "openjill-export",
+ "openjill-ui",
+]
+
+[[package]]
 name = "openjill-render"
 version = "0.1.0"
 dependencies = [
