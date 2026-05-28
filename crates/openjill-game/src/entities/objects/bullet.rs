@@ -63,6 +63,18 @@ const UP_MAX_Y: i32 = -4;
 ///
 /// REVERSE-ENGINEERED: `KniveManager.moveDown = 1`.
 const FALL_STEP_Y: i32 = 1;
+/// SHA tileset that owns the knife frames.
+///
+/// REVERSE-ENGINEERED: `KNIVE = "14,13"` in `object_conf.json` (tile 14,
+/// tileset 13).
+const KNIFE_TILESET: u8 = 13;
+/// Width/height of a thrown-knife sprite in pixels.
+///
+/// REVERSE-ENGINEERED: SHA tileset 13 carries five 10x10 px knife frames.
+/// Java `KniveManager` sizes its bounding box from the image, so the thrown
+/// knife collides as a 10x10 box rather than a full 16x16 block.
+pub(crate) const KNIFE_W: i32 = 10;
+pub(crate) const KNIFE_H: i32 = 10;
 
 /// Thrown-knife / bullet projectile entity.
 pub struct BulletEntity {
@@ -212,7 +224,7 @@ impl ObjectEntity for BulletEntity {
         }
         let frame = ((self.state_count.max(0) / 2) as u16) % 5;
         Some(RenderCommand::Blit {
-            tileset: 13,
+            tileset: KNIFE_TILESET,
             tile: frame,
             x: self.x,
             y: self.y,

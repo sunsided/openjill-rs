@@ -19,7 +19,7 @@ use openjill_core::{
 };
 use openjill_data::jn::JnObject;
 
-use super::enemy_shared::{blocked_ahead, floor_below, floor_under_next, sprite_dims};
+use super::enemy_shared::{blocked_ahead, floor_below, sprite_dims};
 use crate::asset_cache::AssetCache;
 
 /// SHA tileset that owns the frog frames.
@@ -128,15 +128,10 @@ impl ObjectEntity for FrogEntity {
         }
 
         if self.on_floor {
-            // Floor state: patrol with gap and wall checks; reverse on fail.
-            if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-                && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-            {
-                self.x += self.x_speed;
-            } else {
-                self.x_speed = -self.x_speed;
-            }
-
+            // Floor state: the frog sits still and only counts ticks. Java
+            // `FrogManager.msgUpdate` does no horizontal movement while
+            // grounded (the floor branch is just `this.counter++`); it waits
+            // for `counterBeforeJump`, then launches toward the player.
             self.jump_counter += 1;
             if self.jump_counter >= JUMP_PERIOD {
                 self.jump_counter = 0;
@@ -146,10 +141,11 @@ impl ObjectEntity for FrogEntity {
                 // `xSpeed = xSpeedMax` and flip the sign when the player
                 // is to the left (`xd = PLAYER_POSITION.getX() - this.x;
                 // if (xd < 0) this.xSpeed *= -1;`). This makes the frog
-                // chase the player horizontally instead of patrolling
-                // blindly.
+                // chase the player horizontally.
                 let dir = if self.player_x < self.x { -1 } else { 1 };
                 self.x_speed = X_SPEED * dir;
+                // Java `this.y--` at launch ("picture has greater size").
+                self.y -= 1;
             }
         } else {
             // Air state: move horizontally without gap check; stop at walls (no reversal).
@@ -289,10 +285,6 @@ mod tests {
         BackgroundGrid::new(rows)
     }
 
-    fn set_solid(grid: &mut BackgroundGrid, x: usize, y: usize, solid: bool) {
-        grid.cells[y][x] = Box::new(SolidIf { solid });
-    }
-
     fn synthetic_frog(x: i32, y: i32) -> openjill_data::jn::JnObject {
         const OBJECT_RECORD_BYTES: usize = 31;
         let total = 128 * 64 * 2 + 2 + OBJECT_RECORD_BYTES + 70;
@@ -307,20 +299,32 @@ mod tests {
         jn.objects()[0].clone()
     }
 
-    /// `FrogEntity` reverses direction after hitting a wall.
+    /// Grounded `FrogEntity` stays still and only counts ticks, then launches
+    /// toward the player after `JUMP_PERIOD` ticks (Java `FrogManager`:
+    /// floor state does no horizontal movement, just `counter++`).
     #[test]
-    fn frog_reverses_direction_at_wall() {
+    fn frog_waits_on_floor_then_jumps_toward_player() {
         let cache = AssetCache::synthetic();
-        let mut frog = FrogEntity::new(&synthetic_frog(32, 32), &cache);
-        let mut backgrounds = grid_with_floor(8, 6, 3);
-        set_solid(&mut backgrounds, 3, 2, true);
+        let mut frog = FrogEntity::new(&synthetic_frog(64, 32), &cache);
+        let backgrounds = grid_with_floor(8, 6, 3);
         let input = ActiveInput::default();
         let state = RuntimeState::new();
         let mut dispatcher = MessageDispatcher::new();
 
+        // Player to the left of the frog.
+        frog.observe_player(Rect::new(0, 32, 16, 16));
+
+        // While grounded the frog does not move horizontally.
+        for _ in 0..(JUMP_PERIOD - 1) {
+            frog.update(&input, &state, &backgrounds, &mut dispatcher);
+            assert_eq!(frog.bounding_box().x, 64, "grounded frog must not patrol");
+            assert!(frog.on_floor, "frog still grounded before jump");
+        }
+
+        // The launch tick fires the jump toward the player (to the left).
         frog.update(&input, &state, &backgrounds, &mut dispatcher);
-        assert_eq!(frog.bounding_box().x, 32, "blocked: no movement");
-        assert!(frog.x_speed < 0, "direction reversed after wall");
+        assert!(!frog.on_floor, "frog launched into the air");
+        assert!(frog.x_speed < 0, "frog jumps toward the player on the left");
     }
 
     /// `on_kill` with damage >= 1 marks dead; `draw` returns `None`.

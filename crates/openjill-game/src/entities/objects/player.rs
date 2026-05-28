@@ -30,6 +30,10 @@ const FIRE_COOLDOWN_TICKS: i32 = 8;
 ///
 /// Matches the speed used by `BulletManager` in the Java reference.
 const BULLET_SPEED_PX: i32 = 8;
+/// Downward spawn offset applied to a thrown knife, in pixels.
+///
+/// Matches Java `KniveManager` `initY = 2` (`this.y += initY` on launch).
+const KNIFE_SPAWN_Y_OFFSET: i32 = 2;
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
@@ -364,14 +368,18 @@ impl ObjectEntity for PlayerEntity {
             let bullet_x = if dir > 0 {
                 self.x + self.w
             } else {
-                self.x - BLOCK_SIZE_I
+                // Left-facing: place the knife's box just left of the player,
+                // sized to the real 10x10 knife sprite (not a full block).
+                self.x - crate::entities::objects::bullet::KNIFE_W
             };
             dispatcher.send(
                 MessageType::CreateObject,
                 MessagePayload::SpawnAt {
                     object_type: 36,
                     x: bullet_x,
-                    y: self.y,
+                    // Java `KniveManager` applies `this.y += initY` (initY = 2)
+                    // on launch so the knife leaves the hand slightly lowered.
+                    y: self.y + KNIFE_SPAWN_Y_OFFSET,
                     xd: dir * BULLET_SPEED_PX,
                     yd: 0,
                 },
@@ -983,20 +991,34 @@ fn has_floor_below(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> boo
     false
 }
 
-/// Returns `true` when the cell at the player's centre is climbable.
+/// Returns `true` when the player can grab a vine at this position.
 ///
-/// Mirrors `UtilityObjectEntity.isClimbing`: the reference samples the cell
-/// directly under the centre of the object's bounding box and consults the
-/// `isVine` flag (which we expose as `is_climbable`).
+/// Faithful port of `UtilityObjectEntity.isClimbing`: the grab only engages
+/// when the player's X is aligned to a block column (`x % blockSize == 0`);
+/// then any climbable (`isVine`) cell spanned by the bounding box counts.
 fn is_on_climbable(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
-    let cx = (x + w / 2).div_euclid(BLOCK_SIZE_I);
-    let cy = (y + h / 2).div_euclid(BLOCK_SIZE_I);
-    if cx < 0 || cy < 0 {
+    if x.rem_euclid(BLOCK_SIZE_I) != 0 {
         return false;
     }
-    grid.get(cx as usize, cy as usize)
-        .map(openjill_core::BackgroundEntity::is_climbable)
-        .unwrap_or(false)
+    let start_x = x.div_euclid(BLOCK_SIZE_I);
+    let end_x = (x + w - 1).div_euclid(BLOCK_SIZE_I);
+    let start_y = y.div_euclid(BLOCK_SIZE_I);
+    let end_y = (y + h - 1).div_euclid(BLOCK_SIZE_I);
+    for cx in start_x..=end_x {
+        for cy in start_y..=end_y {
+            if cx < 0 || cy < 0 {
+                continue;
+            }
+            if grid
+                .get(cx as usize, cy as usize)
+                .map(openjill_core::BackgroundEntity::is_climbable)
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Returns `true` when the rectangle `[x, x+w) x [y, y+h)` overlaps any cell

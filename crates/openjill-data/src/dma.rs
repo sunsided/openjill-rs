@@ -13,10 +13,10 @@ use std::fmt::{Display, Formatter};
 const TILESET_MASK: u8 = 0x3f;
 /// Flag bit indicating that the player can pass through the tile.
 const FLAG_PLAYER_THRU: u16 = 0x01;
-/// Flag bit set when the tile must NOT behave as a stair.
-const FLAG_NOT_STAIR: u16 = 0x02;
-/// Flag bit set when the tile must NOT behave as a vine.
-const FLAG_NOT_VINE: u16 = 0x04;
+/// Flag bit set when the tile behaves as a stair.
+const FLAG_STAIR: u16 = 0x02;
+/// Flag bit set when the tile behaves as a vine (climbable).
+const FLAG_VINE: u16 = 0x04;
 /// Flag bit indicating that the tile reacts to the touch event.
 const FLAG_MSG_TOUCH: u16 = 0x08;
 /// Flag bit indicating that the tile reacts to the draw event.
@@ -99,16 +99,19 @@ impl DmaEntry {
         (self.flags & FLAG_PLAYER_THRU) != 0
     }
 
-    /// Returns `true` when this tile behaves as a stair (default unless the
-    /// `FLAG_NOT_STAIR` bit is set).
+    /// Returns `true` when this tile behaves as a stair (the `FLAG_STAIR` bit
+    /// is set). Mirrors Java `BackgroundEntityImpl` `stair = (flag & F_STAIR)
+    /// != 0`.
     pub fn is_stair(&self) -> bool {
-        (self.flags & FLAG_NOT_STAIR) == 0
+        (self.flags & FLAG_STAIR) != 0
     }
 
-    /// Returns `true` when this tile behaves as a vine (default unless the
-    /// `FLAG_NOT_VINE` bit is set).
+    /// Returns `true` when this tile behaves as a vine / is climbable (the
+    /// `FLAG_VINE` bit is set). Mirrors Java `BackgroundEntityImpl` `vine =
+    /// (flag & F_VINE) != 0`; the bit-set tiles are the climbables (VNORM,
+    /// POLET, VINEBR, …).
     pub fn is_vine(&self) -> bool {
-        (self.flags & FLAG_NOT_VINE) == 0
+        (self.flags & FLAG_VINE) != 0
     }
 }
 
@@ -356,35 +359,33 @@ mod tests {
 
     /// Unit under test: the flag-helper accessors on `DmaEntry`.
     ///
-    /// Preconditions: two synthetic entries with carefully chosen flag bits —
-    /// one with all message bits set plus `FLAG_PLAYER_THRU` (and stair/vine
-    /// implicit), one with both `FLAG_NOT_STAIR` and `FLAG_NOT_VINE` set and
-    /// no message bits.
+    /// Preconditions: two synthetic entries — one with every flag bit set
+    /// (`0x3f`), one with no flag bits set (`0x00`).
     ///
     /// Invariants asserted: every helper resolves the corresponding flag
-    /// (`is_msg_*`, `is_player_thru`, `is_stair`, `is_vine`) consistently with
-    /// the OpenJill semantics, including the inverted meaning of the
-    /// stair/vine bits.
+    /// (`is_msg_*`, `is_player_thru`, `is_stair`, `is_vine`) with the Java
+    /// `BackgroundEntityImpl` semantics — a set bit means the behaviour is
+    /// enabled (stair/vine are climbable when their bit is set).
     #[test]
     fn preserves_flag_helper_semantics() {
-        let dma = DmaFile::from_bytes(dma_bytes(&[(1, 1, 1, 0x39, "A"), (2, 2, 2, 0x06, "B")]))
+        let dma = DmaFile::from_bytes(dma_bytes(&[(1, 1, 1, 0x3f, "A"), (2, 2, 2, 0x00, "B")]))
             .expect("DMA parse should succeed");
 
-        let all_messages = &dma.entries()[0];
-        check!(all_messages.is_msg_touch());
-        check!(all_messages.is_msg_draw());
-        check!(all_messages.is_msg_update());
-        check!(all_messages.is_player_thru());
-        check!(all_messages.is_stair());
-        check!(all_messages.is_vine());
+        let all_flags = &dma.entries()[0];
+        check!(all_flags.is_msg_touch());
+        check!(all_flags.is_msg_draw());
+        check!(all_flags.is_msg_update());
+        check!(all_flags.is_player_thru());
+        check!(all_flags.is_stair());
+        check!(all_flags.is_vine());
 
-        let no_stair_no_vine = &dma.entries()[1];
-        check!(!no_stair_no_vine.is_msg_touch());
-        check!(!no_stair_no_vine.is_msg_draw());
-        check!(!no_stair_no_vine.is_msg_update());
-        check!(!no_stair_no_vine.is_player_thru());
-        check!(!no_stair_no_vine.is_stair());
-        check!(!no_stair_no_vine.is_vine());
+        let no_flags = &dma.entries()[1];
+        check!(!no_flags.is_msg_touch());
+        check!(!no_flags.is_msg_draw());
+        check!(!no_flags.is_msg_update());
+        check!(!no_flags.is_player_thru());
+        check!(!no_flags.is_stair());
+        check!(!no_flags.is_vine());
     }
 
     /// Unit under test: `DmaReadError` reporting in `DmaFile::parse`.

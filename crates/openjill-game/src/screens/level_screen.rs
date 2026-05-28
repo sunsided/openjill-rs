@@ -1054,8 +1054,8 @@ impl LevelScreen {
                 _ => Box::new(BulletEntity::with_velocity(
                     x,
                     y,
-                    BLOCK_SIZE_I,
-                    BLOCK_SIZE_I,
+                    crate::entities::objects::bullet::KNIFE_W,
+                    crate::entities::objects::bullet::KNIFE_H,
                     xd,
                     yd,
                 )),
@@ -1507,14 +1507,22 @@ impl ScreenHandler for LevelScreen {
         if state.invincibility_ticks > 0 {
             state.invincibility_ticks -= 1;
         }
-        self.update_objects(input, state);
-        self.apply_platform_moves();
-        self.dispatch_player_touches(state);
-        self.dispatch_projectile_hits();
-        self.route_triggers();
-        self.reap_removed_objects();
-        self.spawn_objects();
-        self.apply_background_clears();
+        // Freeze the world while a level-change message box is up: the player
+        // and every object stop updating so input cannot move Jill behind the
+        // modal.  Mirrors Java `AbstractMenuJillLevel.run`, which skips
+        // `doRun()` whenever `levelMessageBox.isEnable()`.  Rendering, the
+        // overlay, and the `message_ticks` countdown below still run, so the
+        // dialogue paints over a frozen frame and the transition fires on time.
+        if self.pending.is_none() {
+            self.update_objects(input, state);
+            self.apply_platform_moves();
+            self.dispatch_player_touches(state);
+            self.dispatch_projectile_hits();
+            self.route_triggers();
+            self.reap_removed_objects();
+            self.spawn_objects();
+            self.apply_background_clears();
+        }
         self.update_viewport();
 
         let mut commands = self.render_base_frame();
