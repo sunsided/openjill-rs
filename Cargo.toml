@@ -9,6 +9,7 @@ members = [
     "crates/openjill-cli",
     "tools/openjill-dump",
     "tools/openjill-ui-demo",
+    "tools/openjill-sha-extract",
     "crates/openjill-export",
 ]
 resolver = "3"
