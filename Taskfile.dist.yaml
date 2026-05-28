@@ -98,6 +98,20 @@ tasks:
         vars:
           COMMAND: dump
 
+  data:sha:extract:
+    desc: Render JILL1.SHA tilesets to PNG (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1; pass flags via --)
+    vars:
+      DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
+    cmds:
+      - cargo run -p openjill-sha-extract -- --file {{.DATA_DIR}}/JILL1.SHA {{.CLI_ARGS}}
+
+  data:sha:edit:
+    desc: Open the read-only SHA viewer GUI (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1; pass flags via --)
+    vars:
+      DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
+    cmds:
+      - cargo run -p openjill-sha-edit -- --file {{.DATA_DIR}}/JILL1.SHA {{.CLI_ARGS}}
+
   data:run:
     internal: true
     env:
