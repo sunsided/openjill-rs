@@ -7,7 +7,6 @@ members = [
     "crates/openjill-ui",
     "crates/openjill-audio",
     "crates/openjill-cli",
-    "tools/openjill-dump",
     "tools/openjill-ui-demo",
     "tools/openjill-sha-extract",
     "tools/openjill-sha-edit",
