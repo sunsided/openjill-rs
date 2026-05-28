@@ -128,6 +128,13 @@ tasks:
     cmds:
       - cargo run -p openjill-jn-view -- --file {{.DATA_DIR}}/{{.JN}} {{.CLI_ARGS}}
 
+  data:dma:extract:
+    desc: Dump JILL.DMA tile metadata (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1; pass flags like --csv/--json via --)
+    vars:
+      DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
+    cmds:
+      - cargo run -p openjill-dma-extract -- --file {{.DATA_DIR}}/JILL.DMA {{.CLI_ARGS}}
+
   data:run:
     internal: true
     env:
