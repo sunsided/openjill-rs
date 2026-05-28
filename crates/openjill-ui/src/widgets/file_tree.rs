@@ -15,7 +15,7 @@ pub const DEFAULT_EXTENSIONS: &[&str] = &["sha", "jn1", "dma", "vcl", "cfg"];
 enum FileTreeEntry {
     /// A directory node rendered as a collapsible header.
     Dir {
-        /// Absolute path to this directory.
+        /// Path to this directory.
         path: PathBuf,
         /// Display name (last path component).
         name: String,
@@ -25,7 +25,7 @@ enum FileTreeEntry {
     },
     /// A file whose extension matched the active filter.
     File {
-        /// Absolute path to this file.
+        /// Path to this file.
         path: PathBuf,
         /// Display name (filename only).
         name: String,
@@ -52,11 +52,17 @@ pub struct FileTreeState {
 impl FileTreeState {
     /// Creates a new state rooted at `root` with the [`DEFAULT_EXTENSIONS`].
     ///
+    /// The root path is canonicalized so that all stored paths are absolute.
+    /// If canonicalization fails (e.g. the directory does not exist yet), the
+    /// original path is kept as-is.
+    ///
     /// The directory tree is scanned eagerly at construction.  Call
     /// [`FileTreeState::refresh`] later to pick up filesystem changes.
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let root = root.canonicalize().unwrap_or(root);
         let mut state = Self {
-            root: root.into(),
+            root,
             extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
             tree: Vec::new(),
         };
@@ -153,15 +159,15 @@ fn entry_display_name(entry: &FileTreeEntry) -> &str {
 pub struct FileTreeOutput {
     /// Combined egui response from all interactions in the tree.
     pub response: Response,
-    /// Absolute path of the file that was clicked this frame, if any.
-    pub selected_path: Option<PathBuf>,
+    /// Path of the file that was clicked this frame, if any.
+    pub clicked_path: Option<PathBuf>,
 }
 
 /// Egui widget that lists files under a root directory with extension filters.
 ///
 /// Presents a collapsible directory tree where files matching the configured
 /// extension list appear as selectable leaf labels.  Clicking a file updates
-/// the `selected` path and emits it through [`FileTreeOutput::selected_path`].
+/// the `selected` path and emits it through [`FileTreeOutput::clicked_path`].
 ///
 /// # Example
 ///
@@ -172,7 +178,7 @@ pub struct FileTreeOutput {
 /// // inside an egui frame:
 /// egui::ScrollArea::vertical().show(ui, |ui| {
 ///     let output = FileTree::new(&mut state, &mut selected).show(ui);
-///     if let Some(path) = output.selected_path {
+///     if let Some(path) = output.clicked_path {
 ///         println!("selected: {}", path.display());
 ///     }
 /// });
@@ -192,7 +198,7 @@ impl<'a> FileTree<'a> {
 
     /// Renders the tree into `ui` and returns interaction output.
     pub fn show(self, ui: &mut Ui) -> FileTreeOutput {
-        let mut selected_path = None;
+        let mut clicked_path = None;
 
         if self.state.tree.is_empty() {
             let response = ui.colored_label(
@@ -202,19 +208,19 @@ impl<'a> FileTree<'a> {
                     self.state.root.display()
                 ),
             );
-            return FileTreeOutput { response, selected_path };
+            return FileTreeOutput { response, clicked_path };
         }
 
         let mut response = ui.allocate_response(Vec2::ZERO, Sense::hover());
         for entry in &self.state.tree {
             let out = show_entry(ui, entry, self.selected);
-            if selected_path.is_none() {
-                selected_path = out.clicked_path;
+            if clicked_path.is_none() {
+                clicked_path = out.clicked_path;
             }
             response = response.union(out.response);
         }
 
-        FileTreeOutput { response, selected_path }
+        FileTreeOutput { response, clicked_path }
     }
 }
 
@@ -243,21 +249,29 @@ fn show_entry(ui: &mut Ui, entry: &FileTreeEntry, selected: &mut Option<PathBuf>
                 .default_open(false)
                 .show(ui, |ui| {
                     let mut child_clicked: Option<PathBuf> = None;
+                    let mut child_resp = ui.allocate_response(Vec2::ZERO, Sense::hover());
                     for child in children {
                         let out = show_entry(ui, child, selected);
                         if child_clicked.is_none() {
                             child_clicked = out.clicked_path;
                         }
+                        child_resp = child_resp.union(out.response);
                     }
-                    child_clicked
+                    (child_clicked, child_resp)
                 });
             // `body_returned` carries the closure's return value; `body_response`
             // is egui's own response for the body area.
-            let clicked_path = cr.body_returned.flatten();
-            let response = match cr.body_response {
-                Some(body_resp) => cr.header_response.union(body_resp),
-                None => cr.header_response,
+            let (clicked_path, opt_child_resp) = match cr.body_returned {
+                Some((clicked, resp)) => (clicked, Some(resp)),
+                None => (None, None),
             };
+            let mut response = cr.header_response;
+            if let Some(body_resp) = cr.body_response {
+                response = response.union(body_resp);
+            }
+            if let Some(child_resp) = opt_child_resp {
+                response = response.union(child_resp);
+            }
             EntryOutput { response, clicked_path }
         }
         FileTreeEntry::File { path, name } => {
@@ -329,7 +343,16 @@ mod tests {
     fn scan_dir_finds_matching_files_and_prunes_empty_dirs() {
         use std::fs;
 
-        let base = std::env::temp_dir().join("openjill_file_tree_test_scan");
+        // Use PID + nanosecond timestamp to avoid collisions in parallel test runs.
+        let unique = format!(
+            "openjill_file_tree_test_scan_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos()
+        );
+        let base = std::env::temp_dir().join(unique);
         // Clean up any leftover state from a previous run.
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).expect("failed to create temp dir");
