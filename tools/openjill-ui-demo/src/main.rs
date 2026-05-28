@@ -4,7 +4,7 @@ use anyhow::Result;
 use openjill_core::{JILL_VGA_PALETTE, Palette};
 use openjill_data::sha::ShaFile;
 use openjill_ui::widgets::{
-    FileTree, FileTreeState, PaletteFilter, PalettePicker, TileGrid, TileGridTexture,
+    FileTree, FileTreeState, HexDumpView, PaletteFilter, PalettePicker, TileGrid, TileGridTexture,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -139,6 +139,15 @@ impl eframe::App for DemoApp {
                 .as_deref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "(none)".to_string())
+        ));
+
+        ui.separator();
+        ui.heading("openjill_ui::widgets::HexDumpView");
+        let sample: Vec<u8> = (0u8..=255).collect();
+        let output = HexDumpView::new(&sample).selection(16..32).show(ui);
+        ui.label(format!(
+            "Hovered offset: {:?}  Clicked offset: {:?}",
+            output.hovered_offset, output.clicked_offset
         ));
     }
 }
