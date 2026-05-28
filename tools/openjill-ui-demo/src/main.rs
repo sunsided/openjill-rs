@@ -3,7 +3,9 @@
 use anyhow::Result;
 use openjill_core::{JILL_VGA_PALETTE, Palette};
 use openjill_data::sha::ShaFile;
-use openjill_ui::widgets::{PaletteFilter, PalettePicker, TileGrid, TileGridTexture};
+use openjill_ui::widgets::{
+    FileTree, FileTreeState, PaletteFilter, PalettePicker, TileGrid, TileGridTexture,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -35,6 +37,10 @@ struct DemoApp {
     last_clicked_palette_index: Option<u8>,
     /// Visible palette slice in the demo.
     palette_filter: PaletteFilter,
+    /// File tree state for the FileTree widget demo.
+    file_tree_state: FileTreeState,
+    /// Currently selected file path in the FileTree demo.
+    selected_file: Option<PathBuf>,
     /// Status/error message shown when loading fails.
     status: String,
 }
@@ -42,6 +48,10 @@ struct DemoApp {
 impl DemoApp {
     /// Constructs the demo app and attempts to load tileset 24 from `JILL1.SHA`.
     fn new(creation_context: &eframe::CreationContext<'_>) -> Self {
+        let data_dir = std::env::var("OPENJILL_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("data/original/JILL1"));
+        let file_tree_state = FileTreeState::new(&data_dir);
         match load_tileset_texture(creation_context) {
             Ok(tile_grid) => Self {
                 tile_grid: Some(tile_grid),
@@ -50,6 +60,8 @@ impl DemoApp {
                 selected_palette_index: None,
                 last_clicked_palette_index: None,
                 palette_filter: PaletteFilter::All,
+                file_tree_state,
+                selected_file: None,
                 status: String::new(),
             },
             Err(error) => Self {
@@ -59,6 +71,8 @@ impl DemoApp {
                 selected_palette_index: None,
                 last_clicked_palette_index: None,
                 palette_filter: PaletteFilter::All,
+                file_tree_state,
+                selected_file: None,
                 status: error,
             },
         }
@@ -107,6 +121,27 @@ impl eframe::App for DemoApp {
         ui.label(format!(
             "Last palette click event: {:?}",
             self.last_clicked_palette_index
+        ));
+
+        ui.separator();
+        ui.heading("openjill_ui::widgets::FileTree");
+        ui.label(format!(
+            "Root: {}",
+            self.file_tree_state.root().display()
+        ));
+        egui::ScrollArea::vertical()
+            .id_salt("file_tree_scroll")
+            .max_height(300.0)
+            .show(ui, |ui| {
+                // Selection is written into `self.selected_file` by the widget.
+                FileTree::new(&mut self.file_tree_state, &mut self.selected_file).show(ui);
+            });
+        ui.label(format!(
+            "Selected file: {}",
+            self.selected_file
+                .as_deref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(none)".to_string())
         ));
     }
 }
