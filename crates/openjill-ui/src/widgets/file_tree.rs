@@ -121,7 +121,11 @@ fn scan_dir(dir: &Path, extensions: &[String]) -> Vec<FileTreeEntry> {
         if path.is_dir() {
             let children = scan_dir(&path, extensions);
             if !children.is_empty() {
-                dirs.push(FileTreeEntry::Dir { path, name, children });
+                dirs.push(FileTreeEntry::Dir {
+                    path,
+                    name,
+                    children,
+                });
             }
         } else if path.is_file() && has_matching_extension(&path, extensions) {
             files.push(FileTreeEntry::File { path, name });
@@ -208,7 +212,10 @@ impl<'a> FileTree<'a> {
                     self.state.root.display()
                 ),
             );
-            return FileTreeOutput { response, clicked_path };
+            return FileTreeOutput {
+                response,
+                clicked_path,
+            };
         }
 
         let mut response = ui.allocate_response(Vec2::ZERO, Sense::hover());
@@ -220,7 +227,10 @@ impl<'a> FileTree<'a> {
             response = response.union(out.response);
         }
 
-        FileTreeOutput { response, clicked_path }
+        FileTreeOutput {
+            response,
+            clicked_path,
+        }
     }
 }
 
@@ -243,7 +253,11 @@ struct EntryOutput {
 /// Renders a single [`FileTreeEntry`] into `ui`, recursing for directories.
 fn show_entry(ui: &mut Ui, entry: &FileTreeEntry, selected: &mut Option<PathBuf>) -> EntryOutput {
     match entry {
-        FileTreeEntry::Dir { path, name, children } => {
+        FileTreeEntry::Dir {
+            path,
+            name,
+            children,
+        } => {
             let cr = egui::CollapsingHeader::new(name.as_str())
                 .id_salt(path.as_os_str())
                 .default_open(false)
@@ -272,7 +286,10 @@ fn show_entry(ui: &mut Ui, entry: &FileTreeEntry, selected: &mut Option<PathBuf>
             if let Some(child_resp) = opt_child_resp {
                 response = response.union(child_resp);
             }
-            EntryOutput { response, clicked_path }
+            EntryOutput {
+                response,
+                clicked_path,
+            }
         }
         FileTreeEntry::File { path, name } => {
             let is_selected = selected.as_deref() == Some(path.as_path());
@@ -286,7 +303,10 @@ fn show_entry(ui: &mut Ui, entry: &FileTreeEntry, selected: &mut Option<PathBuf>
             } else {
                 None
             };
-            EntryOutput { response, clicked_path }
+            EntryOutput {
+                response,
+                clicked_path,
+            }
         }
     }
 }
@@ -323,7 +343,10 @@ mod tests {
     #[test]
     fn has_matching_extension_rejects_unknown_extension() {
         let extensions: Vec<String> = DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect();
-        assert!(!has_matching_extension(Path::new("readme.txt"), &extensions));
+        assert!(!has_matching_extension(
+            Path::new("readme.txt"),
+            &extensions
+        ));
         assert!(!has_matching_extension(Path::new("image.png"), &extensions));
         assert!(!has_matching_extension(Path::new("noext"), &extensions));
     }
@@ -333,7 +356,10 @@ mod tests {
     #[test]
     fn scan_dir_returns_empty_for_nonexistent_directory() {
         let extensions: Vec<String> = DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect();
-        let result = scan_dir(Path::new("/nonexistent/path/that/should/not/exist"), &extensions);
+        let result = scan_dir(
+            Path::new("/nonexistent/path/that/should/not/exist"),
+            &extensions,
+        );
         assert!(result.is_empty());
     }
 
