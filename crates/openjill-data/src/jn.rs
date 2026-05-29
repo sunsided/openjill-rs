@@ -496,6 +496,47 @@ impl JnFile {
         }
         bytes
     }
+
+    /// Overwrites the background map code at `(x, y)` with `code` (masked to
+    /// [`BACKGROUND_MAP_CODE_MASK`]); out-of-bounds coordinates are ignored.
+    ///
+    /// Used when building a live save snapshot from the running level's
+    /// background grid (e.g. so opened doors persist).
+    pub fn set_background_code(&mut self, x: usize, y: usize, code: u16) {
+        if x < BACKGROUND_WIDTH && y < BACKGROUND_HEIGHT {
+            self.background.map_codes[background_index(x, y)] = code & BACKGROUND_MAP_CODE_MASK;
+        }
+    }
+
+    /// Replaces the object list, e.g. with the live entity snapshots that make
+    /// up a save game.
+    pub fn set_objects(&mut self, objects: Vec<JnObject>) {
+        self.objects = objects;
+    }
+
+    /// Rewrites the save-data block from live runtime state.
+    ///
+    /// `inventory` is the list of `EnumInventoryObject` indices (capped at
+    /// [`SAVE_INVENTORY_CAPACITY`]); the remaining inventory slots and the
+    /// trailing hole are zero-filled, matching the Java reference's fresh-save
+    /// `writeSaveDataInFile` output.  The source byte offset is preserved.
+    pub fn set_save_data(&mut self, level: u16, health: u16, inventory: &[u16], score: u32) {
+        let inventory: Vec<u16> = inventory
+            .iter()
+            .copied()
+            .take(SAVE_INVENTORY_CAPACITY)
+            .collect();
+        let inventory_padding = vec![0u16; SAVE_INVENTORY_CAPACITY - inventory.len()];
+        self.save_data = JnSaveData {
+            level,
+            health,
+            inventory,
+            inventory_padding,
+            score,
+            hole: vec![0u8; SAVE_HOLE_LEN],
+            offset: self.save_data.offset,
+        };
+    }
 }
 
 /// Error returned when parsing a JN file fails.
@@ -959,6 +1000,38 @@ mod tests {
         let jn = JnFile::from_bytes(bytes.clone()).expect("JN parse should succeed");
 
         check!(jn.to_bytes() == bytes);
+    }
+
+    /// Unit under test: [`JnFile::set_background_code`], [`JnFile::set_objects`],
+    /// and [`JnFile::set_save_data`] (the live save-snapshot mutators).
+    ///
+    /// Invariant asserted: the mutations survive a `to_bytes -> parse`
+    /// round-trip - the background code is masked, the object list is replaced,
+    /// and the save-data block reflects the new runtime state.
+    #[test]
+    fn set_background_objects_and_save_data_round_trip_through_to_bytes() {
+        let mut bytes = base_background();
+        write_u16(&mut bytes, 1);
+        write_object(&mut bytes, ObjectFixture::sample(5, 1, 2, 0));
+        write_save_data(&mut bytes, 1, 6, &[], 0);
+        let mut jn = JnFile::from_bytes(bytes).expect("JN parse should succeed");
+
+        jn.set_background_code(2, 3, 0xFABC); // high nibble masked off -> 0x0ABC
+        let mut obj = super::JnObject::spawned(9, 100, 50, 16, 16);
+        obj.set_counter(7);
+        jn.set_objects(vec![obj]);
+        jn.set_save_data(4, 8, &[1, 3, 8], 12_345);
+
+        let reparsed = JnFile::from_bytes(jn.to_bytes()).expect("re-parse should succeed");
+        check!(reparsed.background().map_code(2, 3) == Some(0x0ABC));
+        check!(reparsed.objects().len() == 1);
+        check!(reparsed.objects()[0].object_type() == 9);
+        check!(reparsed.objects()[0].counter() == 7);
+        check!(reparsed.save_data().level() == 4);
+        check!(reparsed.save_data().health() == 8);
+        check!(reparsed.save_data().inventory() == [1, 3, 8]);
+        check!(reparsed.save_data().score() == 12_345);
+        check!(reparsed.save_data().hole().iter().all(|byte| *byte == 0));
     }
 
     /// Builds the fixed zero-filled background fixture.
