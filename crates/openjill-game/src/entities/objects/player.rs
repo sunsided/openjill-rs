@@ -207,6 +207,39 @@ pub enum PlayerStateKind {
     Die,
 }
 
+impl PlayerStateKind {
+    /// Encodes this state as the JN `state` integer.
+    ///
+    /// Matches the constants in the Java reference's `PlayerState.java`
+    /// (`STAND=0, STILL=1, JUMPING=2, CLIMBING=3, BEGIN=4, DIE=5`), so the
+    /// player's state round-trips through the JN object record.
+    fn to_state_code(self) -> i16 {
+        match self {
+            PlayerStateKind::Stand => 0,
+            PlayerStateKind::Still => 1,
+            PlayerStateKind::Jumping => 2,
+            PlayerStateKind::Climbing => 3,
+            PlayerStateKind::Begin => 4,
+            PlayerStateKind::Die => 5,
+        }
+    }
+
+    /// Decodes a JN `state` integer into a player state.
+    ///
+    /// Inverse of [`PlayerStateKind::to_state_code`]; unrecognized codes fall
+    /// back to [`PlayerStateKind::Stand`] (the level-authoring default).
+    fn from_state_code(code: i16) -> Self {
+        match code {
+            1 => PlayerStateKind::Still,
+            2 => PlayerStateKind::Jumping,
+            3 => PlayerStateKind::Climbing,
+            4 => PlayerStateKind::Begin,
+            5 => PlayerStateKind::Die,
+            _ => PlayerStateKind::Stand,
+        }
+    }
+}
+
 /// Player object entity.
 pub struct PlayerEntity {
     /// World X position in pixels (top-left of the bounding box).
@@ -243,6 +276,13 @@ pub struct PlayerEntity {
     /// tick.  Prevents holding the fire key from creating a bullet every
     /// tick, matching the Java reference's rate-limiting behavior.
     fire_cooldown: i32,
+    /// The JN object record this entity was built from.
+    ///
+    /// Cloned at construction and re-emitted (with the live fields overwritten)
+    /// by [`ObjectEntity::snapshot`] so the authored fields the player model
+    /// does not track (`counter`, `flags`, `pointer`, string association)
+    /// survive a save-game round-trip untouched.
+    origin: JnObject,
 }
 
 impl PlayerEntity {
@@ -254,21 +294,38 @@ impl PlayerEntity {
     pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
+        let state = PlayerStateKind::from_state_code(item.state());
+        let sub_state = i32::from(item.sub_state());
+        // While dying, the JN sub-state carries the death classification
+        // (`enter_die_state`); recover it so a mid-death restore resumes the
+        // correct die animation. Other states have no death classification.
+        let death_kind = if matches!(state, PlayerStateKind::Die) {
+            match item.sub_state() {
+                1 => Some(DeathKind::Water),
+                2 => Some(DeathKind::OtherBackground),
+                _ => Some(DeathKind::Enemy),
+            }
+        } else {
+            None
+        };
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()),
             w,
             h,
-            state: PlayerStateKind::Stand,
-            sub_state: 0,
-            state_count: 0,
-            x_speed: 0,
-            y_speed: 0,
-            info1: 0,
-            zaphold: 0,
-            death_kind: None,
+            state,
+            sub_state,
+            state_count: i32::from(item.state_count()),
+            x_speed: i32::from(item.x_speed()),
+            y_speed: i32::from(item.y_speed()),
+            info1: i32::from(item.info1()),
+            zaphold: i32::from(item.zap_hold()),
+            death_kind,
+            // `die_pending` and `fire_cooldown` are transient ticks-scoped
+            // members with no JN field; they re-derive during play.
             die_pending: false,
             fire_cooldown: 0,
+            origin: item.clone(),
         }
     }
 
@@ -477,6 +534,26 @@ impl ObjectEntity for PlayerEntity {
     fn apply_platform_move(&mut self, dx: i32, dy: i32) {
         self.x += dx;
         self.y += dy;
+    }
+
+    /// Serializes the live player state back into its origin JN record.
+    ///
+    /// Writes back every field the player model tracks (position, speeds,
+    /// state, sub-state, state-count, `info1`, `zap_hold`); the authored fields
+    /// the player does not mutate (`counter`, `flags`, `pointer`, and the
+    /// dimensions - `new` normalizes `w`/`h` to at least `BLOCK_SIZE_I` for
+    /// collision but never changes them afterward) are preserved verbatim from
+    /// the cloned origin so saves stay byte-stable.
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        obj.set_speed(self.x_speed as i16, self.y_speed as i16);
+        obj.set_state(self.state.to_state_code());
+        obj.set_sub_state(self.sub_state as u16);
+        obj.set_state_count(self.state_count as u16);
+        obj.set_info1(self.info1 as i16);
+        obj.set_zap_hold(self.zaphold as u16);
+        Some(obj)
     }
 }
 
@@ -1587,6 +1664,38 @@ mod tests {
         let player = make_player(48, 32);
         let bbox = player.bounding_box();
         assert_eq!(bbox, Rect::new(48, 32, BLOCK_SIZE_I, BLOCK_SIZE_I));
+    }
+
+    /// Unit under test: the save-snapshot round-trip
+    /// (`JnObject -> PlayerEntity::new -> snapshot == JnObject`).
+    ///
+    /// Preconditions: a JN object record with distinct values in every field,
+    /// including fields the player model does not track (`counter`, `flags`)
+    /// and sub-`BLOCK_SIZE_I` dimensions that `new()` normalizes internally.
+    ///
+    /// Invariant asserted: `snapshot()` reproduces the source record exactly -
+    /// the modeled fields are written back and the unmodeled authored fields
+    /// (including the un-normalized dimensions) are preserved from the cloned
+    /// origin.
+    #[test]
+    fn snapshot_round_trips_the_source_jn_object() {
+        // Sub-block dimensions: `new()` clamps these to >= BLOCK_SIZE_I for
+        // collision, but the snapshot must persist the authored values.
+        let mut obj = JnObject::spawned(0, 112, 160, 10, 12);
+        obj.set_speed(1, -3);
+        obj.set_state(PlayerStateKind::Jumping.to_state_code());
+        obj.set_sub_state(4);
+        obj.set_state_count(7);
+        obj.set_info1(-1);
+        obj.set_zap_hold(3);
+        // Fields the player does not model; must survive untouched.
+        obj.set_counter(9);
+        obj.set_flags(0x55);
+
+        let player = PlayerEntity::new(&obj, &AssetCache::synthetic());
+        let snapshot = player.snapshot().expect("player always snapshots");
+
+        assert_eq!(snapshot, obj);
     }
 
     /// Unit under test: `arm_zaphold` seeds the touch cooldown and `update`

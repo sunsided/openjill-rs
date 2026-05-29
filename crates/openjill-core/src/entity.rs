@@ -8,6 +8,7 @@ use crate::ActiveInput;
 use crate::message::MessageDispatcher;
 use crate::render::RenderCommand;
 use crate::runtime::RuntimeState;
+use openjill_data::jn::JnObject;
 
 /// Background grid width in cells.
 ///
@@ -246,6 +247,21 @@ pub trait ObjectEntity: Send {
     /// `AbstractPlayerManager.msgPlayerMove` behavior; all other objects use
     /// this no-op default.
     fn apply_platform_move(&mut self, _dx: i32, _dy: i32) {}
+
+    /// Serializes this object's full live state back into a [`JnObject`] for a
+    /// save-game snapshot, or `None` when the object should not be persisted
+    /// (purely transient/decorative entities the Java reference does not write).
+    ///
+    /// The returned record must round-trip: building the entity from a parsed
+    /// `JnObject` via its constructor and immediately calling `snapshot` must
+    /// reproduce that `JnObject` for every field the entity's model defines
+    /// (`parse -> new -> snapshot == parse`). Implementations that carry an
+    /// origin `JnObject` clone it and write back only the fields they mutate so
+    /// authored-but-unused fields (`counter`, `flags`, `pointer`, ...) survive
+    /// untouched. Default returns `None`.
+    fn snapshot(&self) -> Option<JnObject> {
+        None
+    }
 }
 
 /// One background cell handler.
