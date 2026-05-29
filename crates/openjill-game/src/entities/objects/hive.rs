@@ -1,11 +1,19 @@
 //! Hive enemy entity (JN object type 45).
 //!
-//! Mirrors `org.jill.game.entities.obj.HiveManager`: stationary spawner that
-//! periodically dispatches `CreateObject` to spawn `BeesEntity` (type 46).
-//! Killed by weapons; does not kill the player on contact.
+//! Mirrors `org.jill.game.entities.obj.HiveManager`: a stationary, weapon-
+//! killable spawner.  While idle it has a small per-tick chance
+//! (`1 / maxRandomValue`) to begin a charge cycle; the charge advances one
+//! step every `counterMaxWait` ticks and, once it passes `counterCreateBees`,
+//! spawns a single bee just to the player-facing side of the hive and returns
+//! to idle.  It faces the player (used for the spawn side).
 //!
-//! Tileset/tile: `tileSet = 8`, `tile = 8`, `numberTileSet = 2`.
-//! FIXME(epic-6): confirm tileset 8 tiles 8..=9 against JILL1.SHA dump.
+//! Config from `object_conf.json`: `counterCreateBees = 2`,
+//! `maxRandomValue = 20`, `counterMaxWait = 3`, `beesObject = BeesManager`
+//! (spawned as object type 46).
+//!
+//! Tileset/tile: the Rust port renders from tileset 8 (the Java reference uses
+//! `tileSet = 37`); render tiles are not reconciled here, only behaviour.
+//! FIXME(epic-6): reconcile the hive render tileset against JILL1.SHA.
 
 use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
 use openjill_core::{
@@ -14,44 +22,43 @@ use openjill_core::{
 };
 use openjill_data::jn::JnObject;
 
+use super::enemy_shared::EnemyRng;
 use crate::asset_cache::AssetCache;
 
-/// SHA tileset that owns the hive frames.
-///
-/// REVERSE-ENGINEERED: Rust port choice. Note the Java reference's
-/// `HiveManager.tileSet = 37`; the Rust port currently uses tileset 8 with
-/// [`TILE_BASE`] = 8. Future engine config file should expose this and
-/// reconcile with the Java reference.
+/// SHA tileset that owns the hive frames (Rust port choice).
 const TILESET_INDEX: u8 = 8;
 /// Base tile index within [`TILESET_INDEX`].
-///
-/// REVERSE-ENGINEERED: paired with [`TILESET_INDEX`] above.
 const TILE_BASE: u16 = 8;
-/// Number of animation frames cycled by the hive sprite.
-///
-/// REVERSE-ENGINEERED: verified at construction by
-/// [`AssetCache::assert_tile_subset`].
+/// Number of rendered animation frames.
 const NUMBER_TILE_SET: u16 = 2;
 /// Score awarded when the hive is killed.
-///
-/// REVERSE-ENGINEERED: derived from the Java reference's `HiveManager`
-/// `point` field.
 const SCORE_VALUE: i32 = 500;
-/// Ticks between bee spawns.
-///
-/// REVERSE-ENGINEERED: matches the Java reference's hive spawn cadence.
-const SPAWN_PERIOD: i32 = 60;
+/// Charge value past which a bee is spawned (`counterCreateBees = 2`).
+const COUNTER_CREATE_BEES: i32 = 2;
+/// Idle re-roll denominator: `1 / maxRandomValue` chance per tick to begin a
+/// charge cycle (`maxRandomValue = 20`).
+const MAX_RANDOM_VALUE: i32 = 20;
+/// Ticks to wait per charge step (`counterMaxWait = 3`).
+const COUNTER_MAX_WAIT: i32 = 3;
+/// Object type spawned (BeesManager).
+const BEES_OBJECT_TYPE: u8 = 46;
 
 pub struct HiveEntity {
     x: i32,
     y: i32,
     w: i32,
     h: i32,
-    spawn_counter: i32,
+    /// Charge counter: `0` = idle, `1..=counterCreateBees` = charging.
     counter: i32,
+    /// Ticks waited at the current charge step.
+    counter_wait: i32,
+    /// Player-facing sign (`>= 0` right, `< 0` left); chooses the spawn side.
+    facing: i32,
+    player_x: i32,
     dead: bool,
     score_dispatched: bool,
     zaphold: i32,
+    rng: EnemyRng,
 }
 
 impl HiveEntity {
@@ -63,16 +70,21 @@ impl HiveEntity {
         );
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
+        let x = i32::from(item.x());
+        let y = i32::from(item.y());
         Self {
-            x: i32::from(item.x()),
-            y: i32::from(item.y()),
+            x,
+            y,
             w,
             h,
-            spawn_counter: 0,
             counter: 0,
+            counter_wait: 0,
+            facing: 1,
+            player_x: x,
             dead: false,
             score_dispatched: false,
             zaphold: 0,
+            rng: EnemyRng::new((x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32)),
         }
     }
 }
@@ -99,24 +111,41 @@ impl ObjectEntity for HiveEntity {
             self.zaphold -= 1;
         }
 
-        self.spawn_counter += 1;
-        if self.spawn_counter >= SPAWN_PERIOD {
-            self.spawn_counter = 0;
-            dispatcher.send(
-                MessageType::CreateObject,
-                MessagePayload::SpawnAt {
-                    object_type: 46,
-                    x: self.x,
-                    y: self.y,
-                    xd: 0,
-                    yd: 0,
-                },
-            );
+        // Face the player (chooses which side a spawned bee appears on).
+        let xd = self.player_x - self.x;
+        if xd != 0 {
+            self.facing = xd.signum();
         }
 
-        self.counter += 1;
-        if self.counter >= NUMBER_TILE_SET as i32 {
-            self.counter = 0;
+        if self.counter == 0 {
+            // Idle: small random chance to begin a charge cycle.
+            if self.rng.range(0, MAX_RANDOM_VALUE) == 0 {
+                self.counter = 1;
+            }
+        } else if self.counter_wait < COUNTER_MAX_WAIT {
+            self.counter_wait += 1;
+        } else {
+            self.counter += 1;
+            self.counter_wait = 0;
+            if self.counter > COUNTER_CREATE_BEES {
+                self.counter = 0;
+                // Spawn one bee on the player-facing side of the hive.
+                let bee_x = if self.facing >= 0 {
+                    self.x + self.w / 2
+                } else {
+                    self.x - self.w / 2
+                };
+                dispatcher.send(
+                    MessageType::CreateObject,
+                    MessagePayload::SpawnAt {
+                        object_type: BEES_OBJECT_TYPE,
+                        x: bee_x,
+                        y: self.y,
+                        xd: 0,
+                        yd: 0,
+                    },
+                );
+            }
         }
     }
 
@@ -124,6 +153,7 @@ impl ObjectEntity for HiveEntity {
         if self.dead {
             return None;
         }
+        // Frame reflects the charge level (idle = frame 0).
         let frame = (self.counter as u16).min(NUMBER_TILE_SET - 1);
         Some(RenderCommand::Blit {
             tileset: TILESET_INDEX,
@@ -155,6 +185,10 @@ impl ObjectEntity for HiveEntity {
 
     fn is_dead(&self) -> bool {
         self.dead
+    }
+
+    fn observe_player(&mut self, player_bbox: Rect) {
+        self.player_x = player_bbox.x;
     }
 }
 
@@ -215,9 +249,10 @@ mod tests {
         jn.objects()[0].clone()
     }
 
-    /// Hive dispatches `CreateObject` with `object_type = 46` after `SPAWN_PERIOD` ticks.
+    /// Over many ticks the hive eventually spawns bees, each requesting
+    /// `object_type = 46` on the player-facing side.
     #[test]
-    fn hive_dispatches_bees_create_object_after_spawn_period() {
+    fn hive_spawns_bees_toward_player_over_time() {
         struct Recorder(Arc<Mutex<Vec<MessagePayload>>>);
         impl MessageHandler for Recorder {
             fn handle(&mut self, _: MessageType, payload: &MessagePayload) {
@@ -226,7 +261,8 @@ mod tests {
         }
 
         let cache = AssetCache::synthetic();
-        let mut hive = HiveEntity::new(&synthetic_hive(32, 32), &cache);
+        let mut hive = HiveEntity::new(&synthetic_hive(100, 32), &cache);
+
         let payloads: Arc<Mutex<Vec<MessagePayload>>> = Arc::new(Mutex::new(Vec::new()));
         let mut dispatcher = MessageDispatcher::new();
         dispatcher.subscribe(
@@ -237,27 +273,23 @@ mod tests {
         let grid = empty_grid(8, 8);
         let input = ActiveInput::default();
         let state = RuntimeState::new();
-
-        for _ in 0..SPAWN_PERIOD {
+        // Player to the right, so bees spawn on the right side (x + w/2).
+        for _ in 0..2000 {
+            hive.observe_player(Rect::new(400, 32, 16, 16));
             hive.update(&input, &state, &grid, &mut dispatcher);
         }
 
         let got = payloads.lock().unwrap();
-        assert_eq!(
-            got.len(),
-            1,
-            "hive spawns exactly one bee after SPAWN_PERIOD ticks"
-        );
-        assert!(
-            matches!(
-                got[0],
-                MessagePayload::SpawnAt {
-                    object_type: 46,
-                    ..
-                }
-            ),
-            "spawn payload must request object_type 46 (BeesEntity); got {:?}",
-            got[0]
-        );
+        assert!(!got.is_empty(), "hive eventually spawns bees");
+        let expected_x = hive.x + hive.w / 2;
+        for p in got.iter() {
+            assert!(
+                matches!(
+                    p,
+                    MessagePayload::SpawnAt { object_type: 46, x, .. } if *x == expected_x
+                ),
+                "each spawn requests a bee on the player-facing side; got {p:?}"
+            );
+        }
     }
 }

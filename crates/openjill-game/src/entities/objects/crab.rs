@@ -1,10 +1,13 @@
 //! Crab enemy entity (JN object type 47).
 //!
-//! Mirrors `org.jill.game.entities.obj.CrabManager`: horizontal floor patrol;
-//! reverses at walls and gaps; kills player on contact.
+//! Mirrors `org.jill.game.entities.obj.CrabManager`: horizontal floor patrol
+//! that reverses at walls and gaps and kills the player on contact, plus a
+//! vine-climb state - while patrolling on a vine column the crab has a small
+//! per-tick chance to start climbing, ascends until it hits a ceiling, then
+//! descends until it lands and resumes patrol.
 //!
 //! Tileset/tile from `object_conf.json`: `tileSet = 38`, `tile = 0`,
-//! `numberTileSet = 4`.
+//! `numberTileSet = 4`, `stateUpDown = 1`, `downUpMvtSize = 2`.
 //! SHA header[38] confirms: crab sprites, 4 walk-cycle tiles.
 
 use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
@@ -14,7 +17,9 @@ use openjill_core::{
 };
 use openjill_data::jn::JnObject;
 
-use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
+use super::enemy_shared::{
+    EnemyRng, blocked_ahead, floor_under_next, is_on_vine, slide_y, sprite_dims,
+};
 use crate::asset_cache::AssetCache;
 
 const TILESET_INDEX: u8 = 38;
@@ -22,6 +27,14 @@ const TILE_BASE: u16 = 0;
 const NUMBER_TILE_SET: u16 = 4;
 const X_SPEED: i32 = 4;
 const SCORE_VALUE: i32 = 200;
+/// Vertical climb speed (`downUpMvtSize = 2`).
+const CLIMB_SPEED: i32 = 2;
+/// 1-in-N per-tick chance to start climbing while on a vine.
+///
+/// Mirrors Java `setState((int)(Math.random() * stateUpDown + 0.1))` with
+/// `stateUpDown = 1`: the climb state (`state == 1`) is entered only when
+/// `Math.random() >= 0.9`, i.e. roughly a 1-in-10 chance per tick.
+const CLIMB_CHANCE_DEN: i32 = 10;
 
 pub struct CrabEntity {
     x: i32,
@@ -29,11 +42,17 @@ pub struct CrabEntity {
     w: i32,
     h: i32,
     x_speed: i32,
+    /// Vertical speed while climbing (negative up, positive down); `0` when
+    /// patrolling.
+    y_speed: i32,
+    /// `true` while in the up/down vine-climb state.
+    climbing: bool,
     counter: i32,
     dead: bool,
     score_dispatched: bool,
     zaphold: i32,
     pending_kill: Option<DeathKind>,
+    rng: EnemyRng,
 }
 
 impl CrabEntity {
@@ -41,17 +60,22 @@ impl CrabEntity {
         let (w, h) = sprite_dims(cache, TILESET_INDEX);
         let jn_h = i32::from(item.height());
         let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };
+        let x = i32::from(item.x());
+        let y = i32::from(item.y()) - y_adj;
         Self {
-            x: i32::from(item.x()),
-            y: i32::from(item.y()) - y_adj,
+            x,
+            y,
             w,
             h,
             x_speed: X_SPEED,
+            y_speed: 0,
+            climbing: false,
             counter: 0,
             dead: false,
             score_dispatched: false,
             zaphold: 0,
             pending_kill: None,
+            rng: EnemyRng::new((x as u32).wrapping_mul(0x8DA6_B343) ^ (y as u32)),
         }
     }
 }
@@ -77,13 +101,46 @@ impl ObjectEntity for CrabEntity {
         if self.zaphold > 0 {
             self.zaphold -= 1;
         }
-        if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-            && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-        {
-            self.x += self.x_speed;
+
+        if self.climbing {
+            // Up/down state (Java `moveUpDown`): climb until a ceiling, then
+            // reverse; on hitting a floor, resume patrol.
+            let moved = slide_y(
+                backgrounds,
+                self.x,
+                &mut self.y,
+                self.w,
+                self.h,
+                self.y_speed,
+            );
+            if moved == 0 {
+                if self.y_speed < 0 {
+                    self.y_speed = -self.y_speed; // ceiling: turn around, descend
+                } else {
+                    self.climbing = false; // floor: back to patrol
+                    self.y_speed = 0;
+                }
+            }
         } else {
-            self.x_speed = -self.x_speed;
+            // Floor patrol: reverse at walls and gaps.
+            if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
+                && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
+            {
+                self.x += self.x_speed;
+            } else {
+                self.x_speed = -self.x_speed;
+            }
+
+            // While on a vine column, small per-tick chance to start climbing
+            // upward (Java's randomised state switch).
+            if is_on_vine(backgrounds, self.x, self.y, self.w, self.h)
+                && self.rng.range(0, CLIMB_CHANCE_DEN) == 0
+            {
+                self.climbing = true;
+                self.y_speed = -CLIMB_SPEED;
+            }
         }
+
         self.counter += 1;
         if self.counter >= NUMBER_TILE_SET as i32 {
             self.counter = 0;
@@ -130,5 +187,112 @@ impl ObjectEntity for CrabEntity {
 
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openjill_core::BackgroundEntity;
+
+    #[derive(Clone, Copy)]
+    enum Cell {
+        Air,
+        Solid,
+        Vine,
+    }
+
+    struct TestCell(Cell);
+    impl BackgroundEntity for TestCell {
+        fn draw(&self, _: i32, _: i32) -> Option<RenderCommand> {
+            None
+        }
+        fn update(&mut self, _: i32, _: i32, _: &mut MessageDispatcher) {}
+        fn on_player_touch(&mut self, _: &mut dyn ObjectEntity, _: &mut MessageDispatcher) {}
+        fn is_passthrough(&self) -> bool {
+            !matches!(self.0, Cell::Solid)
+        }
+        fn is_climbable(&self) -> bool {
+            matches!(self.0, Cell::Vine)
+        }
+        fn is_stair(&self) -> bool {
+            false
+        }
+    }
+
+    fn grid(w: usize, h: usize, f: impl Fn(usize, usize) -> Cell) -> BackgroundGrid {
+        let mut rows: Vec<Vec<Box<dyn BackgroundEntity>>> = Vec::with_capacity(h);
+        for y in 0..h {
+            let mut row: Vec<Box<dyn BackgroundEntity>> = Vec::with_capacity(w);
+            for x in 0..w {
+                row.push(Box::new(TestCell(f(x, y))));
+            }
+            rows.push(row);
+        }
+        BackgroundGrid::new(rows)
+    }
+
+    fn crab_at(x: i32, y: i32) -> CrabEntity {
+        const OBJECT_RECORD_BYTES: usize = 31;
+        let total = 128 * 64 * 2 + 2 + OBJECT_RECORD_BYTES + 70;
+        let mut bytes = vec![0u8; total];
+        let count_off = 128 * 64 * 2;
+        bytes[count_off..count_off + 2].copy_from_slice(&1u16.to_le_bytes());
+        let record_off = count_off + 2;
+        bytes[record_off] = 47;
+        bytes[record_off + 1..record_off + 3].copy_from_slice(&(x as u16).to_le_bytes());
+        bytes[record_off + 3..record_off + 5].copy_from_slice(&(y as u16).to_le_bytes());
+        let jn = openjill_data::jn::JnFile::from_bytes(bytes).expect("synthetic JN parses");
+        let cache = AssetCache::synthetic();
+        let mut crab = CrabEntity::new(&jn.objects()[0], &cache);
+        // Force the bounding box to one block so the column math is simple.
+        crab.w = 16;
+        crab.h = 16;
+        crab.y = y;
+        crab
+    }
+
+    fn tick(crab: &mut CrabEntity, g: &BackgroundGrid) {
+        crab.update(
+            &ActiveInput::default(),
+            &RuntimeState::new(),
+            g,
+            &mut MessageDispatcher::new(),
+        );
+    }
+
+    /// A crab standing on a vine column eventually starts climbing upward.
+    #[test]
+    fn crab_climbs_vine_then_reverses_at_ceiling() {
+        // Column x=1 is a vine; row 0 is a solid ceiling; row 5 is the floor.
+        let g = grid(4, 6, |x, y| {
+            if y == 0 || y == 5 {
+                Cell::Solid // ceiling (row 0) and floor (row 5)
+            } else if x == 1 {
+                Cell::Vine
+            } else {
+                Cell::Air
+            }
+        });
+        // Block-aligned on the vine column, feet on the floor (row 5 top = 80).
+        let mut crab = crab_at(16, 64);
+        let start_y = crab.y;
+
+        // Within a reasonable window the RNG should trigger a climb.
+        let mut climbed = false;
+        for _ in 0..200 {
+            tick(&mut crab, &g);
+            if crab.climbing && crab.y < start_y {
+                climbed = true;
+                break;
+            }
+        }
+        assert!(climbed, "crab eventually climbs the vine upward");
+
+        // Keep ticking; it must not tunnel through the ceiling (row 0).
+        for _ in 0..200 {
+            tick(&mut crab, &g);
+            assert!(crab.y >= 16, "crab never rises past the ceiling cell");
+        }
     }
 }

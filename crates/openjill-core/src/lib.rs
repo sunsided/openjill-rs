@@ -55,6 +55,10 @@ pub enum InputCommand {
     Pause,
     /// Request quitting the current game session.
     Quit,
+    /// Toggle the sound ("NOISE") control-panel option.
+    ToggleNoise,
+    /// Toggle the "TURTLE" slow-motion control-panel option.
+    ToggleTurtle,
 }
 
 #[derive(Clone, Debug)]

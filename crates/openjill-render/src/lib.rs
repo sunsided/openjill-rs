@@ -795,6 +795,50 @@ fn draw_text_colorized_indexed(
     }
 }
 
+/// CGA-font background pixel value that is also keyed out as transparent.
+///
+/// Mirrors `TextManagerImpl.BACKGROUND_COLOR_INDEX = 3`: these glyphs encode
+/// pixel value `0` (always transparent) and `3` (background, transparent when
+/// drawn with `BACKGROUND_COLOR_NONE`) as the keyed-out colors, while values
+/// `1` and `2` are the foreground recolored to the requested color.  The
+/// special-key tileset stores only values `0..=3` even though it reports a
+/// 4-bit depth, so the generic max-value transparent key (15) never matched
+/// its background.
+const CGA_FONT_BACKGROUND_PIXEL: u8 = 3;
+
+/// Draws a single decoded font glyph as a colorized mask at `(x, y)`.
+///
+/// Foreground glyph pixels write `color_index`; the transparent pixel
+/// ([`FONT_GLYPH_TRANSPARENT_PIXEL`]) and the CGA background pixel
+/// ([`CGA_FONT_BACKGROUND_PIXEL`]) are skipped.  Used by
+/// [`RenderCommand::BlitGlyph`] for the control-panel key-cap glyphs.
+fn draw_glyph_colorized(
+    framebuffer: &mut [u8],
+    glyph: &DecodedGlyphTile,
+    x: i32,
+    y: i32,
+    color_index: u8,
+) {
+    for glyph_y in 0..usize::from(glyph.height) {
+        let target_y = y + glyph_y as i32;
+        if !(0..FRAMEBUFFER_HEIGHT as i32).contains(&target_y) {
+            continue;
+        }
+        for glyph_x in 0..usize::from(glyph.width) {
+            let target_x = x + glyph_x as i32;
+            if !(0..FRAMEBUFFER_WIDTH as i32).contains(&target_x) {
+                continue;
+            }
+            let glyph_index = glyph_y * usize::from(glyph.width) + glyph_x;
+            let pixel = glyph.pixels[glyph_index];
+            if pixel == FONT_GLYPH_TRANSPARENT_PIXEL || pixel == CGA_FONT_BACKGROUND_PIXEL {
+                continue;
+            }
+            framebuffer[target_y as usize * FRAMEBUFFER_WIDTH + target_x as usize] = color_index;
+        }
+    }
+}
+
 /// Fills a rectangle in a 320×200 indexed framebuffer with `color`, clipping to buffer bounds.
 ///
 /// Returns immediately when `width` or `height` is zero. Negative or out-of-bounds coordinates
@@ -908,6 +952,26 @@ fn execute_commands_on_framebuffer(
                 color,
             } => {
                 fill_rect_indexed(framebuffer, *x, *y, *width, *height, *color);
+            }
+            RenderCommand::BlitGlyph {
+                tileset,
+                tile,
+                x,
+                y,
+                color_index,
+            } => {
+                if let Some(ts) = sha
+                    .tilesets()
+                    .iter()
+                    .find(|t| t.entry_index() == *tileset as usize)
+                    && let Ok(font) = ShaFontTiles::from_tileset(ts)
+                    && let Some(glyph) = font.glyphs.get(*tile as usize)
+                {
+                    let bright = color_index
+                        .saturating_add(TEXT_COLOR_BRIGHT_SHIFT)
+                        .min(BRIGHT_EGA_MAX);
+                    draw_glyph_colorized(framebuffer, glyph, *x, *y, bright);
+                }
             }
         }
     }

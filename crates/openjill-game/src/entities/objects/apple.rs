@@ -1,19 +1,23 @@
 //! Apple pickup entity (JN object type 1).
 //!
 //! Mirrors `org.jill.game.entities.obj.AppleManager` from the Java reference:
-//! when the player overlaps the apple, the entity dispatches an
-//! `InventoryItem(Gem, add)` message and flags itself for removal so the
-//! level loop drops it from the active object list.
+//! when the player overlaps the apple it awards points and restores one health
+//! segment (`point = 12`, `life = 1` in `object_conf.json`), then flags itself
+//! for removal.  It is *not* an inventory item.
 
 use openjill_core::layout::BLOCK_SIZE_I;
 use openjill_core::{
-    ActiveInput, BackgroundGrid, DeathKind, InventoryItemPayload, InventoryObject,
-    MessageDispatcher, MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand,
-    RuntimeState,
+    ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
+    ObjectEntity, Rect, RenderCommand, RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
+
+/// Points awarded for eating an apple (`AppleManager.point = 12`).
+const APPLE_POINTS: i32 = 12;
+/// Health segments restored (`AppleManager.life = 1`).
+const APPLE_LIFE: i32 = 1;
 
 /// SHA tileset index for apple sprites.
 ///
@@ -97,14 +101,19 @@ impl ObjectEntity for AppleEntity {
         })
     }
 
-    /// Dispatches the gem inventory pickup and flags the apple for removal.
+    /// Awards points, restores one health segment, and flags the apple for
+    /// removal (Java `AppleManager.msgTouch`: `INVENTORY_POINT` + `INVENTORY_LIFE`).
     fn on_touch(&mut self, _state: &RuntimeState, dispatcher: &mut MessageDispatcher) {
         if self.removed {
             return;
         }
         dispatcher.send(
-            MessageType::InventoryItem,
-            MessagePayload::InventoryItem(InventoryItemPayload::add(InventoryObject::Gem)),
+            MessageType::InventoryPoint,
+            MessagePayload::Count(APPLE_POINTS),
+        );
+        dispatcher.send(
+            MessageType::InventoryLife,
+            MessagePayload::Count(APPLE_LIFE),
         );
         self.removed = true;
     }
@@ -125,11 +134,10 @@ impl ObjectEntity for AppleEntity {
 
 #[cfg(test)]
 mod tests {
-    use super::AppleEntity;
+    use super::{APPLE_LIFE, APPLE_POINTS, AppleEntity};
     use crate::asset_cache::AssetCache;
     use openjill_core::{
-        InventoryItemPayload, InventoryObject, MessageDispatcher, MessageHandler, MessagePayload,
-        MessageType, ObjectEntity, RuntimeState,
+        MessageDispatcher, MessageHandler, MessagePayload, MessageType, ObjectEntity, RuntimeState,
     };
     use openjill_data::jn::JnFile;
     use std::sync::{Arc, Mutex};
@@ -169,18 +177,21 @@ mod tests {
     /// object record; a recording handler is subscribed to
     /// [`MessageType::InventoryItem`] before `on_touch` runs.
     ///
-    /// Invariants asserted: `on_touch` dispatches one
-    /// `InventoryItem(InventoryItemPayload::add(Gem))` message, and the
-    /// entity reports `should_remove() == true` so the level loop drops it
-    /// on the same tick.
+    /// Invariants asserted: `on_touch` awards `APPLE_POINTS` and restores
+    /// `APPLE_LIFE` health, and the entity reports `should_remove() == true`
+    /// so the level loop drops it on the same tick.
     #[test]
-    fn on_touch_dispatches_inventory_item_gem_and_flags_for_removal() {
+    fn on_touch_awards_points_and_health_and_flags_for_removal() {
         let cache = AssetCache::synthetic();
         let mut apple = AppleEntity::new(&synthetic_apple_object(), &cache);
         let buf: RecordingBuffer = Arc::new(Mutex::new(Vec::new()));
         let mut dispatcher = MessageDispatcher::new();
         dispatcher.subscribe(
-            MessageType::InventoryItem,
+            MessageType::InventoryPoint,
+            Box::new(RecordingHandler(Arc::clone(&buf))),
+        );
+        dispatcher.subscribe(
+            MessageType::InventoryLife,
             Box::new(RecordingHandler(Arc::clone(&buf))),
         );
 
@@ -188,14 +199,15 @@ mod tests {
         apple.on_touch(&state, &mut dispatcher);
 
         let received = buf.lock().unwrap();
-        assert_eq!(received.len(), 1, "exactly one message dispatched");
-        assert_eq!(
-            received[0],
-            (
-                MessageType::InventoryItem,
-                MessagePayload::InventoryItem(InventoryItemPayload::add(InventoryObject::Gem)),
-            )
-        );
+        assert_eq!(received.len(), 2, "points and life dispatched");
+        assert!(received.contains(&(
+            MessageType::InventoryPoint,
+            MessagePayload::Count(APPLE_POINTS),
+        )));
+        assert!(received.contains(&(
+            MessageType::InventoryLife,
+            MessagePayload::Count(APPLE_LIFE),
+        )));
         assert!(
             apple.should_remove(),
             "apple should flag itself for removal after pickup"
@@ -203,7 +215,7 @@ mod tests {
     }
 
     /// Unit under test: [`AppleEntity::on_touch`] called twice does not
-    /// re-dispatch the pickup message.
+    /// re-dispatch the pickup messages.
     #[test]
     fn on_touch_is_idempotent_after_pickup() {
         let cache = AssetCache::synthetic();
@@ -211,7 +223,11 @@ mod tests {
         let buf: RecordingBuffer = Arc::new(Mutex::new(Vec::new()));
         let mut dispatcher = MessageDispatcher::new();
         dispatcher.subscribe(
-            MessageType::InventoryItem,
+            MessageType::InventoryPoint,
+            Box::new(RecordingHandler(Arc::clone(&buf))),
+        );
+        dispatcher.subscribe(
+            MessageType::InventoryLife,
             Box::new(RecordingHandler(Arc::clone(&buf))),
         );
 
@@ -219,6 +235,6 @@ mod tests {
         apple.on_touch(&state, &mut dispatcher);
         apple.on_touch(&state, &mut dispatcher);
 
-        assert_eq!(buf.lock().unwrap().len(), 1, "second touch must be no-op");
+        assert_eq!(buf.lock().unwrap().len(), 2, "second touch must be no-op");
     }
 }

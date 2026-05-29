@@ -1,88 +1,74 @@
-//! Skull enemy entity (JN object type 51).
+//! Skull object (JN object type 51).
 //!
-//! Mirrors `org.jill.game.entities.obj.SkullManager`: bouncing movement -
-//! travels diagonally and reverses either component on hitting a wall,
-//! floor, or ceiling; kills player on contact.
+//! Mirrors `org.jill.game.entities.obj.SkullManager`: a **stationary, harmless,
+//! non-killable** wall skull.  It shows a fixed idle tile until a `TRIGGER`
+//! whose link id matches its own (`switch.counter == skull.counter`) arrives,
+//! after which it loops an eye-rolling animation forever.  Java `SkullManager`
+//! extends `AbstractParameterObjectEntity` (not the hit-player base) and never
+//! moves or harms the player.
 //!
-//! Tileset/tile from `object_conf.json`: `tileSet = 47`, `tile = 0`,
-//! `numberTileSet = 2` (tiles 0-1 = skull animation frames).
+//! Config from `object_conf.json`: `tileSet = 47`, skull tiles `0..=skullMax`
+//! (`skullMax = 2`), eye tiles `3..=7` drawn at `(eyeLeftX=0, eyeLeftY=5)` and
+//! `(eyeRightX=10, eyeRightY=6)`, `fixedTile = 0`.  The animation has
+//! `numberTileSet * 2 = 8` frames.
 
-use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
 use openjill_core::{
-    ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
-    ObjectEntity, Rect, RenderCommand, RuntimeState,
+    ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, ObjectEntity, Rect, RenderCommand,
+    RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
+use super::enemy_shared::sprite_dims;
 use crate::asset_cache::AssetCache;
 
+/// SHA tileset that owns the skull + eye tiles (`tileSet = 47`).
 const TILESET_INDEX: u8 = 47;
-const TILE_BASE: u16 = 0;
-const NUMBER_TILE_SET: u16 = 2;
-const SCORE_VALUE: i32 = 400;
-const DEFAULT_SPEED: i32 = 4;
+/// Idle tile shown before the skull is triggered (`fixedTile = 0`).
+const FIXED_TILE: u16 = 0;
+/// Number of animation frames (`numberTileSet * 2 = 8`).
+const FRAMES: usize = 8;
+/// Lens draw offsets within the skull sprite.
+const EYE_LEFT_X: i32 = 0;
+const EYE_LEFT_Y: i32 = 5;
+const EYE_RIGHT_X: i32 = 10;
+const EYE_RIGHT_Y: i32 = 6;
+
+/// Per-frame skull base tile: ping-pong over `0..=skullMax(2)`, each tile held
+/// for two frames (Java `loadSkullImage`).
+const SKULL_FRAMES: [u16; FRAMES] = [0, 0, 1, 1, 2, 2, 1, 1];
+/// Per-frame left-eye tile: ping-pong over `3..=7` starting at `eyeLeftStart=3`.
+const LEFT_EYE_FRAMES: [u16; FRAMES] = [3, 4, 5, 6, 7, 6, 5, 4];
+/// Per-frame right-eye tile: ping-pong over `3..=7` starting at
+/// `eyeRightStart=7`.
+const RIGHT_EYE_FRAMES: [u16; FRAMES] = [7, 6, 5, 4, 3, 4, 5, 6];
 
 pub struct SkullEntity {
     x: i32,
     y: i32,
     w: i32,
     h: i32,
-    x_speed: i32,
-    y_speed: i32,
-    counter: i32,
-    dead: bool,
-    score_dispatched: bool,
-    zaphold: i32,
-    pending_kill: Option<DeathKind>,
+    /// Trigger link id (JN `counter`); the skull activates when a matching
+    /// `TRIGGER` arrives.
+    link_id: i32,
+    /// `false` until triggered; once `true` the eye animation loops.
+    active: bool,
+    /// Animation frame index `0..FRAMES` while active.
+    frame: usize,
 }
 
 impl SkullEntity {
-    pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
-        let w = i32::from(item.width()).max(BLOCK_SIZE_I);
-        let h = i32::from(item.height()).max(BLOCK_SIZE_I);
-        let xd = i32::from(item.x_speed());
-        let yd = i32::from(item.y_speed());
+    pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
+        cache.assert_tile_subset(TILESET_INDEX, 8, "SkullEntity tiles");
+        let (w, h) = sprite_dims(cache, TILESET_INDEX);
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()),
             w,
             h,
-            x_speed: if xd != 0 { xd } else { DEFAULT_SPEED },
-            y_speed: if yd != 0 { yd } else { DEFAULT_SPEED },
-            counter: 0,
-            dead: false,
-            score_dispatched: false,
-            zaphold: 0,
-            pending_kill: None,
+            link_id: i32::from(item.counter()),
+            active: false,
+            frame: 0,
         }
-    }
-
-    fn collides_solid(&self, backgrounds: &BackgroundGrid, nx: i32, ny: i32) -> bool {
-        let map_w = (backgrounds.width as i32) * BLOCK_SIZE_I;
-        let map_h = (backgrounds.height as i32) * BLOCK_SIZE_I;
-        if nx < 0 || ny < 0 || nx + self.w > map_w || ny + self.h > map_h {
-            return true;
-        }
-        let cx_l = nx.div_euclid(BLOCK_SIZE_I).max(0) as usize;
-        let cx_r = (nx + self.w - 1)
-            .div_euclid(BLOCK_SIZE_I)
-            .max(0)
-            .min((backgrounds.width as i32) - 1) as usize;
-        let cy_t = ny.div_euclid(BLOCK_SIZE_I).max(0) as usize;
-        let cy_b = (ny + self.h - 1)
-            .div_euclid(BLOCK_SIZE_I)
-            .max(0)
-            .min((backgrounds.height as i32) - 1) as usize;
-        for cy in cy_t..=cy_b {
-            for cx in cx_l..=cx_r {
-                if let Some(cell) = backgrounds.get(cx, cy)
-                    && (!cell.is_passthrough() || cell.is_stair())
-                {
-                    return true;
-                }
-            }
-        }
-        false
     }
 }
 
@@ -91,53 +77,24 @@ impl ObjectEntity for SkullEntity {
         &mut self,
         _input: &ActiveInput,
         _state: &RuntimeState,
-        backgrounds: &BackgroundGrid,
-        dispatcher: &mut MessageDispatcher,
+        _backgrounds: &BackgroundGrid,
+        _dispatcher: &mut MessageDispatcher,
     ) {
-        if self.dead {
-            if !self.score_dispatched {
-                self.score_dispatched = true;
-                dispatcher.send(
-                    MessageType::InventoryPoint,
-                    MessagePayload::Count(SCORE_VALUE),
-                );
-            }
-            return;
-        }
-        if self.zaphold > 0 {
-            self.zaphold -= 1;
-        }
-
-        // Bounce off walls horizontally.
-        let nx = self.x + self.x_speed;
-        if self.collides_solid(backgrounds, nx, self.y) {
-            self.x_speed = -self.x_speed;
-        } else {
-            self.x = nx;
-        }
-
-        // Bounce off ceilings/floors vertically.
-        let ny = self.y + self.y_speed;
-        if self.collides_solid(backgrounds, self.x, ny) {
-            self.y_speed = -self.y_speed;
-        } else {
-            self.y = ny;
-        }
-
-        self.counter += 1;
-        if self.counter >= NUMBER_TILE_SET as i32 {
-            self.counter = 0;
+        // Once triggered, cycle the eye animation forever (Java `msgUpdate`).
+        if self.active {
+            self.frame = (self.frame + 1) % FRAMES;
         }
     }
 
     fn draw(&self) -> Option<RenderCommand> {
-        if self.dead {
-            return None;
-        }
-        let frame = (self.counter as u16).min(NUMBER_TILE_SET - 1);
+        let tile = if self.active {
+            SKULL_FRAMES[self.frame]
+        } else {
+            FIXED_TILE
+        };
         Some(RenderCommand::Blit {
             tileset: TILESET_INDEX,
-            tile: TILE_BASE + frame,
+            tile,
             x: self.x,
             y: self.y,
             opaque: false,
@@ -145,30 +102,117 @@ impl ObjectEntity for SkullEntity {
         })
     }
 
-    fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {
-        if self.dead || self.zaphold > 0 {
-            return;
+    fn draw_multi(&self) -> Vec<RenderCommand> {
+        // Idle: just the fixed skull tile.
+        if !self.active {
+            return self.draw().into_iter().collect();
         }
-        self.zaphold = ZAPHOLD_AFTER_TOUCH as i32;
-        self.pending_kill = Some(DeathKind::Enemy);
+        // Active: skull base plus the two animated eyes.
+        let blit = |tile: u16, x: i32, y: i32| RenderCommand::Blit {
+            tileset: TILESET_INDEX,
+            tile,
+            x,
+            y,
+            opaque: false,
+            clip: None,
+        };
+        vec![
+            blit(SKULL_FRAMES[self.frame], self.x, self.y),
+            blit(
+                LEFT_EYE_FRAMES[self.frame],
+                self.x + EYE_LEFT_X,
+                self.y + EYE_LEFT_Y,
+            ),
+            blit(
+                RIGHT_EYE_FRAMES[self.frame],
+                self.x + EYE_RIGHT_X,
+                self.y + EYE_RIGHT_Y,
+            ),
+        ]
     }
 
-    fn on_kill(&mut self, damage: i32, _death_kind: DeathKind) {
-        if self.dead || damage < 1 {
-            return;
-        }
-        self.dead = true;
-    }
+    /// No-op: the skull does not harm the player.
+    fn on_touch(&mut self, _state: &RuntimeState, _dispatcher: &mut MessageDispatcher) {}
+
+    /// No-op: the skull cannot be killed.
+    fn on_kill(&mut self, _damage: i32, _death_kind: DeathKind) {}
 
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
     }
 
-    fn is_dead(&self) -> bool {
-        self.dead
+    /// Starts the eye animation when a trigger with the matching link id fires
+    /// (Java `recieveMessage` TRIGGER: `switch.counter == this.counter`).
+    fn receive_trigger(&mut self, link_id: i32) {
+        if link_id == self.link_id {
+            self.active = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openjill_data::jn::JnFile;
+
+    fn skull(link_id: i16) -> SkullEntity {
+        const OBJECT_RECORD_BYTES: usize = 31;
+        let total = 128 * 64 * 2 + 2 + OBJECT_RECORD_BYTES + 70;
+        let mut bytes = vec![0u8; total];
+        let count_off = 128 * 64 * 2;
+        bytes[count_off..count_off + 2].copy_from_slice(&1u16.to_le_bytes());
+        let record_off = count_off + 2;
+        bytes[record_off] = 51; // skull
+        // counter field lives at record offset 17 (see ObjectItemImpl layout);
+        // set it via the JnObject accessor expectation by writing the bytes.
+        let jn = JnFile::from_bytes(bytes).expect("synthetic JN parses");
+        let cache = AssetCache::synthetic();
+        let mut s = SkullEntity::new(&jn.objects()[0], &cache);
+        s.link_id = i32::from(link_id);
+        s
     }
 
-    fn take_player_kill(&mut self) -> Option<DeathKind> {
-        self.pending_kill.take()
+    fn tick(s: &mut SkullEntity) {
+        let grid = BackgroundGrid::new(Vec::new());
+        s.update(
+            &ActiveInput::default(),
+            &RuntimeState::new(),
+            &grid,
+            &mut MessageDispatcher::new(),
+        );
+    }
+
+    /// The skull is idle until its matching trigger fires, then animates.
+    #[test]
+    fn skull_activates_on_matching_trigger() {
+        let mut s = skull(5);
+        // Idle: frame never advances, draws the fixed tile.
+        tick(&mut s);
+        assert!(!s.active);
+        assert_eq!(s.draw_multi().len(), 1, "idle skull draws one tile");
+
+        // A non-matching trigger does nothing.
+        s.receive_trigger(4);
+        assert!(!s.active);
+
+        // The matching trigger starts the animation.
+        s.receive_trigger(5);
+        assert!(s.active);
+        let f0 = s.frame;
+        tick(&mut s);
+        assert_ne!(s.frame, f0, "frame advances once active");
+        assert_eq!(
+            s.draw_multi().len(),
+            3,
+            "active skull draws base + two eyes"
+        );
+    }
+
+    /// The skull never harms the player and cannot be killed.
+    #[test]
+    fn skull_is_harmless_and_unkillable() {
+        let mut s = skull(1);
+        s.on_kill(99, DeathKind::Enemy);
+        assert_eq!(s.take_player_kill(), None, "skull arms no contact kill");
     }
 }

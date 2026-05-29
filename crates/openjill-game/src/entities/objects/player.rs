@@ -30,6 +30,10 @@ const FIRE_COOLDOWN_TICKS: i32 = 8;
 ///
 /// Matches the speed used by `BulletManager` in the Java reference.
 const BULLET_SPEED_PX: i32 = 8;
+/// Downward spawn offset applied to a thrown knife, in pixels.
+///
+/// Matches Java `KniveManager` `initY = 2` (`this.y += initY` on launch).
+const KNIFE_SPAWN_Y_OFFSET: i32 = 2;
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
@@ -364,14 +368,18 @@ impl ObjectEntity for PlayerEntity {
             let bullet_x = if dir > 0 {
                 self.x + self.w
             } else {
-                self.x - BLOCK_SIZE_I
+                // Left-facing: place the knife's box just left of the player,
+                // sized to the real 10x10 knife sprite (not a full block).
+                self.x - crate::entities::objects::bullet::KNIFE_W
             };
             dispatcher.send(
                 MessageType::CreateObject,
                 MessagePayload::SpawnAt {
                     object_type: 36,
                     x: bullet_x,
-                    y: self.y,
+                    // Java `KniveManager` applies `this.y += initY` (initY = 2)
+                    // on launch so the knife leaves the hand slightly lowered.
+                    y: self.y + KNIFE_SPAWN_Y_OFFSET,
                     xd: dir * BULLET_SPEED_PX,
                     yd: 0,
                 },
@@ -983,20 +991,34 @@ fn has_floor_below(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> boo
     false
 }
 
-/// Returns `true` when the cell at the player's centre is climbable.
+/// Returns `true` when the player can grab a vine at this position.
 ///
-/// Mirrors `UtilityObjectEntity.isClimbing`: the reference samples the cell
-/// directly under the centre of the object's bounding box and consults the
-/// `isVine` flag (which we expose as `is_climbable`).
+/// Faithful port of `UtilityObjectEntity.isClimbing`: the grab only engages
+/// when the player's X is aligned to a block column (`x % blockSize == 0`);
+/// then any climbable (`isVine`) cell spanned by the bounding box counts.
 fn is_on_climbable(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool {
-    let cx = (x + w / 2).div_euclid(BLOCK_SIZE_I);
-    let cy = (y + h / 2).div_euclid(BLOCK_SIZE_I);
-    if cx < 0 || cy < 0 {
+    if x.rem_euclid(BLOCK_SIZE_I) != 0 {
         return false;
     }
-    grid.get(cx as usize, cy as usize)
-        .map(openjill_core::BackgroundEntity::is_climbable)
-        .unwrap_or(false)
+    let start_x = x.div_euclid(BLOCK_SIZE_I);
+    let end_x = (x + w - 1).div_euclid(BLOCK_SIZE_I);
+    let start_y = y.div_euclid(BLOCK_SIZE_I);
+    let end_y = (y + h - 1).div_euclid(BLOCK_SIZE_I);
+    for cx in start_x..=end_x {
+        for cy in start_y..=end_y {
+            if cx < 0 || cy < 0 {
+                continue;
+            }
+            if grid
+                .get(cx as usize, cy as usize)
+                .map(openjill_core::BackgroundEntity::is_climbable)
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Returns `true` when the rectangle `[x, x+w) x [y, y+h)` overlaps any cell
@@ -1072,14 +1094,16 @@ fn collides_horizontal(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) ->
     false
 }
 
-/// Attempts a vertical step, snapping to floor/ceiling on collision.
+/// Attempts a vertical step, snapping flush to floor/ceiling on collision.
 ///
 /// Falling (`dy > 0`): scans rows between current feet and destination feet;
 /// on the first blocking row snaps `y` so the player's feet sit exactly on
-/// that row's top edge (matching Java `moveObjectDown` behavior).
-/// Rising (`dy < 0`): all-or-nothing; returns `false` without moving when
-/// the destination overlaps a blocking cell.
-/// Returns `true` when the player's position changed.
+/// that row's top edge (matching Java `moveObjectDown`).  Returns `false` when
+/// a floor was hit so callers can land the player, even though `y` may have
+/// advanced part of the way.
+/// Rising (`dy < 0`): slides up pixel by pixel and stops flush below the first
+/// ceiling cell, mirroring Java `moveObjectUp` (a partial move that snaps to
+/// `(block.getY() + 1) * blockSize`).  Returns `true` when `y` changed.
 fn try_move_vertical(grid: &BackgroundGrid, x: i32, y: &mut i32, w: i32, h: i32, dy: i32) -> bool {
     if dy > 0 {
         let cx_l = x.div_euclid(BLOCK_SIZE_I).max(0) as usize;
@@ -1113,18 +1137,28 @@ fn try_move_vertical(grid: &BackgroundGrid, x: i32, y: &mut i32, w: i32, h: i32,
         *y += dy;
         true
     } else {
-        let new_y = *y + dy;
-        if collides_vertical(grid, x, new_y, w, h, dy) {
-            return false;
+        // Rising: advance one pixel at a time so the player snaps flush below a
+        // ceiling instead of stopping a whole step short (Java `moveObjectUp`).
+        let target = (*y + dy).max(0);
+        let mut moved = false;
+        while *y > target {
+            let next = *y - 1;
+            if collides_vertical(grid, x, next, w, h, dy) {
+                break;
+            }
+            *y = next;
+            moved = true;
         }
-        *y = new_y;
-        true
+        moved
     }
 }
 
-/// Attempts a single all-or-nothing horizontal step.
+/// Attempts a horizontal step, sliding flush to walls on collision.
 ///
-/// Same semantics as [`try_move_vertical`] on the X axis.
+/// Mirrors Java `moveObjectLeft`/`moveObjectRight`: a partial move that snaps
+/// the player against the blocking column instead of refusing the whole step.
+/// Advances one pixel at a time and clamps to the map bounds.  Returns `true`
+/// when `x` changed.
 fn try_move_vertical_horizontal(
     grid: &BackgroundGrid,
     x: &mut i32,
@@ -1133,12 +1167,19 @@ fn try_move_vertical_horizontal(
     h: i32,
     dx: i32,
 ) -> bool {
-    let new_x = *x + dx;
-    if collides_horizontal(grid, new_x, y, w, h) {
-        return false;
+    let max_x = (grid.width as i32) * BLOCK_SIZE_I - w;
+    let target = (*x + dx).clamp(0, max_x.max(0));
+    let step = (target - *x).signum();
+    let mut moved = false;
+    while *x != target {
+        let next = *x + step;
+        if collides_horizontal(grid, next, y, w, h) {
+            break;
+        }
+        *x = next;
+        moved = true;
     }
-    *x = new_x;
-    true
+    moved
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,6 +1308,50 @@ mod tests {
 
         assert_eq!(player.state(), PlayerStateKind::Jumping);
         assert_eq!(player.y_speed(), -JUMP_INIT_SIZE);
+    }
+
+    /// Unit under test: [`try_move_vertical_horizontal`].
+    ///
+    /// Invariants asserted: a horizontal step into a wall slides flush against
+    /// the blocking column (partial move, Java `moveObjectRight`) instead of
+    /// refusing the whole step; once flush, a further step makes no progress.
+    #[test]
+    fn horizontal_move_slides_flush_to_wall() {
+        let mut grid = synthetic_grid(8, 8, CellKind::Air);
+        // Solid wall column at cell x = 3 (pixels 48..64).
+        for cy in 0..8 {
+            set_cell(&mut grid, 3, cy, CellKind::Solid);
+        }
+        // Player (16 wide) at x = 24; the wall's left edge is at 48, so the
+        // player can advance until its right edge is flush at x = 32.
+        let mut x = 24;
+        let moved = try_move_vertical_horizontal(&grid, &mut x, 16, 16, 16, 8);
+        assert!(moved, "player should slide toward the wall");
+        assert_eq!(x, 32, "player snaps flush to the wall (32 + 16 == 48)");
+
+        let moved_again = try_move_vertical_horizontal(&grid, &mut x, 16, 16, 16, 8);
+        assert!(!moved_again, "flush against the wall: no further progress");
+        assert_eq!(x, 32);
+    }
+
+    /// Unit under test: [`try_move_vertical`] rising branch.
+    ///
+    /// Invariants asserted: a rising step into a ceiling snaps the player's top
+    /// edge flush below the ceiling cell (partial move, Java `moveObjectUp`)
+    /// rather than stopping a whole step short.
+    #[test]
+    fn rising_move_snaps_flush_below_ceiling() {
+        let mut grid = synthetic_grid(8, 8, CellKind::Air);
+        // Solid ceiling row at cell y = 1 (pixels 16..32).
+        for cx in 0..8 {
+            set_cell(&mut grid, cx, 1, CellKind::Solid);
+        }
+        // Player top at y = 40; rising by 12 would reach y = 28, but the
+        // ceiling bottom is at 32, so the top snaps flush to y = 32.
+        let mut y = 40;
+        let moved = try_move_vertical(&grid, 16, &mut y, 16, 16, -12);
+        assert!(moved, "player should rise toward the ceiling");
+        assert_eq!(y, 32, "player snaps flush below the ceiling");
     }
 
     /// Unit under test: jumping `y_speed` accelerates by

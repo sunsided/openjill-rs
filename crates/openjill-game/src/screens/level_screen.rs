@@ -532,6 +532,15 @@ pub struct LevelScreen {
     /// Seeded to [`LEVEL_MESSAGE_TICKS`] (72 ticks ≈ 4 s) on every new
     /// `StatusBarText` message; counted down each tick by [`Self::tick`].
     status_text_ticks: u32,
+    /// Whether the NOISE toggle key was held last tick, for rising-edge
+    /// detection so one key press flips the toggle exactly once.
+    noise_key_was_down: bool,
+    /// Whether the TURTLE toggle key was held last tick (rising-edge detect).
+    turtle_key_was_down: bool,
+    /// Alternating execution gate for turtle (slow-motion) mode; the world
+    /// updates only on ticks where this is `true` while turtle mode is on
+    /// (Java `AbstractExecutingStdLevel.turtleSwitch`).
+    turtle_switch: bool,
     /// Shared queue of `Trigger` link identifiers dispatched during the
     /// current tick by switches or touch triggers.
     ///
@@ -713,6 +722,9 @@ impl LevelScreen {
             status_inbox,
             status_text: None,
             status_text_ticks: 0,
+            noise_key_was_down: false,
+            turtle_key_was_down: false,
+            turtle_switch: false,
             trigger_inbox,
             player_move_inbox,
             create_object_inbox,
@@ -1054,8 +1066,8 @@ impl LevelScreen {
                 _ => Box::new(BulletEntity::with_velocity(
                     x,
                     y,
-                    BLOCK_SIZE_I,
-                    BLOCK_SIZE_I,
+                    crate::entities::objects::bullet::KNIFE_W,
+                    crate::entities::objects::bullet::KNIFE_H,
                     xd,
                     yd,
                 )),
@@ -1254,9 +1266,11 @@ impl LevelScreen {
                         .clamp(0, SCORE_DISPLAY_MAX);
                 }
                 StatusUpdate::Life(delta) => {
-                    // Clamp to `>= 0` only: negative deltas cannot drive
-                    // the lives count below zero in the shared state.
-                    state.lives = state.lives.saturating_add(delta).max(0);
+                    // Java `INVENTORY_LIFE` adjusts the life *bar* (health
+                    // segments) - e.g. an apple's `life = 1` tops up health.
+                    // Clamp to `[0, LIFEBAR_MAX]` so a pickup cannot overflow
+                    // the bar.
+                    state.health = state.health.saturating_add(delta).clamp(0, LIFEBAR_MAX);
                 }
                 StatusUpdate::Item(item, add) => {
                     if add {
@@ -1449,6 +1463,12 @@ impl LevelScreen {
             });
         }
 
+        // Control-panel NOISE / TURTLE toggle indicators, reflecting state.
+        commands.extend(crate::status_bar::control_toggle_commands(
+            state.noise_enabled,
+            state.turtle_enabled,
+        ));
+
         commands
     }
 
@@ -1482,6 +1502,19 @@ impl ScreenHandler for LevelScreen {
         self.pump_inbox();
         self.pump_status_inbox(state);
 
+        // Control-panel toggles: flip on the rising edge of the NOISE / TURTLE
+        // keys so a single press toggles exactly once.
+        let noise_down = input.contains(&InputCommand::ToggleNoise);
+        if noise_down && !self.noise_key_was_down {
+            state.noise_enabled = !state.noise_enabled;
+        }
+        self.noise_key_was_down = noise_down;
+        let turtle_down = input.contains(&InputCommand::ToggleTurtle);
+        if turtle_down && !self.turtle_key_was_down {
+            state.turtle_enabled = !state.turtle_enabled;
+        }
+        self.turtle_key_was_down = turtle_down;
+
         // Tick order each frame:
         // 1. Update every object entity (player moves, lifts dispatch
         //    PlayerMove, player dispatches CreateObject on fire).
@@ -1507,14 +1540,29 @@ impl ScreenHandler for LevelScreen {
         if state.invincibility_ticks > 0 {
             state.invincibility_ticks -= 1;
         }
-        self.update_objects(input, state);
-        self.apply_platform_moves();
-        self.dispatch_player_touches(state);
-        self.dispatch_projectile_hits();
-        self.route_triggers();
-        self.reap_removed_objects();
-        self.spawn_objects();
-        self.apply_background_clears();
+        // Turtle (slow-motion) mode runs the world-update step only every other
+        // tick.  Mirrors Java `AbstractExecutingStdLevel.doRunNext`: it executes
+        // the cycle when `!turtleMode || turtleSwitch`, and flips `turtleSwitch`
+        // every tick regardless.  Rendering still runs each tick so the frozen
+        // frame is redrawn.
+        let run_world = !state.turtle_enabled || self.turtle_switch;
+        self.turtle_switch = !self.turtle_switch;
+        // Freeze the world while a level-change message box is up: the player
+        // and every object stop updating so input cannot move Jill behind the
+        // modal.  Mirrors Java `AbstractMenuJillLevel.run`, which skips
+        // `doRun()` whenever `levelMessageBox.isEnable()`.  Rendering, the
+        // overlay, and the `message_ticks` countdown below still run, so the
+        // dialogue paints over a frozen frame and the transition fires on time.
+        if self.pending.is_none() && run_world {
+            self.update_objects(input, state);
+            self.apply_platform_moves();
+            self.dispatch_player_touches(state);
+            self.dispatch_projectile_hits();
+            self.route_triggers();
+            self.reap_removed_objects();
+            self.spawn_objects();
+            self.apply_background_clears();
+        }
         self.update_viewport();
 
         let mut commands = self.render_base_frame();
@@ -3209,16 +3257,16 @@ mod tests {
         assert_eq!(text, "500");
     }
 
-    /// Unit under test: [`MessageType::InventoryLife`] accumulates into the
-    /// shared [`RuntimeState::lives`] field across ticks.
+    /// Unit under test: [`MessageType::InventoryLife`] adjusts the health bar
+    /// (Java `INVENTORY_LIFE` targets the life bar, not the lives counter).
     ///
-    /// Preconditions: `RuntimeState::new()` starts at 3 lives; a -1
+    /// Preconditions: `RuntimeState::new()` starts at 6 health; a -1
     /// `InventoryLife` message is sent.
     ///
-    /// Invariants asserted: after the tick, `state.lives == 2` and a lives
-    /// `DrawText` command appears whose text is `"2"`.
+    /// Invariants asserted: after the tick, `state.health == 5` and the lives
+    /// counter is untouched.
     #[test]
-    fn inventory_life_message_decrements_lives_and_redraws_digit() {
+    fn inventory_life_message_adjusts_health_bar() {
         let bytes = jn_bytes_with_objects(&[]);
         let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
         dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-1));
@@ -3226,7 +3274,42 @@ mod tests {
         let input = ActiveInput::new();
         let mut state = RuntimeState::new();
         screen.tick(&input, &mut state);
-        assert_eq!(state.lives, 2);
+        assert_eq!(state.health, 5);
+        assert_eq!(
+            state.lives, 3,
+            "lives counter is independent of the life bar"
+        );
+    }
+
+    /// Unit under test: the NOISE / TURTLE control-panel toggles flip on the
+    /// rising key edge only - one flip per press, not once per held tick.
+    #[test]
+    fn control_toggle_keys_flip_state_on_key_press_edge() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let mut state = RuntimeState::new();
+        assert!(state.noise_enabled, "noise starts on");
+        assert!(!state.turtle_enabled, "turtle starts off");
+
+        let mut held = ActiveInput::new();
+        held.insert(InputCommand::ToggleNoise);
+        held.insert(InputCommand::ToggleTurtle);
+
+        // First tick with the keys down toggles each exactly once.
+        screen.tick(&held, &mut state);
+        assert!(!state.noise_enabled);
+        assert!(state.turtle_enabled);
+
+        // Holding the keys must not keep toggling.
+        screen.tick(&held, &mut state);
+        assert!(!state.noise_enabled);
+        assert!(state.turtle_enabled);
+
+        // Release then press again to toggle back.
+        screen.tick(&ActiveInput::new(), &mut state);
+        screen.tick(&held, &mut state);
+        assert!(state.noise_enabled);
+        assert!(!state.turtle_enabled);
     }
 
     /// Unit under test: [`MessageType::InventoryItem`] appends the carried
@@ -3345,27 +3428,27 @@ mod tests {
         assert_eq!(state.lives, 25, "underlying state must be left untouched");
     }
 
-    /// Unit under test: a negative `InventoryLife` delta cannot drive
-    /// `state.lives` below zero.
+    /// Unit under test: a negative `InventoryLife` delta cannot drive the
+    /// health bar below zero.
     ///
-    /// Preconditions: fresh `RuntimeState::new()` (3 lives); two
-    /// `InventoryLife(-5)` deltas applied across separate ticks.
+    /// Preconditions: fresh `RuntimeState::new()` (6 health); a large negative
+    /// delta then a further `-1`.
     ///
-    /// Invariants asserted: `state.lives` saturates at 0 rather than going
+    /// Invariants asserted: `state.health` saturates at 0 rather than going
     /// negative.
     #[test]
-    fn inventory_life_message_clamps_lives_at_zero() {
+    fn inventory_life_message_clamps_health_at_zero() {
         let bytes = jn_bytes_with_objects(&[]);
         let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
 
         let input = ActiveInput::new();
         let mut state = RuntimeState::new();
-        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-5));
+        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-10));
         screen.tick(&input, &mut state);
-        assert_eq!(state.lives, 0);
+        assert_eq!(state.health, 0);
         dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-1));
         screen.tick(&input, &mut state);
-        assert_eq!(state.lives, 0);
+        assert_eq!(state.health, 0);
     }
 
     /// Unit under test: every inventory grid `Blit` carries the inventory

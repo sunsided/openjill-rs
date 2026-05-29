@@ -96,7 +96,7 @@ fn is_water_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BaseTreeBackground, FFloorBackground, FroofBackground, Kill2Background, KillLavaBackground,
+        FFloorBackground, FroofBackground, Kill2Background, KillLavaBackground,
         KillWaterBackground, SpikeBackground, is_lava_name, is_water_name,
     };
     use crate::asset_cache::AssetCache;
@@ -270,19 +270,33 @@ mod tests {
         assert_eq!(player.death_kind(), Some(DeathKind::OtherBackground));
     }
 
-    /// Unit under test: [`BaseTreeBackground::is_climbable`].
+    /// Unit under test: [`StdBackgroundEntity::is_climbable`] flag wiring.
     ///
-    /// Invariants asserted: the climbable flag is `true`, which is the only
-    /// signal the player entity consults to enter the climbing state.
+    /// Invariants asserted: climbability follows the DMA `is_vine` flag (Java
+    /// `isVine`), so a vine-flagged cell is climbable and a plain cell is not.
+    /// One entry per layout: `map_code(u16 LE), tile(u8), tileset(u8),
+    /// flags(u16 LE), name_len(u8), name`.
     #[test]
-    fn base_tree_reports_is_climbable() {
-        let cache = AssetCache::synthetic();
-        let cell = BaseTreeBackground::for_map_code(0, &cache);
-        assert!(cell.is_climbable(), "BASETREE cells must be climbable");
-        assert!(
-            cell.is_passthrough(),
-            "BASETREE cells must allow the player to walk through them"
+    fn climbable_follows_dma_vine_flag() {
+        use openjill_data::dma::DmaFile;
+
+        // Two entries: map_code 1 with the vine bit (0x04) set, map_code 2 with
+        // no flags.
+        let bytes: Vec<u8> = vec![
+            0x01, 0x00, 0x00, 27, 0x04, 0x00, 4, b'V', b'I', b'N', b'E', // VINE
+            0x02, 0x00, 0x00, 27, 0x00, 0x00, 4, b'D', b'I', b'R', b'T', // DIRT
+        ];
+        let dma = DmaFile::from_bytes(bytes).expect("crafted DMA should parse");
+
+        let vine = super::standard::StdBackgroundEntity::from_dma_entry(
+            dma.get_by_map_code(1).expect("VINE entry present"),
         );
+        assert!(vine.is_climbable(), "vine-flagged cell must be climbable");
+
+        let dirt = super::standard::StdBackgroundEntity::from_dma_entry(
+            dma.get_by_map_code(2).expect("DIRT entry present"),
+        );
+        assert!(!dirt.is_climbable(), "non-vine cell must not be climbable");
     }
 
     /// Unit under test: [`FFloorBackground::is_passthrough`].

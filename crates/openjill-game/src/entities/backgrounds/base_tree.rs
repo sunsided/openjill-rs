@@ -50,10 +50,13 @@ impl BackgroundEntity for BaseTreeBackground {
         true
     }
 
-    /// Vine cells are climbable; this is the flag that the player entity uses
-    /// to enter the climb state.
+    /// Climbability follows the DMA `is_vine` flag on the underlying cell, like
+    /// every other background.  BASETREE itself carries bit-2-clear flags in
+    /// JILL.DMA (so it is not climbable); the real climbables (VNORM, POLET,
+    /// VINEBR, …) are routed to [`StdBackgroundEntity`] and pick up the flag
+    /// there.  Delegating here keeps both paths consistent with Java.
     fn is_climbable(&self) -> bool {
-        true
+        self.inner.is_climbable()
     }
 
     /// Vine cells are not stair cells.

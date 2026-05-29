@@ -3,23 +3,23 @@
 //! Mirrors `org.jill.game.entities.obj.FrogManager`: two-state machine.
 //! On floor (`on_floor = true`): counts ticks; after `counterBeforeJump`
 //! ticks launches a gravity arc toward the player.  In air (`on_floor =
-//! false`): moves horizontally (stops against walls, no direction reversal),
-//! applies gravity (+1 per tick), lands when `floor_below` returns true while
-//! descending.
+//! false`): slides horizontally (flush against walls, no direction reversal)
+//! and vertically (flush against ceilings/floors via [`slide_y`]), applies
+//! gravity (+1 per tick), and lands when a downward slide is fully blocked.
 //!
 //! Tileset/tile from `object_conf.json`: `tileSet = 63`, `tile = 0`,
 //! `numberTileSet = 6`.  Three tiles per direction (right/left):
 //!   tile 0/3 = on-floor frame, tile 1/4 = airborne frame, tile 2/5 = apex.
 //! SHA header[63] confirms: 6 tiles, 14×10 px each.
 
-use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
+use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
 use openjill_core::{
     ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
     ObjectEntity, Rect, RenderCommand, RuntimeState,
 };
 use openjill_data::jn::JnObject;
 
-use super::enemy_shared::{blocked_ahead, floor_below, floor_under_next, sprite_dims};
+use super::enemy_shared::{slide_x, slide_y, sprite_dims};
 use crate::asset_cache::AssetCache;
 
 /// SHA tileset that owns the frog frames.
@@ -128,15 +128,10 @@ impl ObjectEntity for FrogEntity {
         }
 
         if self.on_floor {
-            // Floor state: patrol with gap and wall checks; reverse on fail.
-            if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-                && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
-            {
-                self.x += self.x_speed;
-            } else {
-                self.x_speed = -self.x_speed;
-            }
-
+            // Floor state: the frog sits still and only counts ticks. Java
+            // `FrogManager.msgUpdate` does no horizontal movement while
+            // grounded (the floor branch is just `this.counter++`); it waits
+            // for `counterBeforeJump`, then launches toward the player.
             self.jump_counter += 1;
             if self.jump_counter >= JUMP_PERIOD {
                 self.jump_counter = 0;
@@ -146,37 +141,50 @@ impl ObjectEntity for FrogEntity {
                 // `xSpeed = xSpeedMax` and flip the sign when the player
                 // is to the left (`xd = PLAYER_POSITION.getX() - this.x;
                 // if (xd < 0) this.xSpeed *= -1;`). This makes the frog
-                // chase the player horizontally instead of patrolling
-                // blindly.
+                // chase the player horizontally.
                 let dir = if self.player_x < self.x { -1 } else { 1 };
                 self.x_speed = X_SPEED * dir;
+                // Java `this.y--` at launch ("picture has greater size").
+                self.y -= 1;
             }
         } else {
-            // Air state: move horizontally without gap check; stop at walls (no reversal).
-            if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed) {
-                self.x += self.x_speed;
-            }
+            // Air state: mirrors Java `FrogManager.msgUpdate`'s airborne branch.
+            // Horizontal: slide flush, stopping at walls (no reversal in air).
+            slide_x(
+                backgrounds,
+                &mut self.x,
+                self.y,
+                self.w,
+                self.h,
+                self.x_speed,
+            );
 
-            // Vertical arc: apply movement then gravity.
-            self.y += self.y_speed;
-            if self.y_speed < FALL_SPEED_MAX {
-                self.y_speed += 1;
-            }
-
-            // Land when descending and floor reached. The Java reference
-            // `UtilityObjectEntity.moveObjectDown` walks pixel-by-pixel
-            // and stops on first contact; the Rust port integrates
-            // `y += y_speed` in one step, which can overshoot a fast
-            // fall into the floor cell. Snap the frog so its bottom
-            // edge aligns with the top of the landed-on cell, otherwise
-            // the next-tick patrol probes report `blocked_ahead` and
-            // the frog wiggles in place.
-            if self.y_speed > 0 && floor_below(backgrounds, self.x, self.y, self.w, self.h) {
-                let foot_cell = (self.y + self.h).div_euclid(BLOCK_SIZE_I);
-                self.y = foot_cell * BLOCK_SIZE_I - self.h;
+            // Vertical: slide flush per axis so the frog cannot pass through a
+            // ceiling on the way up nor overshoot into the floor on the way
+            // down (Java `moveObjectUp`/`moveObjectDown`).
+            let moved = slide_y(
+                backgrounds,
+                self.x,
+                &mut self.y,
+                self.w,
+                self.h,
+                self.y_speed,
+            );
+            if self.y_speed < 0 && moved == 0 {
+                // Hit a ceiling while rising: cancel upward speed
+                // (`if (!moveObjectUp(...)) ySpeed = Y_SPEED_MIDDLE`).
+                self.y_speed = 0;
+            } else if self.y_speed > 0 && moved == 0 {
+                // Could not descend: landed (`if (!moveObjectDown(...))
+                // state = stateOnFloor; counter = 0`).
                 self.y_speed = 0;
                 self.on_floor = true;
                 self.jump_counter = 0;
+            }
+
+            // Gravity, applied after the move (`if (ySpeed < ySpeedMax) ySpeed++`).
+            if self.y_speed < FALL_SPEED_MAX {
+                self.y_speed += 1;
             }
         }
     }
@@ -289,10 +297,6 @@ mod tests {
         BackgroundGrid::new(rows)
     }
 
-    fn set_solid(grid: &mut BackgroundGrid, x: usize, y: usize, solid: bool) {
-        grid.cells[y][x] = Box::new(SolidIf { solid });
-    }
-
     fn synthetic_frog(x: i32, y: i32) -> openjill_data::jn::JnObject {
         const OBJECT_RECORD_BYTES: usize = 31;
         let total = 128 * 64 * 2 + 2 + OBJECT_RECORD_BYTES + 70;
@@ -307,20 +311,32 @@ mod tests {
         jn.objects()[0].clone()
     }
 
-    /// `FrogEntity` reverses direction after hitting a wall.
+    /// Grounded `FrogEntity` stays still and only counts ticks, then launches
+    /// toward the player after `JUMP_PERIOD` ticks (Java `FrogManager`:
+    /// floor state does no horizontal movement, just `counter++`).
     #[test]
-    fn frog_reverses_direction_at_wall() {
+    fn frog_waits_on_floor_then_jumps_toward_player() {
         let cache = AssetCache::synthetic();
-        let mut frog = FrogEntity::new(&synthetic_frog(32, 32), &cache);
-        let mut backgrounds = grid_with_floor(8, 6, 3);
-        set_solid(&mut backgrounds, 3, 2, true);
+        let mut frog = FrogEntity::new(&synthetic_frog(64, 32), &cache);
+        let backgrounds = grid_with_floor(8, 6, 3);
         let input = ActiveInput::default();
         let state = RuntimeState::new();
         let mut dispatcher = MessageDispatcher::new();
 
+        // Player to the left of the frog.
+        frog.observe_player(Rect::new(0, 32, 16, 16));
+
+        // While grounded the frog does not move horizontally.
+        for _ in 0..(JUMP_PERIOD - 1) {
+            frog.update(&input, &state, &backgrounds, &mut dispatcher);
+            assert_eq!(frog.bounding_box().x, 64, "grounded frog must not patrol");
+            assert!(frog.on_floor, "frog still grounded before jump");
+        }
+
+        // The launch tick fires the jump toward the player (to the left).
         frog.update(&input, &state, &backgrounds, &mut dispatcher);
-        assert_eq!(frog.bounding_box().x, 32, "blocked: no movement");
-        assert!(frog.x_speed < 0, "direction reversed after wall");
+        assert!(!frog.on_floor, "frog launched into the air");
+        assert!(frog.x_speed < 0, "frog jumps toward the player on the left");
     }
 
     /// `on_kill` with damage >= 1 marks dead; `draw` returns `None`.

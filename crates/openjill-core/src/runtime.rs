@@ -58,6 +58,12 @@ pub struct RuntimeState {
     /// counter is reset to [`PLAYER_INVINCIBILITY_TICKS`] whenever a hit
     /// is actually applied.
     pub invincibility_ticks: i32,
+    /// Sound ("NOISE") toggle; `true` = sound on.  Shown by the control-panel
+    /// noise indicator and flipped by the NOISE key.
+    pub noise_enabled: bool,
+    /// "TURTLE" slow-motion toggle; `true` = turtle mode on.  Shown by the
+    /// control-panel turtle indicator and flipped by the TURTLE key.
+    pub turtle_enabled: bool,
 }
 
 /// Player-side damage cooldown applied after a successful enemy hit.
@@ -81,6 +87,8 @@ impl RuntimeState {
             gem_count: 0,
             inventory: vec![InventoryObject::Jill],
             invincibility_ticks: 0,
+            noise_enabled: true,
+            turtle_enabled: false,
         }
     }
 }

@@ -23,7 +23,7 @@ use openjill_core::{
 };
 use openjill_data::jn::JnObject;
 
-use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
+use super::enemy_shared::{blocked_ahead, floor_under_next, slide_x, sprite_dims};
 use crate::asset_cache::AssetCache;
 
 /// SHA tileset that owns the gator frames.
@@ -128,7 +128,15 @@ impl ObjectEntity for GatorEntity {
         if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
             && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
         {
-            self.x += self.x_speed;
+            // Slide flush to the wall (Java `moveObjectRightOnFloor`).
+            slide_x(
+                backgrounds,
+                &mut self.x,
+                self.y,
+                self.w,
+                self.h,
+                self.x_speed,
+            );
         } else {
             self.x_speed = -self.x_speed;
         }

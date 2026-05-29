@@ -116,6 +116,16 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
                 color,
             });
         }
+
+        // SHIFT / ALT / F1 key caps - drawn as key-glyph tiles from the
+        // special-letter tileset (Java `ControlArea.drawSpecialKey` blits
+        // `grapSpecialKey` images), not as plain font text.  Emitted in the
+        // blit/fill phase so they sit behind the text labels.
+        if let Some(special) = ctrl.get("specialKey").and_then(|v| v.as_array()) {
+            commands.extend(special.iter().filter_map(|entry| {
+                parse_special_key_entry(entry, CONTROL_AREA_X, CONTROL_AREA_Y)
+            }));
+        }
     }
 
     // status_bar_vga.json text labels ("CONTROLS", "INVENTORY") - absolute coords.
@@ -133,18 +143,17 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
         );
     }
 
-    // control_area.json labels - coordinates are relative to the control area origin.
+    // control_area.json text labels - coordinates are relative to the control
+    // area origin.  (The SHIFT/ALT/F1 key-cap tiles are emitted earlier, in the
+    // blit phase.)
     if let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(CONTROL_AREA_JSON) {
-        // SHIFT / ALT / F1 key labels.
-        if let Some(special) = ctrl.get("specialKey").and_then(|v| v.as_array()) {
-            commands.extend(special.iter().filter_map(|entry| {
-                parse_text_entry_offset(entry, FontSize::Small, CONTROL_AREA_X, CONTROL_AREA_Y)
-            }));
-        }
-        // Movement hint and key-binding description text (small font).
+        // Movement hint and key-binding description text (small font).  The
+        // SHIFT/ALT rows carry placeholder labels ("-ctrl-"/"-alt-") that the
+        // Java reference replaces from `keysControlText`; substitute the
+        // default-weapon action labels so the panel reads as actions.
         if let Some(text) = ctrl.get("text").and_then(|v| v.as_array()) {
             commands.extend(text.iter().filter_map(|entry| {
-                parse_text_entry_offset(entry, FontSize::Small, CONTROL_AREA_X, CONTROL_AREA_Y)
+                parse_control_text_entry(entry, CONTROL_AREA_X, CONTROL_AREA_Y)
             }));
         }
         // N / Q / S / R / T single-character bindings (big font).
@@ -197,6 +206,109 @@ fn parse_text_entry_offset(
         y,
         color_index,
         font,
+    })
+}
+
+/// SHA tileset holding the special-key glyphs (Java
+/// `TextManagerImpl.SPECIAL_LETTER_TILESET = 6`).
+const SPECIAL_KEY_TILESET: u8 = 6;
+/// Special-key glyph index for an "off" toggle bullet
+/// (`TextManager.SPECIAL_BULLET_OFF = 10`).
+const SPECIAL_BULLET_OFF: u16 = 10;
+/// Special-key glyph index for an "on" toggle bullet
+/// (`TextManager.SPECIAL_BULLET_ON = 11`).
+const SPECIAL_BULLET_ON: u16 = 11;
+
+/// Builds the NOISE / TURTLE toggle indicator commands for the control panel,
+/// reflecting the current on/off state.
+///
+/// Mirrors Java `ControlArea`: an "on" or "off" bullet glyph is drawn at the
+/// `noiseBullet` / `turtleBullet` positions from `control_area.json`.  The
+/// bullets live in the special-key font tileset, so they are emitted as
+/// [`RenderCommand::BlitGlyph`] (recolor + background key-out).
+pub fn control_toggle_commands(noise_on: bool, turtle_on: bool) -> Vec<RenderCommand> {
+    let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(CONTROL_AREA_JSON) else {
+        return Vec::new();
+    };
+    [("noiseBullet", noise_on), ("turtleBullet", turtle_on)]
+        .into_iter()
+        .filter_map(|(key, on)| toggle_bullet_command(ctrl.get(key)?, on))
+        .collect()
+}
+
+/// Builds one toggle-bullet [`RenderCommand::BlitGlyph`] from a
+/// `noiseBullet`/`turtleBullet` config entry and its on/off state.
+fn toggle_bullet_command(entry: &serde_json::Value, on: bool) -> Option<RenderCommand> {
+    let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
+    let x = i32::try_from(entry.get("x")?.as_i64()?).ok()? + CONTROL_AREA_X;
+    let y = i32::try_from(entry.get("y")?.as_i64()?).ok()? + CONTROL_AREA_Y;
+    Some(RenderCommand::BlitGlyph {
+        tileset: SPECIAL_KEY_TILESET,
+        tile: if on {
+            SPECIAL_BULLET_ON
+        } else {
+            SPECIAL_BULLET_OFF
+        },
+        x,
+        y,
+        color_index,
+    })
+}
+
+/// Renders a `specialKey` entry as a recolored key-cap glyph (SHIFT/ALT/F1).
+///
+/// The glyphs live in a SHA *font* tileset, so they must be drawn via
+/// [`RenderCommand::BlitGlyph`] (recolor + background key-out), not a raw
+/// `Blit` which would show the font's internal pixel values.  Tile indices
+/// follow Java `TextManager`: `SPECIAL_KEY_SHIFT = 0`, `SPECIAL_KEY_ALT = 1`,
+/// `SPECIAL_KEY_F1 = 9`.
+fn parse_special_key_entry(entry: &serde_json::Value, dx: i32, dy: i32) -> Option<RenderCommand> {
+    let tile = match entry.get("text")?.as_str()? {
+        "SHIFT" => 0,
+        "ALT" => 1,
+        "F1" => 9,
+        _ => return None,
+    };
+    let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
+    let x = i32::try_from(entry.get("x")?.as_i64()?).ok()? + dx;
+    let y = i32::try_from(entry.get("y")?.as_i64()?).ok()? + dy;
+    Some(RenderCommand::BlitGlyph {
+        tileset: SPECIAL_KEY_TILESET,
+        tile,
+        x,
+        y,
+        color_index,
+    })
+}
+
+/// Maps a control-area placeholder label to the action it represents.
+///
+/// `control_area.json` keeps the DOS-era placeholders `-ctrl-` and `-alt-` on
+/// the SHIFT and ALT rows; the Java reference overwrites them at runtime from
+/// `keysControlText` (for the default knife weapon: SHIFT = jump, ALT = knife).
+/// Other labels pass through unchanged.
+fn control_action_label(raw: &str) -> &str {
+    match raw {
+        "-ctrl-" => "jump",
+        "-alt-" => "knife",
+        other => other,
+    }
+}
+
+/// Like [`parse_text_entry_offset`] but substitutes control-row action labels
+/// via [`control_action_label`].
+fn parse_control_text_entry(entry: &serde_json::Value, dx: i32, dy: i32) -> Option<RenderCommand> {
+    let raw = entry.get("text")?.as_str()?;
+    let text = control_action_label(raw).to_string();
+    let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
+    let x = i32::try_from(entry.get("x")?.as_i64()?).ok()? + dx;
+    let y = i32::try_from(entry.get("y")?.as_i64()?).ok()? + dy;
+    Some(RenderCommand::DrawText {
+        text,
+        x,
+        y,
+        color_index,
+        font: FontSize::Small,
     })
 }
 
@@ -268,9 +380,10 @@ mod tests {
     /// Preconditions: `STATUS_BAR_JSON` is the embedded `status_bar_vga.json` with a valid
     /// top-level `images` array.
     ///
-    /// Invariants asserted: the number of `Blit` commands returned equals the number of entries
-    /// in `images` (frame/border tiles only). The `imagesInvenroy` portrait tiles are intentionally
-    /// excluded from static bar commands since the portrait is main-menu-only.
+    /// Invariants asserted: the number of `Blit` commands equals the number of
+    /// `images` (frame/border tiles only); the `imagesInvenroy` portrait tiles
+    /// are excluded (main-menu-only), and the SHIFT/ALT/F1 key caps are emitted
+    /// as `BlitGlyph`, not `Blit`.
     #[test]
     fn status_bar_commands_blit_count_matches_json_images() {
         let commands = status_bar_commands();
@@ -288,6 +401,12 @@ mod tests {
             blit_count, expected,
             "Blit count must match images array length (portrait excluded)"
         );
+        // The three special-key caps render as recolored font glyphs.
+        let glyph_count = commands
+            .iter()
+            .filter(|cmd| matches!(cmd, RenderCommand::BlitGlyph { .. }))
+            .count();
+        assert_eq!(glyph_count, 3, "SHIFT/ALT/F1 emit BlitGlyph commands");
     }
 
     /// Unit under test: `status_bar_commands` `DrawText` count includes `text` + `bigtext` at
