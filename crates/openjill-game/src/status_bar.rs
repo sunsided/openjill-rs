@@ -116,6 +116,16 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
                 color,
             });
         }
+
+        // SHIFT / ALT / F1 key caps - drawn as key-glyph tiles from the
+        // special-letter tileset (Java `ControlArea.drawSpecialKey` blits
+        // `grapSpecialKey` images), not as plain font text.  Emitted in the
+        // blit/fill phase so they sit behind the text labels.
+        if let Some(special) = ctrl.get("specialKey").and_then(|v| v.as_array()) {
+            commands.extend(special.iter().filter_map(|entry| {
+                parse_special_key_entry(entry, CONTROL_AREA_X, CONTROL_AREA_Y)
+            }));
+        }
     }
 
     // status_bar_vga.json text labels ("CONTROLS", "INVENTORY") - absolute coords.
@@ -133,14 +143,10 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
         );
     }
 
-    // control_area.json labels - coordinates are relative to the control area origin.
+    // control_area.json text labels - coordinates are relative to the control
+    // area origin.  (The SHIFT/ALT/F1 key-cap tiles are emitted earlier, in the
+    // blit phase.)
     if let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(CONTROL_AREA_JSON) {
-        // SHIFT / ALT / F1 key labels.
-        if let Some(special) = ctrl.get("specialKey").and_then(|v| v.as_array()) {
-            commands.extend(special.iter().filter_map(|entry| {
-                parse_text_entry_offset(entry, FontSize::Small, CONTROL_AREA_X, CONTROL_AREA_Y)
-            }));
-        }
         // Movement hint and key-binding description text (small font).  The
         // SHIFT/ALT rows carry placeholder labels ("-ctrl-"/"-alt-") that the
         // Java reference replaces from `keysControlText`; substitute the
@@ -200,6 +206,32 @@ fn parse_text_entry_offset(
         y,
         color_index,
         font,
+    })
+}
+
+/// SHA tileset holding the special-key glyphs (Java
+/// `TextManagerImpl.SPECIAL_LETTER_TILESET = 6`).
+const SPECIAL_KEY_TILESET: u8 = 6;
+
+/// Renders a `specialKey` entry as a key-cap tile blit (SHIFT/ALT/F1) rather
+/// than font text.  Tile indices follow Java `TextManager`:
+/// `SPECIAL_KEY_SHIFT = 0`, `SPECIAL_KEY_ALT = 1`, `SPECIAL_KEY_F1 = 9`.
+fn parse_special_key_entry(entry: &serde_json::Value, dx: i32, dy: i32) -> Option<RenderCommand> {
+    let tile = match entry.get("text")?.as_str()? {
+        "SHIFT" => 0,
+        "ALT" => 1,
+        "F1" => 9,
+        _ => return None,
+    };
+    let x = i32::try_from(entry.get("x")?.as_i64()?).ok()? + dx;
+    let y = i32::try_from(entry.get("y")?.as_i64()?).ok()? + dy;
+    Some(RenderCommand::Blit {
+        tileset: SPECIAL_KEY_TILESET,
+        tile,
+        x,
+        y,
+        opaque: false,
+        clip: None,
     })
 }
 
@@ -293,7 +325,7 @@ pub const GAME_AREA_CLIP: openjill_core::ClipRect = openjill_core::ClipRect {
 
 #[cfg(test)]
 mod tests {
-    use super::{STATUS_BAR_JSON, game_area_blit, status_bar_commands};
+    use super::{CONTROL_AREA_JSON, STATUS_BAR_JSON, game_area_blit, status_bar_commands};
     use openjill_core::RenderCommand;
     use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
 
@@ -302,25 +334,31 @@ mod tests {
     /// Preconditions: `STATUS_BAR_JSON` is the embedded `status_bar_vga.json` with a valid
     /// top-level `images` array.
     ///
-    /// Invariants asserted: the number of `Blit` commands returned equals the number of entries
-    /// in `images` (frame/border tiles only). The `imagesInvenroy` portrait tiles are intentionally
-    /// excluded from static bar commands since the portrait is main-menu-only.
+    /// Invariants asserted: the number of `Blit` commands returned equals the
+    /// number of frame/border tiles in `images` plus the control-area
+    /// `specialKey` key-cap tiles (SHIFT/ALT/F1).  The `imagesInvenroy`
+    /// portrait tiles are intentionally excluded since the portrait is
+    /// main-menu-only.
     #[test]
     fn status_bar_commands_blit_count_matches_json_images() {
         let commands = status_bar_commands();
         let json: serde_json::Value =
             serde_json::from_str(STATUS_BAR_JSON).expect("STATUS_BAR_JSON must be valid JSON");
-        let expected = json["images"]
+        let images = json["images"]
             .as_array()
             .expect("images must be an array")
             .len();
+        let ctrl: serde_json::Value =
+            serde_json::from_str(CONTROL_AREA_JSON).expect("CONTROL_AREA_JSON must be valid JSON");
+        let special_keys = ctrl["specialKey"].as_array().map_or(0, |a| a.len());
+        let expected = images + special_keys;
         let blit_count = commands
             .iter()
             .filter(|cmd| matches!(cmd, RenderCommand::Blit { .. }))
             .count();
         assert_eq!(
             blit_count, expected,
-            "Blit count must match images array length (portrait excluded)"
+            "Blit count must match images + specialKey tiles"
         );
     }
 
