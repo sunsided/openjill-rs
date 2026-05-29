@@ -1254,9 +1254,11 @@ impl LevelScreen {
                         .clamp(0, SCORE_DISPLAY_MAX);
                 }
                 StatusUpdate::Life(delta) => {
-                    // Clamp to `>= 0` only: negative deltas cannot drive
-                    // the lives count below zero in the shared state.
-                    state.lives = state.lives.saturating_add(delta).max(0);
+                    // Java `INVENTORY_LIFE` adjusts the life *bar* (health
+                    // segments) - e.g. an apple's `life = 1` tops up health.
+                    // Clamp to `[0, LIFEBAR_MAX]` so a pickup cannot overflow
+                    // the bar.
+                    state.health = state.health.saturating_add(delta).clamp(0, LIFEBAR_MAX);
                 }
                 StatusUpdate::Item(item, add) => {
                     if add {
@@ -3217,16 +3219,16 @@ mod tests {
         assert_eq!(text, "500");
     }
 
-    /// Unit under test: [`MessageType::InventoryLife`] accumulates into the
-    /// shared [`RuntimeState::lives`] field across ticks.
+    /// Unit under test: [`MessageType::InventoryLife`] adjusts the health bar
+    /// (Java `INVENTORY_LIFE` targets the life bar, not the lives counter).
     ///
-    /// Preconditions: `RuntimeState::new()` starts at 3 lives; a -1
+    /// Preconditions: `RuntimeState::new()` starts at 6 health; a -1
     /// `InventoryLife` message is sent.
     ///
-    /// Invariants asserted: after the tick, `state.lives == 2` and a lives
-    /// `DrawText` command appears whose text is `"2"`.
+    /// Invariants asserted: after the tick, `state.health == 5` and the lives
+    /// counter is untouched.
     #[test]
-    fn inventory_life_message_decrements_lives_and_redraws_digit() {
+    fn inventory_life_message_adjusts_health_bar() {
         let bytes = jn_bytes_with_objects(&[]);
         let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
         dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-1));
@@ -3234,7 +3236,11 @@ mod tests {
         let input = ActiveInput::new();
         let mut state = RuntimeState::new();
         screen.tick(&input, &mut state);
-        assert_eq!(state.lives, 2);
+        assert_eq!(state.health, 5);
+        assert_eq!(
+            state.lives, 3,
+            "lives counter is independent of the life bar"
+        );
     }
 
     /// Unit under test: [`MessageType::InventoryItem`] appends the carried
@@ -3353,27 +3359,27 @@ mod tests {
         assert_eq!(state.lives, 25, "underlying state must be left untouched");
     }
 
-    /// Unit under test: a negative `InventoryLife` delta cannot drive
-    /// `state.lives` below zero.
+    /// Unit under test: a negative `InventoryLife` delta cannot drive the
+    /// health bar below zero.
     ///
-    /// Preconditions: fresh `RuntimeState::new()` (3 lives); two
-    /// `InventoryLife(-5)` deltas applied across separate ticks.
+    /// Preconditions: fresh `RuntimeState::new()` (6 health); a large negative
+    /// delta then a further `-1`.
     ///
-    /// Invariants asserted: `state.lives` saturates at 0 rather than going
+    /// Invariants asserted: `state.health` saturates at 0 rather than going
     /// negative.
     #[test]
-    fn inventory_life_message_clamps_lives_at_zero() {
+    fn inventory_life_message_clamps_health_at_zero() {
         let bytes = jn_bytes_with_objects(&[]);
         let (mut screen, mut dispatcher) = screen_with_dispatcher(bytes, 1);
 
         let input = ActiveInput::new();
         let mut state = RuntimeState::new();
-        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-5));
+        dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-10));
         screen.tick(&input, &mut state);
-        assert_eq!(state.lives, 0);
+        assert_eq!(state.health, 0);
         dispatcher.send(MessageType::InventoryLife, MessagePayload::Count(-1));
         screen.tick(&input, &mut state);
-        assert_eq!(state.lives, 0);
+        assert_eq!(state.health, 0);
     }
 
     /// Unit under test: every inventory grid `Blit` carries the inventory
