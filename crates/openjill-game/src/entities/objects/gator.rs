@@ -76,6 +76,9 @@ pub struct GatorEntity {
     score_dispatched: bool,
     zaphold: i32,
     pending_kill: Option<DeathKind>,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live state written back.
+    origin: JnObject,
 }
 
 impl GatorEntity {
@@ -88,17 +91,22 @@ impl GatorEntity {
         let (_, h) = sprite_dims(cache, TILESET_INDEX);
         let jn_h = i32::from(item.height());
         let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };
+        // Seed walk direction and animation phase from the JN record; authored
+        // gators carry zero speed (defaults to a rightward crawl) and zero
+        // counter, so fresh level entry is unchanged.
+        let xd = i32::from(item.x_speed());
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()) - y_adj,
             w: TILE_W * 2,
             h,
-            x_speed: X_SPEED,
-            counter: 0,
+            x_speed: if xd != 0 { xd } else { X_SPEED },
+            counter: i32::from(item.counter()),
             dead: false,
             score_dispatched: false,
-            zaphold: 0,
+            zaphold: i32::from(item.zap_hold()),
             pending_kill: None,
+            origin: item.clone(),
         }
     }
 }
@@ -202,6 +210,33 @@ impl ObjectEntity for GatorEntity {
 
     fn is_dead(&self) -> bool {
         self.dead
+    }
+
+    /// Snapshots the live gator for a save game, or `None` once dead.
+    ///
+    /// Writes back position (reversing the sprite y-adjustment), crawl
+    /// direction, the animation `counter`, and `zap_hold`.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.dead {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        let jn_h = i32::from(obj.height());
+        let y_adj = if jn_h > 0 { (self.h - jn_h).max(0) } else { 0 };
+        obj.set_position(self.x as u16, (self.y + y_adj) as u16);
+        // `new()` collapses an authored x_speed of 0 to the crawl default, so a
+        // live speed equal to that default is ambiguous; emit the authored
+        // value to keep the round-trip exact. The gator has no vertical motion,
+        // so the authored y_speed is preserved.
+        let xs = if self.x_speed == X_SPEED {
+            obj.x_speed()
+        } else {
+            self.x_speed as i16
+        };
+        obj.set_speed(xs, obj.y_speed());
+        obj.set_counter(self.counter as i16);
+        obj.set_zap_hold(self.zaphold as u16);
+        Some(obj)
     }
 
     fn take_player_kill(&mut self) -> Option<DeathKind> {
