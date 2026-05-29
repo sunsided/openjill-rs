@@ -1872,14 +1872,17 @@ mod tests {
         check!(json["entries"][0]["map_code_hex"] == Value::from("0x0102"));
         check!(json["entries"][0]["flags_hex"] == Value::from("0x0039"));
         check!(json["entries"][0]["is_msg_touch"] == Value::from(true));
-        check!(json["entries"][0]["is_stair"] == Value::from(true));
+        // flags 0x0039: stair (0x02) and vine (0x04) bits are clear.
+        check!(json["entries"][0]["is_stair"] == Value::from(false));
         check!(json["entries"][0]["name"] == Value::from("FLOOR"));
         check!(json["entries"][1]["index"] == Value::from(1));
         check!(json["entries"][1]["source_offset"] == Value::from(12));
         check!(json["entries"][1]["map_code"] == Value::from(0x0304));
         check!(json["entries"][1]["flags_hex"] == Value::from("0x0006"));
-        check!(json["entries"][1]["is_stair"] == Value::from(false));
-        check!(json["entries"][1]["is_vine"] == Value::from(false));
+        // flags 0x0006: stair (0x02) and vine (0x04) bits are set, so a
+        // ladder cell is both a stair and climbable.
+        check!(json["entries"][1]["is_stair"] == Value::from(true));
+        check!(json["entries"][1]["is_vine"] == Value::from(true));
         check!(json["entries"][1]["name"] == Value::from("LAD"));
     }
 
