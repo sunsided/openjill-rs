@@ -2,12 +2,12 @@
 //! transition loop.
 
 use openjill_core::{
-    ActiveInput, MAP_LEVEL, MessageDispatcher, RenderCommand, RuntimeState, ScreenHandler,
-    ScreenTransition,
+    ActiveInput, InventoryObject, MAP_LEVEL, MessageDispatcher, RenderCommand, RuntimeState,
+    ScreenHandler, ScreenTransition,
 };
 use openjill_data::cfg::{CfgHighScore, CfgSaveSlot};
 use openjill_data::episode::Episode;
-use openjill_data::jn::JnReadError;
+use openjill_data::jn::{JnFile, JnReadError, JnSaveData};
 use openjill_data::{DataDirectory, DataDirectoryError};
 use thiserror::Error;
 
@@ -251,25 +251,97 @@ impl GameOrchestrator {
 
     /// Snapshots the current game into `slot` under `name`.
     ///
-    /// Captures the live JN bytes from the active handler when it owns them
-    /// (the map screen owns the map JN; a level screen owns the level JN) and
-    /// falls back to the orchestrator's cached bytes for the half the active
-    /// screen does not own, so a save taken inside a level still records the
-    /// last-visited map state. Returns [`SaveError::NothingToSave`] when no
-    /// level has been entered yet (e.g. from the start menu).
+    /// Captures a **live** JN snapshot of the active screen
+    /// ([`ScreenHandler::snapshot_jn_bytes`]) - the current background, object
+    /// entities, and runtime save-data - and pairs it with the orchestrator's
+    /// cached bytes for the half the active screen does not own (the
+    /// last-visited map when saving inside a level, or the last level when
+    /// saving on the map). Returns [`SaveError::NothingToSave`] when no level
+    /// has been entered yet (e.g. from the start menu).
     pub fn save_to_slot(&mut self, slot: usize, name: &str) -> Result<(), SaveError> {
-        // Prefer the live bytes the active screen owns; for the half it does not
-        // own, borrow the cached buffer directly so neither is cloned (these
-        // buffers can be large and `save_game` only needs `&[u8]`).
-        let live_map = self.handler.map_jn_bytes();
-        let live_level = self.handler.level_jn_bytes();
-        let map = live_map.as_deref().or(self.map_jn_bytes.as_deref());
-        let level = live_level.as_deref().or(self.level_jn_bytes.as_deref());
+        // A save requires an active game screen producing a live snapshot;
+        // the start menu / intro screens return `None`.
+        let Some(live) = self.handler.snapshot_jn_bytes(&self.state) else {
+            return Err(SaveError::NothingToSave);
+        };
+        // The active screen owns exactly one half (map or level); the live
+        // snapshot fills that half and the cached bytes fill the other. The
+        // `is_world_map()` check is cheap (no buffer clone).
+        let (map, level): (Option<&[u8]>, Option<&[u8]>) = if self.handler.is_world_map() {
+            (Some(live.as_slice()), self.level_jn_bytes.as_deref())
+        } else {
+            (self.map_jn_bytes.as_deref(), Some(live.as_slice()))
+        };
         let (Some(map), Some(level)) = (map, level) else {
             return Err(SaveError::NothingToSave);
         };
         self.saves.save_game(slot, name, map, level)?;
         Ok(())
+    }
+
+    /// Restores a saved game from `slot`, replacing the active screen and
+    /// seeding [`RuntimeState`] from the saved snapshot's save-data block.
+    ///
+    /// Reads back the `(map, level)` JN snapshots, caches the map bytes for the
+    /// next `Map` transition, and reconstructs the saved screen: the world map
+    /// when the saved level number is [`MAP_LEVEL`], otherwise the level.
+    /// Health / score / inventory are restored from the reconstructed screen's
+    /// save-data block. `lives` is not part of the DOS save block and is
+    /// carried as-is.
+    pub fn restore_from_slot(&mut self, slot: usize) -> Result<(), SaveError> {
+        let (map_bytes, level_bytes) = self.saves.load_game(slot)?;
+        let level_jn = JnFile::from_bytes(level_bytes.clone()).map_err(SaveError::Parse)?;
+        let level_number = i32::from(level_jn.save_data().level() as i16);
+        self.dispatcher.clear();
+        self.map_jn_bytes = Some(map_bytes.clone());
+
+        if level_number == MAP_LEVEL {
+            // The save was taken on the world map: reconstruct the map and seed
+            // the runtime state from its (live) save-data block.
+            let map_jn = JnFile::from_bytes(map_bytes.clone()).map_err(SaveError::Parse)?;
+            self.apply_save_data(map_jn.save_data());
+            let screen = LevelScreen::from_bytes(
+                map_bytes,
+                &self.cache,
+                MAP_LEVEL,
+                &mut self.dispatcher,
+                EPISODE_1_SKY_COLOR,
+            )
+            .map_err(SaveError::Parse)?;
+            // Keep the saved level bytes available for a later `Level` entry,
+            // but do not stamp a level filename for the map.
+            self.level_jn_bytes = Some(level_bytes);
+            self.handler = Box::new(screen);
+        } else {
+            self.apply_save_data(level_jn.save_data());
+            let screen = LevelScreen::from_bytes(
+                level_bytes,
+                &self.cache,
+                level_number,
+                &mut self.dispatcher,
+                EPISODE_1_SKY_COLOR,
+            )
+            .map_err(SaveError::Parse)?;
+            self.level_jn_bytes = screen.level_jn_bytes();
+            self.level_jn_file = Some(self.episode.level_jn(level_number));
+            self.level_jn_number = Some(level_number);
+            self.level_entry_state = Some(self.state.clone());
+            self.handler = Box::new(screen);
+        }
+        Ok(())
+    }
+
+    /// Seeds [`RuntimeState`] (level / health / score / inventory) from a saved
+    /// JN save-data block.
+    fn apply_save_data(&mut self, save_data: &JnSaveData) {
+        self.state.level = i32::from(save_data.level() as i16);
+        self.state.health = i32::from(save_data.health());
+        self.state.score = save_data.score() as i32;
+        self.state.inventory = save_data
+            .inventory()
+            .iter()
+            .filter_map(|&code| InventoryObject::from_index(code))
+            .collect();
     }
 
     /// Applies a screen transition returned by the active handler.
@@ -463,6 +535,9 @@ pub enum SaveError {
     /// No level has been entered yet, so there is nothing to snapshot.
     #[error("no game in progress to save")]
     NothingToSave,
+    /// A saved JN snapshot could not be parsed during a restore.
+    #[error("failed to parse saved level: {0}")]
+    Parse(#[source] JnReadError),
 }
 
 /// Error returned when loading a map or level JN file during a screen transition fails.
@@ -485,7 +560,9 @@ mod tests {
     use crate::asset_cache::AssetCache;
     use crate::saves::SaveStore;
     use openjill_core::runtime::RuntimeState;
-    use openjill_core::{ActiveInput, RenderCommand, ScreenHandler, ScreenTransition, TickResult};
+    use openjill_core::{
+        ActiveInput, InventoryObject, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
+    };
     use openjill_data::DataDirectory;
     use openjill_data::cfg::CfgFile;
     use openjill_data::dma::DmaFile;
@@ -779,6 +856,51 @@ mod tests {
         );
     }
 
+    /// Unit under test: [`GameOrchestrator::save_to_slot`] +
+    /// [`GameOrchestrator::restore_from_slot`].
+    ///
+    /// Preconditions: the orchestrator enters a level (so the active handler is
+    /// a real `LevelScreen`); the runtime state then carries a health, score,
+    /// and inventory.
+    ///
+    /// Invariants asserted: after saving, clobbering the state, and restoring,
+    /// the runtime state (health/score/inventory/level) is recovered from the
+    /// saved level snapshot and the active level is reconstructed.
+    #[test]
+    fn save_then_restore_round_trips_runtime_state() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Level {
+            file: String::from("1.JN1"),
+            number: 1,
+        }));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        seed_level_cache(&mut orchestrator, "1.JN1", 1);
+        // A cached map snapshot stands in for the SAVEM half.
+        orchestrator.map_jn_bytes = Some(vec![0u8; JN_MIN_BYTES]);
+
+        // Enter the level so the active handler is a `LevelScreen`.
+        orchestrator.tick(&ActiveInput::default());
+
+        orchestrator.state.health = 4;
+        orchestrator.state.score = 1234;
+        orchestrator.state.inventory = vec![InventoryObject::Jill, InventoryObject::Gem];
+        orchestrator.save_to_slot(0, "HERO").expect("save succeeds");
+
+        // Clobber the live state, then restore it from the slot.
+        orchestrator.state.health = 99;
+        orchestrator.state.score = 0;
+        orchestrator.state.inventory.clear();
+        orchestrator.restore_from_slot(0).expect("restore succeeds");
+
+        assert_eq!(orchestrator.state.health, 4);
+        assert_eq!(orchestrator.state.score, 1234);
+        assert_eq!(
+            orchestrator.state.inventory,
+            vec![InventoryObject::Jill, InventoryObject::Gem]
+        );
+        assert_eq!(orchestrator.state.level, 1);
+        assert_eq!(orchestrator.level_jn_number, Some(1));
+    }
+
     /// Invariants asserted: after the tick, the active handler's
     /// `level_jn_bytes` matches the seeded bytes, confirming the in-memory
     /// path was taken without touching disk.
@@ -928,29 +1050,26 @@ mod tests {
         ));
     }
 
-    /// Unit under test: [`GameOrchestrator::save_to_slot`] snapshots the cached
-    /// map and level JN bytes, names the slot, and persists the snapshot so it
-    /// reads back through the underlying [`SaveStore`].
+    /// Unit under test: [`GameOrchestrator::save_to_slot`] requires an active
+    /// game screen producing a live snapshot.
     ///
-    /// Preconditions: the orchestrator is seeded with distinct synthetic map
-    /// and level bytes; the active start-menu handler owns neither, so the
-    /// orchestrator's cached bytes are used.
+    /// Preconditions: the active handler is the start menu (no live snapshot),
+    /// even though cached map and level bytes are present from prior play.
+    ///
+    /// Invariant asserted: the save is refused with
+    /// [`SaveError::NothingToSave`] rather than persisting stale cached bytes -
+    /// the player can only save from inside a level or the world map.
     #[test]
-    fn save_to_slot_snapshots_cached_map_and_level_bytes() {
+    fn save_to_slot_requires_an_active_game_screen() {
         let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
         let mut orchestrator = orchestrator_with_handler(handler);
-        let map = vec![1u8; 8];
-        let level = vec![2u8; 8];
-        orchestrator.map_jn_bytes = Some(map.clone());
-        orchestrator.level_jn_bytes = Some(level.clone());
+        orchestrator.map_jn_bytes = Some(vec![1u8; 8]);
+        orchestrator.level_jn_bytes = Some(vec![2u8; 8]);
 
-        orchestrator.save_to_slot(2, "HERO").expect("save succeeds");
-
-        assert_eq!(orchestrator.save_slots()[2].name(), "HERO");
-        assert_eq!(
-            orchestrator.saves.load_game(2).expect("load round-trips"),
-            (map, level)
-        );
+        assert!(matches!(
+            orchestrator.save_to_slot(2, "HERO"),
+            Err(SaveError::NothingToSave)
+        ));
     }
 
     /// Unit under test: [`GameOrchestrator::record_high_score`] writes through

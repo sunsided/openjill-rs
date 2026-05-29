@@ -23,10 +23,10 @@ use openjill_core::layout::{
 };
 use openjill_core::runtime::RuntimeState;
 use openjill_core::{
-    ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundGrid, ChangeLevelPayload,
-    ClipRect, DeathKind, FontSize, InputCommand, InventoryObject, MAP_LEVEL, MessageDispatcher,
-    MessageHandler, MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, ScreenHandler,
-    ScreenTransition, TickResult,
+    ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundEntity, BackgroundGrid,
+    ChangeLevelPayload, ClipRect, DeathKind, FontSize, InputCommand, InventoryObject, MAP_LEVEL,
+    MessageDispatcher, MessageHandler, MessagePayload, MessageType, ObjectEntity, Rect,
+    RenderCommand, ScreenHandler, ScreenTransition, TickResult,
 };
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::{JnFile, JnObject, JnReadError};
@@ -1494,6 +1494,53 @@ impl LevelScreen {
     fn drain_entity_dispatcher(&mut self) {
         self.entity_dispatcher.clear_pending();
     }
+
+    /// Builds a live save-game snapshot of this screen as a [`JnFile`].
+    ///
+    /// Mirrors the Java reference's `AbstractChangeLevel` save path: the live
+    /// background layer (so opened doors persist), the live object entities
+    /// (each via [`ObjectEntity::snapshot`]), and a save-data block built from
+    /// the current [`RuntimeState`] (level / health / inventory / score).
+    /// Objects whose `snapshot` returns `None` (collected pickups, dead
+    /// enemies, transient particles) are dropped, matching the original's
+    /// object list at save time.
+    fn snapshot_jn(&self, state: &RuntimeState) -> JnFile {
+        let mut jn = self.jn.clone();
+
+        // Live background: write every cell's current DMA map code back so
+        // opened doors / cleared tiles survive the round-trip.  A cleared cell
+        // is `transparent()` and reports no map code; persist `0` (the empty /
+        // open-air sentinel) so the door does not reappear on restore.
+        for y in 0..BACKGROUND_GRID_HEIGHT {
+            for x in 0..BACKGROUND_GRID_WIDTH {
+                let code = self
+                    .backgrounds
+                    .get(x, y)
+                    .and_then(BackgroundEntity::dma_map_code)
+                    .unwrap_or(0);
+                jn.set_background_code(x, y, code);
+            }
+        }
+
+        // Live objects: each entity serializes its own JN record.
+        let objects: Vec<JnObject> = self.objects.iter().filter_map(|e| e.snapshot()).collect();
+        jn.set_objects(objects);
+
+        // Save-data block from the live runtime state.
+        let inventory: Vec<u16> = state.inventory.iter().map(|item| item.index()).collect();
+        let level = if self.level_number == MAP_LEVEL {
+            MAP_LEVEL as u16
+        } else {
+            self.level_number as u16
+        };
+        jn.set_save_data(
+            level,
+            state.health.max(0) as u16,
+            &inventory,
+            state.score.max(0) as u32,
+        );
+        jn
+    }
 }
 
 impl ScreenHandler for LevelScreen {
@@ -1652,6 +1699,17 @@ impl ScreenHandler for LevelScreen {
         } else {
             Some(self.jn_bytes.clone())
         }
+    }
+
+    /// Serializes a live save-game snapshot of this screen (background +
+    /// objects + runtime save-data).
+    fn snapshot_jn_bytes(&self, state: &RuntimeState) -> Option<Vec<u8>> {
+        Some(self.snapshot_jn(state).to_bytes())
+    }
+
+    /// Returns `true` when this screen is acting as the world map.
+    fn is_world_map(&self) -> bool {
+        self.level_number == MAP_LEVEL
     }
 }
 
