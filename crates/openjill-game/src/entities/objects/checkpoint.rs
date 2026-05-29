@@ -111,6 +111,11 @@ pub struct CheckPointEntity {
     destination: CheckpointDestination,
     /// `true` once the checkpoint has dispatched its transition.
     fired: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.  The
+    /// authored `counter` and string pointer (which together resolve the
+    /// destination) are preserved untouched.
+    origin: JnObject,
 }
 
 impl CheckPointEntity {
@@ -128,6 +133,7 @@ impl CheckPointEntity {
             counter,
             destination: CheckpointDestination::from_jn(counter, string_entry),
             fired: false,
+            origin: item.clone(),
         }
     }
 
@@ -177,6 +183,18 @@ impl ObjectEntity for CheckPointEntity {
     /// Returns the checkpoint's bounding box for player overlap tests.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
+    }
+
+    /// Snapshots the checkpoint for a save game, or `None` once it has fired
+    /// (it is being reaped). The destination re-resolves from the preserved
+    /// `counter` and string pointer on restore.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.fired {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 
     /// Returns `true`: this entity is the level-transition marker.

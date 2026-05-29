@@ -36,6 +36,11 @@ use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
 
+/// JN `state` value for a solid (blocking) toggle wall.
+const STATE_SOLID: i16 = 0;
+/// JN `state` value for a toggled-open (passthrough) toggle wall.
+const STATE_PASSTHROUGH: i16 = 1;
+
 /// Toggle-wall entity.
 pub struct ToggleWallEntity {
     /// World X position in pixels.
@@ -52,12 +57,18 @@ pub struct ToggleWallEntity {
     link_id: i32,
     /// `true` when the wall is in its solid (blocking) state.
     active: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.  The
+    /// authored `counter` (trigger link id) is preserved untouched.
+    origin: JnObject,
 }
 
 impl ToggleWallEntity {
     /// Builds a toggle-wall entity from a JN object record.
     ///
-    /// Walls start active (solid) by default.
+    /// The solid/passthrough state is seeded from the JN `state` field so a
+    /// save game restores a toggled wall; authored walls carry `state = 0`
+    /// (solid), so a freshly loaded level is unchanged.
     pub fn new(item: &JnObject, _cache: &AssetCache) -> Self {
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
@@ -67,7 +78,8 @@ impl ToggleWallEntity {
             w,
             h,
             link_id: i32::from(item.counter()),
-            active: true,
+            active: item.state() != STATE_PASSTHROUGH,
+            origin: item.clone(),
         }
     }
 
@@ -102,6 +114,22 @@ impl ObjectEntity for ToggleWallEntity {
     /// Returns the wall's bounding box.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
+    }
+
+    /// Snapshots the wall for a save game (always persisted).
+    ///
+    /// The live solid/passthrough state is written into the `state` field so a
+    /// toggled wall survives restore; the link id (authored `counter`) is
+    /// preserved from the origin.
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        obj.set_state(if self.active {
+            STATE_SOLID
+        } else {
+            STATE_PASSTHROUGH
+        });
+        Some(obj)
     }
 
     /// Toggles the solid/passthrough state when `link_id` matches.

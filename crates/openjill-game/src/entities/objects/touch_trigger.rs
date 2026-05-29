@@ -33,6 +33,10 @@ pub struct TouchTriggerEntity {
     /// this against their own `counter` to decide whether the trigger targets
     /// them.
     counter: i16,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.  The
+    /// authored `counter` (link id) is preserved untouched.
+    origin: JnObject,
 }
 
 impl TouchTriggerEntity {
@@ -45,6 +49,7 @@ impl TouchTriggerEntity {
             y: i32::from(item.y()),
             w,
             h,
+            origin: item.clone(),
             counter: item.counter(),
         }
     }
@@ -86,6 +91,14 @@ impl ObjectEntity for TouchTriggerEntity {
     /// Returns the trigger's bounding box for collision tests.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
+    }
+
+    /// Snapshots the trigger for a save game (always persisted, position +
+    /// authored link id via the origin).
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
 

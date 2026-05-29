@@ -35,6 +35,10 @@ pub struct SwitchEntity {
     /// Copied from the JN `counter` field; receivers compare this value
     /// against their own `counter` to decide whether the trigger applies.
     link_id: i32,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.  The
+    /// authored `counter` (link id) is preserved untouched.
+    origin: JnObject,
 }
 
 impl SwitchEntity {
@@ -48,6 +52,7 @@ impl SwitchEntity {
             w,
             h,
             link_id: i32::from(item.counter()),
+            origin: item.clone(),
         }
     }
 
@@ -84,6 +89,14 @@ impl ObjectEntity for SwitchEntity {
     /// Returns the switch's bounding box for collision detection.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
+    }
+
+    /// Snapshots the switch for a save game (always persisted, position +
+    /// authored link id via the origin).
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
 

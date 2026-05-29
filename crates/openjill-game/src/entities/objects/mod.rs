@@ -161,6 +161,7 @@ pub fn make_object_entity(
 mod tests {
     use super::make_object_entity;
     use crate::asset_cache::AssetCache;
+    use openjill_core::{MessageDispatcher, RuntimeState};
     use openjill_data::jn::JnFile;
 
     /// Object record size in bytes; mirrors the constant used by the level
@@ -430,5 +431,64 @@ mod tests {
             Some(hive.clone()),
             "hive snapshot must round-trip"
         );
+    }
+
+    /// Unit under test: [`ObjectEntity::snapshot`] for the static / trigger
+    /// hazard group - lock door (24), toggle wall (26), switch (32),
+    /// checkpoint (12), touch trigger (15), bubbles (58), hit fire (37).
+    ///
+    /// Each persists position; the authored `counter` (key / link id /
+    /// destination) is preserved from the origin and the trigger/animation
+    /// state re-derives on restore.
+    #[test]
+    fn hazard_entities_snapshot_round_trip_their_source_record() {
+        let cache = AssetCache::synthetic();
+        for type_id in [24u8, 26, 32, 12, 15, 58, 37] {
+            let mut item = synthetic_object_of_type(type_id);
+            item.set_position(56, 72);
+            item.set_counter(4);
+            let entity = make_object_entity(type_id, &item, None, &cache);
+            assert_eq!(
+                entity.snapshot(),
+                Some(item.clone()),
+                "type {type_id} snapshot must round-trip its source record"
+            );
+        }
+    }
+
+    /// Unit under test: a toggled [`ToggleWallEntity`] persists its
+    /// passthrough state across a snapshot (it does not reset to solid).
+    #[test]
+    fn toggled_wall_snapshot_persists_passthrough_state() {
+        let cache = AssetCache::synthetic();
+        let mut item = synthetic_object_of_type(26);
+        item.set_position(56, 72);
+        item.set_counter(7); // trigger link id
+
+        let mut wall = make_object_entity(26, &item, None, &cache);
+        wall.receive_trigger(7); // flip solid -> passthrough
+
+        // `state` field 1 == STATE_PASSTHROUGH; restoring it yields a
+        // passthrough wall rather than the authored solid default.
+        let snapshot = wall.snapshot().expect("a toggle wall always persists");
+        assert_eq!(
+            snapshot.state(),
+            1,
+            "toggled-open state must survive a save"
+        );
+    }
+
+    /// Unit under test: a fired [`CheckPointEntity`] is not persisted (it is
+    /// being reaped after dispatching its transition), exercising the
+    /// conditional `None` branch shared by the removable hazards.
+    #[test]
+    fn fired_checkpoint_is_not_persisted() {
+        let cache = AssetCache::synthetic();
+        let item = synthetic_object_of_type(12);
+        let mut checkpoint = make_object_entity(12, &item, None, &cache);
+
+        checkpoint.on_touch(&RuntimeState::new(), &mut MessageDispatcher::new());
+
+        assert_eq!(checkpoint.snapshot(), None, "fired checkpoint is not saved");
     }
 }
