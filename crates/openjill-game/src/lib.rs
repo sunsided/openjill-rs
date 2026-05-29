@@ -21,6 +21,7 @@ pub mod asset_cache;
 pub mod entities;
 pub mod level_config;
 pub mod orchestrator;
+pub mod saves;
 pub mod screens;
 pub mod status_bar;
 
