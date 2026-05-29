@@ -277,6 +277,14 @@ impl ByteReader {
         }
     }
 
+    /// Returns the full backing byte buffer, independent of the cursor.
+    ///
+    /// Lets parsers retain a verbatim copy of their source for later
+    /// re-serialisation (for example `CfgFile::to_bytes`).
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// Returns the total length of the underlying byte buffer.
     pub fn len(&self) -> usize {
         self.bytes.len()
