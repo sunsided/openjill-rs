@@ -9,7 +9,7 @@
 //! Right-facing: tiles 0-3.  Left-facing: tiles 4-7.
 //! SHA header[11] confirms: 12 tiles, 16×16 px each.
 
-use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
+use openjill_core::layout::ZAPHOLD_AFTER_TOUCH;
 use openjill_core::{
     ActiveInput, BackgroundGrid, DeathKind, MessageDispatcher, MessagePayload, MessageType,
     ObjectEntity, Rect, RenderCommand, RuntimeState,
@@ -17,7 +17,7 @@ use openjill_core::{
 use openjill_data::jn::JnObject;
 
 use crate::asset_cache::AssetCache;
-use crate::entities::objects::enemy_shared::sprite_dims;
+use crate::entities::objects::enemy_shared::{slide_x, sprite_dims};
 
 /// SHA tileset that owns the firebird enemy frames.
 ///
@@ -84,35 +84,6 @@ impl FirebirdEnemyEntity {
             pending_kill: None,
         }
     }
-
-    /// `true` when the bounding box overlaps a solid cell or is outside the map.
-    fn collides_solid(&self, backgrounds: &BackgroundGrid, nx: i32, ny: i32) -> bool {
-        let map_w = (backgrounds.width as i32) * BLOCK_SIZE_I;
-        let map_h = (backgrounds.height as i32) * BLOCK_SIZE_I;
-        if nx < 0 || ny < 0 || nx + self.w > map_w || ny + self.h > map_h {
-            return true;
-        }
-        let cx_l = nx.div_euclid(BLOCK_SIZE_I).max(0) as usize;
-        let cx_r = (nx + self.w - 1)
-            .div_euclid(BLOCK_SIZE_I)
-            .max(0)
-            .min((backgrounds.width as i32) - 1) as usize;
-        let cy_t = ny.div_euclid(BLOCK_SIZE_I).max(0) as usize;
-        let cy_b = (ny + self.h - 1)
-            .div_euclid(BLOCK_SIZE_I)
-            .max(0)
-            .min((backgrounds.height as i32) - 1) as usize;
-        for cy in cy_t..=cy_b {
-            for cx in cx_l..=cx_r {
-                if let Some(cell) = backgrounds.get(cx, cy)
-                    && !cell.is_passthrough()
-                {
-                    return true;
-                }
-            }
-        }
-        false
-    }
 }
 
 impl ObjectEntity for FirebirdEnemyEntity {
@@ -137,12 +108,19 @@ impl ObjectEntity for FirebirdEnemyEntity {
             self.zaphold -= 1;
         }
 
-        let nx = self.x + self.x_speed;
-
-        if self.collides_solid(backgrounds, nx, self.y) {
+        // Fly horizontally, sliding flush to walls and reversing when fully
+        // blocked (Java `moveObjectLeft`/`moveObjectRight`; stairs are not
+        // walls for the firebird).
+        let moved = slide_x(
+            backgrounds,
+            &mut self.x,
+            self.y,
+            self.w,
+            self.h,
+            self.x_speed,
+        );
+        if moved == 0 {
             self.x_speed = -self.x_speed;
-        } else {
-            self.x = nx;
         }
 
         self.counter += 1;

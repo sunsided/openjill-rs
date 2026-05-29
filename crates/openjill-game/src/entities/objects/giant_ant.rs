@@ -14,7 +14,7 @@ use openjill_core::{
 };
 use openjill_data::jn::JnObject;
 
-use super::enemy_shared::{blocked_ahead, floor_under_next, sprite_dims};
+use super::enemy_shared::{blocked_ahead, floor_under_next, slide_x, sprite_dims};
 use crate::asset_cache::AssetCache;
 
 /// SHA tileset that owns the giant-ant frames.
@@ -42,6 +42,8 @@ const X_SPEED: i32 = 4;
 ///
 /// REVERSE-ENGINEERED.
 const SCORE_VALUE: i32 = 200;
+/// Ticks the ant pauses after turning at a wall/gap (`stateTurn = 2`).
+const TURN_PAUSE: i32 = 2;
 
 pub struct GiantAntEntity {
     x: i32,
@@ -49,6 +51,9 @@ pub struct GiantAntEntity {
     w: i32,
     h: i32,
     x_speed: i32,
+    /// Remaining pause ticks after a turn; the ant holds still while `> 0`
+    /// (Java `state = stateTurn`).
+    turn_pause: i32,
     counter: i32,
     dead: bool,
     score_dispatched: bool,
@@ -72,6 +77,7 @@ impl GiantAntEntity {
             w,
             h,
             x_speed: X_SPEED,
+            turn_pause: 0,
             counter: 0,
             dead: false,
             score_dispatched: false,
@@ -102,12 +108,30 @@ impl ObjectEntity for GiantAntEntity {
         if self.zaphold > 0 {
             self.zaphold -= 1;
         }
+
+        // Pause briefly after turning (Java state-machine `stateTurn`).
+        if self.turn_pause > 0 {
+            self.turn_pause -= 1;
+            return;
+        }
+
         if !blocked_ahead(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
             && floor_under_next(backgrounds, self.x, self.y, self.w, self.h, self.x_speed)
         {
-            self.x += self.x_speed;
+            // Slide flush to the wall (Java `moveObjectRightOnFloor`).
+            slide_x(
+                backgrounds,
+                &mut self.x,
+                self.y,
+                self.w,
+                self.h,
+                self.x_speed,
+            );
         } else {
+            // Wall or gap: reverse and pause.
             self.x_speed = -self.x_speed;
+            self.turn_pause = TURN_PAUSE;
+            self.counter = 0;
         }
         self.counter += 1;
         if self.counter >= NUMBER_TILE_SET as i32 {
