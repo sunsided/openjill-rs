@@ -311,4 +311,32 @@ mod tests {
         let entity = make_object_entity(27, &item, None, &cache);
         assert_eq!(entity.snapshot(), Some(item.clone()));
     }
+
+    /// Unit under test: [`ObjectEntity::snapshot`] for the ground-walker enemy
+    /// group - crab (47), gator (48), giant ant (29).
+    ///
+    /// Each record carries a live (non-zero) walk direction, animation
+    /// `counter`, `zap_hold`, and a sub-sprite height that exercises the
+    /// construction y-adjustment reversal; `snapshot` must reproduce it.
+    #[test]
+    fn walker_enemy_snapshot_round_trips_with_live_direction() {
+        let cache = AssetCache::synthetic();
+        for type_id in [47u8, 48, 29] {
+            let mut item = synthetic_object_of_type(type_id);
+            item.set_position(80, 96);
+            // Non-zero so new() keeps the authored direction (0 would default
+            // to the patrol speed and break the round-trip).
+            item.set_speed(-4, 0);
+            item.set_counter(2);
+            item.set_zap_hold(1);
+            // Sub-sprite height exercises the y-adjustment reversal.
+            item.set_dimensions(16, 4);
+            let entity = make_object_entity(type_id, &item, None, &cache);
+            assert_eq!(
+                entity.snapshot(),
+                Some(item.clone()),
+                "type {type_id} snapshot must round-trip its source record"
+            );
+        }
+    }
 }
