@@ -96,4 +96,19 @@ pub trait ScreenHandler {
     fn level_jn_bytes(&self) -> Option<Vec<u8>> {
         None
     }
+
+    /// Serializes a **live** save-game snapshot of this screen's JN file:
+    /// the current background layer, the live object entities, and a save-data
+    /// block built from `state` (level/health/inventory/score).
+    ///
+    /// Differs from [`map_jn_bytes`] / [`level_jn_bytes`], which return the
+    /// load-time bytes for restart purposes. Only `LevelScreen` (acting as a
+    /// regular level or the world map) overrides this; menus and intro screens
+    /// return `None`, meaning "nothing to snapshot".
+    ///
+    /// [`map_jn_bytes`]: ScreenHandler::map_jn_bytes
+    /// [`level_jn_bytes`]: ScreenHandler::level_jn_bytes
+    fn snapshot_jn_bytes(&self, _state: &RuntimeState) -> Option<Vec<u8>> {
+        None
+    }
 }
