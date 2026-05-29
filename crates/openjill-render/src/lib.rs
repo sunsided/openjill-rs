@@ -795,10 +795,22 @@ fn draw_text_colorized_indexed(
     }
 }
 
+/// CGA-font background pixel value that is also keyed out as transparent.
+///
+/// Mirrors `TextManagerImpl.BACKGROUND_COLOR_INDEX = 3`: these glyphs encode
+/// pixel value `0` (always transparent) and `3` (background, transparent when
+/// drawn with `BACKGROUND_COLOR_NONE`) as the keyed-out colors, while values
+/// `1` and `2` are the foreground recolored to the requested color.  The
+/// special-key tileset stores only values `0..=3` even though it reports a
+/// 4-bit depth, so the generic max-value transparent key (15) never matched
+/// its background.
+const CGA_FONT_BACKGROUND_PIXEL: u8 = 3;
+
 /// Draws a single decoded font glyph as a colorized mask at `(x, y)`.
 ///
-/// Non-transparent glyph pixels (value `!= FONT_GLYPH_TRANSPARENT_PIXEL`) write
-/// `color_index`; transparent pixels are skipped.  Used by
+/// Foreground glyph pixels write `color_index`; the transparent pixel
+/// ([`FONT_GLYPH_TRANSPARENT_PIXEL`]) and the CGA background pixel
+/// ([`CGA_FONT_BACKGROUND_PIXEL`]) are skipped.  Used by
 /// [`RenderCommand::BlitGlyph`] for the control-panel key-cap glyphs.
 fn draw_glyph_colorized(
     framebuffer: &mut [u8],
@@ -818,7 +830,8 @@ fn draw_glyph_colorized(
                 continue;
             }
             let glyph_index = glyph_y * usize::from(glyph.width) + glyph_x;
-            if glyph.pixels[glyph_index] == FONT_GLYPH_TRANSPARENT_PIXEL {
+            let pixel = glyph.pixels[glyph_index];
+            if pixel == FONT_GLYPH_TRANSPARENT_PIXEL || pixel == CGA_FONT_BACKGROUND_PIXEL {
                 continue;
             }
             framebuffer[target_y as usize * FRAMEBUFFER_WIDTH + target_x as usize] = color_index;
