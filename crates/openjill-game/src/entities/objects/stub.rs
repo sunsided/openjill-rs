@@ -31,6 +31,10 @@ pub struct StubObjectEntity {
     x: i32,
     /// Spawn position in world pixels copied from the JN object record.
     y: i32,
+    /// The JN object record this stub was built from, re-emitted verbatim by
+    /// [`ObjectEntity::snapshot`] so an unrecognized authored object still
+    /// round-trips through a save game.
+    origin: JnObject,
 }
 
 impl StubObjectEntity {
@@ -50,6 +54,7 @@ impl StubObjectEntity {
             type_id,
             x: i32::from(item.x()),
             y: i32::from(item.y()),
+            origin: item.clone(),
         }
     }
 
@@ -63,6 +68,7 @@ impl StubObjectEntity {
             type_id,
             x: i32::from(item.x()),
             y: i32::from(item.y()),
+            origin: item.clone(),
         }
     }
 
@@ -112,6 +118,16 @@ impl ObjectEntity for StubObjectEntity {
     /// cannot register a collision with the player.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, 0, 0)
+    }
+
+    /// Snapshots the unrecognized object verbatim so it survives a save game.
+    ///
+    /// The stub does not move, so the cloned origin already carries the
+    /// authored fields; the live position is written back defensively.
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
 
