@@ -202,8 +202,8 @@ impl ObjectEntity for GiantAntEntity {
         // live speed equal to that default is ambiguous; emit the authored
         // value to keep the round-trip exact. The ant has no vertical motion,
         // so the authored y_speed is preserved.
-        let xs = if self.x_speed == X_SPEED {
-            obj.x_speed()
+        let xs = if self.x_speed == X_SPEED && obj.x_speed() == 0 {
+            0
         } else {
             self.x_speed as i16
         };

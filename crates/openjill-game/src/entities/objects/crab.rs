@@ -211,8 +211,8 @@ impl ObjectEntity for CrabEntity {
         // `new()` collapses an authored x_speed of 0 to the patrol default, so
         // a live speed equal to that default is ambiguous; emit the authored
         // value to keep the round-trip exact, and the live speed otherwise.
-        let xs = if self.x_speed == X_SPEED {
-            obj.x_speed()
+        let xs = if self.x_speed == X_SPEED && obj.x_speed() == 0 {
+            0
         } else {
             self.x_speed as i16
         };

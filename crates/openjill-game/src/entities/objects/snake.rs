@@ -257,8 +257,8 @@ impl ObjectEntity for SnakeEntity {
         obj.set_dimensions(self.w as u16, obj.height());
         // `new()` collapses an authored x_speed of 0 to the slither default, so
         // a live speed equal to that default emits the authored value.
-        let xs = if self.x_speed == X_SPEED {
-            obj.x_speed()
+        let xs = if self.x_speed == X_SPEED && obj.x_speed() == 0 {
+            0
         } else {
             self.x_speed as i16
         };
