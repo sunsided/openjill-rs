@@ -7,6 +7,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use openjill_data::cfg::{CfgFile, CfgHighScore, CfgReadError, CfgSaveSlot};
+use openjill_data::{DataDirectory, Episode};
+use thiserror::Error;
+
 /// Environment variable that overrides the writable state base directory.
 const STATE_DIR_ENV: &str = "OPENJILL_STATE_DIR";
 /// Application subdirectory under the platform data dir.
@@ -84,6 +88,124 @@ fn resolve_root(
     base.join(episode)
 }
 
+/// Errors raised by [`SaveStore`] operations.
+#[derive(Debug, Error)]
+pub enum SaveStoreError {
+    /// A filesystem read/write of the runtime directory failed.
+    #[error("save-store I/O error: {0}")]
+    Io(#[from] io::Error),
+    /// The config bytes could not be parsed.
+    #[error("config parse error: {0}")]
+    Cfg(#[from] CfgReadError),
+}
+
+/// Runtime saves, high scores, and config for one episode.
+///
+/// Owns the writable [`RuntimeDir`] and the working [`CfgFile`].  The CFG is
+/// loaded from the runtime directory if present, otherwise seeded from the
+/// original (read-only) `JILL1.CFG` when available, otherwise from defaults;
+/// the seed is persisted best-effort.  All mutations write through the runtime
+/// directory and never touch the original data.
+pub struct SaveStore {
+    runtime: RuntimeDir,
+    cfg: CfgFile,
+    /// Config file name (e.g. `JILL1.CFG`).
+    cfg_file: &'static str,
+    /// Save-file / config name prefix (e.g. `JN1`).
+    prefix: &'static str,
+}
+
+impl SaveStore {
+    /// Opens the store for `episode`, resolving the runtime directory from the
+    /// environment / platform data dir.
+    pub fn open(original: &DataDirectory, episode: &Episode) -> Result<Self, SaveStoreError> {
+        Self::open_with_runtime(RuntimeDir::for_episode(episode.jn_ext), original, episode)
+    }
+
+    /// Opens the store using an explicit runtime directory (tests, callers that
+    /// already resolved the location).
+    pub fn open_with_runtime(
+        runtime: RuntimeDir,
+        original: &DataDirectory,
+        episode: &Episode,
+    ) -> Result<Self, SaveStoreError> {
+        let cfg = if runtime.exists(episode.cfg) {
+            // Existing runtime config is authoritative; a parse failure here is
+            // surfaced (corrupt local state) rather than silently discarded.
+            CfgFile::from_bytes(runtime.read(episode.cfg)?, episode.jn_ext)?
+        } else {
+            // Seed: copy the original config when present, else defaults.
+            let cfg = match original
+                .open_reader(episode.cfg)
+                .ok()
+                .map(|reader| reader.as_bytes().to_vec())
+            {
+                Some(bytes) => CfgFile::from_bytes(bytes, episode.jn_ext)?,
+                None => CfgFile::empty(episode.jn_ext),
+            };
+            // Persist the seed so the next run reads it; ignore write failures
+            // so a non-writable location degrades to in-memory rather than
+            // crashing.
+            let _ = runtime.write_atomic(episode.cfg, &cfg.to_bytes());
+            cfg
+        };
+        Ok(Self {
+            runtime,
+            cfg,
+            cfg_file: episode.cfg,
+            prefix: episode.jn_ext,
+        })
+    }
+
+    /// Returns the current high-score table.
+    pub fn high_scores(&self) -> &[CfgHighScore] {
+        self.cfg.high_scores()
+    }
+
+    /// Returns the current save slots.
+    pub fn save_slots(&self) -> &[CfgSaveSlot] {
+        self.cfg.save_slots()
+    }
+
+    /// Writes a save-game snapshot to `slot`: the map JN bytes to
+    /// `{prefix}SAVEM.{slot}` and the level JN bytes to `{prefix}SAVE.{slot}`
+    /// (matching the original layout), names the slot, and persists the config.
+    pub fn save_game(
+        &mut self,
+        slot: usize,
+        name: &str,
+        map_bytes: &[u8],
+        level_bytes: &[u8],
+    ) -> Result<(), SaveStoreError> {
+        self.runtime
+            .write_atomic(&format!("{}SAVEM.{slot}", self.prefix), map_bytes)?;
+        self.runtime
+            .write_atomic(&format!("{}SAVE.{slot}", self.prefix), level_bytes)?;
+        self.cfg.set_save_slot_name(slot, name);
+        self.persist_cfg()
+    }
+
+    /// Reads back a save-game snapshot from `slot` as `(map_bytes, level_bytes)`.
+    pub fn load_game(&self, slot: usize) -> Result<(Vec<u8>, Vec<u8>), SaveStoreError> {
+        let map = self.runtime.read(&format!("{}SAVEM.{slot}", self.prefix))?;
+        let level = self.runtime.read(&format!("{}SAVE.{slot}", self.prefix))?;
+        Ok((map, level))
+    }
+
+    /// Records a new high score (sorted, capped) and persists the config.
+    pub fn record_high_score(&mut self, name: &str, score: i32) -> Result<(), SaveStoreError> {
+        self.cfg.add_high_score(name, score);
+        self.persist_cfg()
+    }
+
+    /// Writes the working config back to the runtime directory.
+    fn persist_cfg(&self) -> Result<(), SaveStoreError> {
+        self.runtime
+            .write_atomic(self.cfg_file, &self.cfg.to_bytes())?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +273,72 @@ mod tests {
         let dir = RuntimeDir::with_root(unique_temp_root());
         let err = dir.read("absent.cfg").expect_err("missing file errors");
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// Unit under test: [`SaveStore`] save-game + high-score persistence across
+    /// a reopen (simulating an app restart), with no original config (defaults).
+    #[test]
+    fn save_store_persists_across_reopen() {
+        use openjill_data::episode::JILL1;
+
+        let runtime_root = unique_temp_root();
+        let original = DataDirectory::new(unique_temp_root()); // empty -> defaults
+
+        {
+            let mut store = SaveStore::open_with_runtime(
+                RuntimeDir::with_root(&runtime_root),
+                &original,
+                &JILL1,
+            )
+            .expect("open seeds defaults");
+            store.save_game(0, "SLOT0", b"MAP", b"LEVEL").expect("save");
+            store
+                .record_high_score("ACE", 1234)
+                .expect("record high score");
+        }
+
+        let store =
+            SaveStore::open_with_runtime(RuntimeDir::with_root(&runtime_root), &original, &JILL1)
+                .expect("reopen reads persisted state");
+        assert_eq!(store.save_slots()[0].name(), "SLOT0");
+        assert_eq!(store.high_scores()[0].name(), "ACE");
+        assert_eq!(store.high_scores()[0].score(), 1234);
+        assert_eq!(
+            store.load_game(0).expect("load"),
+            (b"MAP".to_vec(), b"LEVEL".to_vec())
+        );
+
+        std::fs::remove_dir_all(&runtime_root).ok();
+    }
+
+    /// Unit under test: [`SaveStore::open`] seeding from an existing original
+    /// `JILL1.CFG` and persisting the seed to the runtime directory.
+    #[test]
+    fn save_store_seeds_from_original_cfg() {
+        use openjill_data::episode::JILL1;
+
+        let original_root = unique_temp_root();
+        std::fs::create_dir_all(&original_root).unwrap();
+        let mut seed = CfgFile::empty("JN1");
+        seed.add_high_score("ORIG", 777);
+        std::fs::write(original_root.join("JILL1.CFG"), seed.to_bytes()).unwrap();
+
+        let runtime_root = unique_temp_root();
+        let store = SaveStore::open_with_runtime(
+            RuntimeDir::with_root(&runtime_root),
+            &DataDirectory::new(&original_root),
+            &JILL1,
+        )
+        .expect("open seeds from original");
+
+        assert_eq!(store.high_scores()[0].name(), "ORIG");
+        assert_eq!(store.high_scores()[0].score(), 777);
+        assert!(
+            RuntimeDir::with_root(&runtime_root).exists("JILL1.CFG"),
+            "seed persisted to runtime dir"
+        );
+
+        std::fs::remove_dir_all(&original_root).ok();
+        std::fs::remove_dir_all(&runtime_root).ok();
     }
 }
