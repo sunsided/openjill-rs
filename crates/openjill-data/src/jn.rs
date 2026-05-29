@@ -183,6 +183,26 @@ impl JnObject {
     pub fn string_index(&self) -> Option<usize> {
         self.string_index
     }
+
+    /// Appends this object record to `out` in OpenJill field order (matching
+    /// `parse_object` and the Java `writeToFile`).
+    fn write_to(&self, out: &mut Vec<u8>) {
+        out.push(self.object_type);
+        put_u16(out, self.x);
+        put_u16(out, self.y);
+        put_i16(out, self.x_speed);
+        put_i16(out, self.y_speed);
+        put_u16(out, self.width);
+        put_u16(out, self.height);
+        put_i16(out, self.state);
+        put_u16(out, self.sub_state);
+        put_u16(out, self.state_count);
+        put_i16(out, self.counter);
+        put_u16(out, self.flags);
+        out.extend_from_slice(&self.pointer.to_le_bytes());
+        put_i16(out, self.info1);
+        put_u16(out, self.zap_hold);
+    }
 }
 
 /// Fixed save-data block parsed after the object layer.
@@ -239,6 +259,23 @@ impl JnSaveData {
     pub fn offset(&self) -> usize {
         self.offset
     }
+
+    /// Appends the fixed 70-byte save-data block to `out`, mirroring the Java
+    /// `writeSaveDataInFile`: level, health, inventory count, inventory items,
+    /// fixed-capacity padding, score, then the trailing hole.
+    fn write_to(&self, out: &mut Vec<u8>) {
+        put_u16(out, self.level);
+        put_u16(out, self.health);
+        put_u16(out, self.inventory.len() as u16);
+        for &item in &self.inventory {
+            put_u16(out, item);
+        }
+        for &pad in &self.inventory_padding {
+            put_u16(out, pad);
+        }
+        out.extend_from_slice(&self.score.to_le_bytes());
+        out.extend_from_slice(&self.hole);
+    }
 }
 
 /// One length-prefixed string-stack entry parsed after save data.
@@ -271,6 +308,18 @@ impl JnString {
     /// Returns the number of bytes this string occupied in the file.
     pub fn size_in_file(&self) -> usize {
         2 + self.value.chars().count() + 1
+    }
+
+    /// Appends this length-prefixed, terminated string-stack entry to `out`.
+    ///
+    /// Each character was decoded from a single source byte (`U+0000..U+00FF`)
+    /// so writing `ch as u8` is lossless.
+    fn write_to(&self, out: &mut Vec<u8>) {
+        put_u16(out, self.value.chars().count() as u16);
+        for ch in self.value.chars() {
+            out.push(ch as u8);
+        }
+        out.push(self.terminator);
     }
 }
 
@@ -333,6 +382,37 @@ impl JnFile {
     /// Returns parsed string-stack entries in source order.
     pub fn strings(&self) -> &[JnString] {
         &self.strings
+    }
+
+    /// Serializes this file back to JN bytes in the original field order,
+    /// mirroring the Java `AbstractChangeLevel` save path
+    /// (`writeBackgroundInFile` -> `writeObjectInFile` -> `writeSaveDataInFile`
+    /// followed by the string stack).
+    ///
+    /// Background codes are emitted masked to [`BACKGROUND_MAP_CODE_MASK`], the
+    /// same canonical form DOS Jill writes on save (`getMapCode` returns the
+    /// masked value), so the output matches the game's save-file layout.  A
+    /// distribution level file that carries high background bits therefore
+    /// re-serializes to its masked form, not byte-for-byte to the original;
+    /// `parse -> to_bytes -> parse` is the stable round-trip.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        // Background layer (stored column-major: x outer, y inner).
+        for &code in &self.background.map_codes {
+            put_u16(&mut bytes, code & BACKGROUND_MAP_CODE_MASK);
+        }
+        // Object layer: count then each record in source order.
+        put_u16(&mut bytes, self.objects.len() as u16);
+        for object in &self.objects {
+            object.write_to(&mut bytes);
+        }
+        // Fixed save-data block.
+        self.save_data.write_to(&mut bytes);
+        // String stack to EOF.
+        for string in &self.strings {
+            string.write_to(&mut bytes);
+        }
+        bytes
     }
 }
 
@@ -514,6 +594,16 @@ fn next_object_with_string(objects: &[JnObject], start_index: usize) -> Option<u
 /// Computes the row-order background index for `x, y`.
 fn background_index(x: usize, y: usize) -> usize {
     (x * BACKGROUND_HEIGHT) + y
+}
+
+/// Appends a `u16` as little-endian bytes.
+fn put_u16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+/// Appends an `i16` as little-endian bytes.
+fn put_i16(out: &mut Vec<u8>, value: i16) {
+    out.extend_from_slice(&value.to_le_bytes());
 }
 
 /// Reads a single `u8` field and wraps reader errors with JN parse context.
@@ -762,6 +852,31 @@ mod tests {
         check!(err.field == "x");
         check!(err.object_index == Some(0));
         check!(err.offset == failing_offset);
+    }
+
+    /// Unit under test: [`JnFile::to_bytes`] reproduces a synthetic source file
+    /// byte-for-byte.
+    ///
+    /// Preconditions: a synthetic JN buffer with a clean (high-bits-zero)
+    /// background, two object records (one carrying a string pointer), a
+    /// save-data block with inventory entries, and two string-stack entries.
+    ///
+    /// Invariant asserted: `parse` then `to_bytes` returns the exact input
+    /// bytes, so background, object layer, save-data block, and string stack
+    /// all serialize in the original field order and widths.
+    #[test]
+    fn to_bytes_round_trips_a_synthetic_file_byte_for_byte() {
+        let mut bytes = base_background();
+        write_u16(&mut bytes, 2);
+        write_object(&mut bytes, ObjectFixture::sample(1, -7, -11, 17));
+        write_object(&mut bytes, ObjectFixture::sample(2, 300, -301, 0));
+        write_save_data(&mut bytes, 7, 42, &[10, 11, 12], 987_654);
+        write_string(&mut bytes, b"HELLO");
+        write_string(&mut bytes, &[b'B', 0, 0xff]);
+
+        let jn = JnFile::from_bytes(bytes.clone()).expect("JN parse should succeed");
+
+        check!(jn.to_bytes() == bytes);
     }
 
     /// Builds the fixed zero-filled background fixture.

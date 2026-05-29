@@ -111,6 +111,19 @@ fn parses_original_episode_one_jn_files_when_available() {
                 "{file_name} string offsets should increase monotonically"
             );
         }
+
+        // `to_bytes` emits the canonical (masked-background) save form, so it
+        // need not equal a distribution file byte-for-byte; it must, however,
+        // be a stable fixed point: re-parsing the serialized bytes yields an
+        // identical `JnFile` (background, objects, save-data, strings, and
+        // offsets all reproduced).
+        let reparsed = JnFile::from_bytes(jn.to_bytes()).unwrap_or_else(|error| {
+            panic!("{file_name} re-serialized bytes should re-parse: {error}")
+        });
+        check!(
+            reparsed == jn,
+            "{file_name} parse -> to_bytes -> parse must be stable"
+        );
     }
 }
 
