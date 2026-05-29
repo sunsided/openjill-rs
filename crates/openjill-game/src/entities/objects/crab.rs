@@ -76,7 +76,9 @@ impl CrabEntity {
             h,
             x_speed: if xd != 0 { xd } else { X_SPEED },
             y_speed: i32::from(item.y_speed()),
-            climbing: false,
+            // A saved climbing crab carries a non-zero vertical speed; resume
+            // the climb so save/load does not drop the up/down state.
+            climbing: i32::from(item.y_speed()) != 0,
             counter: i32::from(item.counter()),
             dead: false,
             score_dispatched: false,
@@ -206,7 +208,15 @@ impl ObjectEntity for CrabEntity {
         let jn_h = i32::from(obj.height());
         let y_adj = if jn_h > 0 { (self.h - jn_h).max(0) } else { 0 };
         obj.set_position(self.x as u16, (self.y + y_adj) as u16);
-        obj.set_speed(self.x_speed as i16, self.y_speed as i16);
+        // `new()` collapses an authored x_speed of 0 to the patrol default, so
+        // a live speed equal to that default is ambiguous; emit the authored
+        // value to keep the round-trip exact, and the live speed otherwise.
+        let xs = if self.x_speed == X_SPEED {
+            obj.x_speed()
+        } else {
+            self.x_speed as i16
+        };
+        obj.set_speed(xs, self.y_speed as i16);
         obj.set_counter(self.counter as i16);
         obj.set_zap_hold(self.zaphold as u16);
         Some(obj)

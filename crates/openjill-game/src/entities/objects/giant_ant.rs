@@ -198,7 +198,16 @@ impl ObjectEntity for GiantAntEntity {
         let jn_h = i32::from(obj.height());
         let y_adj = if jn_h > 0 { (self.h - jn_h).max(0) } else { 0 };
         obj.set_position(self.x as u16, (self.y + y_adj) as u16);
-        obj.set_speed(self.x_speed as i16, obj.y_speed());
+        // `new()` collapses an authored x_speed of 0 to the march default, so a
+        // live speed equal to that default is ambiguous; emit the authored
+        // value to keep the round-trip exact. The ant has no vertical motion,
+        // so the authored y_speed is preserved.
+        let xs = if self.x_speed == X_SPEED {
+            obj.x_speed()
+        } else {
+            self.x_speed as i16
+        };
+        obj.set_speed(xs, obj.y_speed());
         obj.set_counter(self.counter as i16);
         obj.set_zap_hold(self.zaphold as u16);
         Some(obj)
