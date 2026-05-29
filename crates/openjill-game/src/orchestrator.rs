@@ -258,18 +258,17 @@ impl GameOrchestrator {
     /// last-visited map state. Returns [`SaveError::NothingToSave`] when no
     /// level has been entered yet (e.g. from the start menu).
     pub fn save_to_slot(&mut self, slot: usize, name: &str) -> Result<(), SaveError> {
-        let map = self
-            .handler
-            .map_jn_bytes()
-            .or_else(|| self.map_jn_bytes.clone());
-        let level = self
-            .handler
-            .level_jn_bytes()
-            .or_else(|| self.level_jn_bytes.clone());
+        // Prefer the live bytes the active screen owns; for the half it does not
+        // own, borrow the cached buffer directly so neither is cloned (these
+        // buffers can be large and `save_game` only needs `&[u8]`).
+        let live_map = self.handler.map_jn_bytes();
+        let live_level = self.handler.level_jn_bytes();
+        let map = live_map.as_deref().or(self.map_jn_bytes.as_deref());
+        let level = live_level.as_deref().or(self.level_jn_bytes.as_deref());
         let (Some(map), Some(level)) = (map, level) else {
             return Err(SaveError::NothingToSave);
         };
-        self.saves.save_game(slot, name, &map, &level)?;
+        self.saves.save_game(slot, name, map, level)?;
         Ok(())
     }
 
@@ -566,14 +565,22 @@ mod tests {
     /// without touching the per-user data directory.
     fn test_save_store() -> SaveStore {
         use crate::saves::RuntimeDir;
+        use std::sync::Once;
         use std::time::{SystemTime, UNIX_EPOCH};
 
+        // All per-test runtime dirs live under one base that is wiped once at
+        // the start of each test-process run, so temp state never accumulates
+        // across runs while parallel tests still get isolated unique subdirs.
+        static CLEAN_BASE: Once = Once::new();
+        let base = std::env::temp_dir().join("openjill-orch-tests");
+        CLEAN_BASE.call_once(|| {
+            let _ = std::fs::remove_dir_all(&base);
+        });
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("openjill-orch-test-{}-{nanos}", std::process::id()));
+        let root = base.join(format!("{}-{nanos}", std::process::id()));
         SaveStore::open_with_runtime(
             RuntimeDir::with_root(root),
             &DataDirectory::new(std::env::temp_dir()),
