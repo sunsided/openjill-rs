@@ -328,12 +328,20 @@ impl BulletEntity {
     /// Slides the projectile horizontally by `dx`, one pixel at a time, stopping
     /// flush against a solid cell or the map edge.  Mirrors Java
     /// `UtilityObjectEntity.moveObjectLeft`/`moveObjectRight` (a partial move
-    /// that snaps to the wall) rather than refusing the whole step.
+    /// that snaps to the wall).
+    ///
+    /// Only the *leading* edge column is tested for a wall, not the whole box,
+    /// so a knife that spawned embedded in a wall (thrown while flush against
+    /// it) can still slide out toward the open side instead of being wedged.
     fn step_x(&mut self, backgrounds: &BackgroundGrid, dx: i32) {
         let step = dx.signum();
         for _ in 0..dx.abs() {
             let nx = self.x + step;
-            if !self.in_map(nx, self.y) || overlaps_solid(backgrounds, nx, self.y, self.w, self.h) {
+            if !self.in_map(nx, self.y) {
+                break;
+            }
+            let probe_x = if step > 0 { nx + self.w - 1 } else { nx };
+            if column_solid(backgrounds, probe_x, self.y, self.h) {
                 break;
             }
             self.x = nx;
@@ -342,12 +350,17 @@ impl BulletEntity {
 
     /// Slides the projectile vertically by `dy`, one pixel at a time, stopping
     /// flush against a solid cell or the map edge.  Mirrors Java
-    /// `moveObjectUp`/`moveObjectDown`.
+    /// `moveObjectUp`/`moveObjectDown`.  Tests only the leading edge row so an
+    /// embedded projectile can slide out.
     fn step_y(&mut self, backgrounds: &BackgroundGrid, dy: i32) {
         let step = dy.signum();
         for _ in 0..dy.abs() {
             let ny = self.y + step;
-            if !self.in_map(self.x, ny) || overlaps_solid(backgrounds, self.x, ny, self.w, self.h) {
+            if !self.in_map(self.x, ny) {
+                break;
+            }
+            let probe_y = if step > 0 { ny + self.h - 1 } else { ny };
+            if row_solid(backgrounds, self.x, probe_y, self.w) {
                 break;
             }
             self.y = ny;
@@ -417,6 +430,57 @@ fn overlaps_solid(grid: &BackgroundGrid, x: i32, y: i32, w: i32, h: i32) -> bool
             {
                 return true;
             }
+        }
+    }
+    false
+}
+
+/// Returns `true` when the single cell column containing pixel `col_x` has a
+/// solid (non-passthrough) cell anywhere across the vertical span `[y, y+h)`.
+///
+/// Used for the leading-edge wall test when sliding horizontally so a knife
+/// embedded in a wall is not wedged - only the edge it is advancing into
+/// blocks the move.
+fn column_solid(grid: &BackgroundGrid, col_x: i32, y: i32, h: i32) -> bool {
+    let cx = col_x.div_euclid(BLOCK_SIZE_I);
+    if cx < 0 || cx as usize >= grid.width {
+        return false;
+    }
+    let cx = cx as usize;
+    let cy_t = y.div_euclid(BLOCK_SIZE_I).max(0) as usize;
+    let cy_b = ((y + h - 1).div_euclid(BLOCK_SIZE_I)).max(0) as usize;
+    for cy in cy_t..=cy_b {
+        if cy >= grid.height {
+            continue;
+        }
+        if let Some(cell) = grid.get(cx, cy)
+            && !cell.is_passthrough()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns `true` when the single cell row containing pixel `row_y` has a
+/// solid cell anywhere across the horizontal span `[x, x+w)`.  Leading-edge
+/// counterpart of [`column_solid`] for vertical slides.
+fn row_solid(grid: &BackgroundGrid, x: i32, row_y: i32, w: i32) -> bool {
+    let cy = row_y.div_euclid(BLOCK_SIZE_I);
+    if cy < 0 || cy as usize >= grid.height {
+        return false;
+    }
+    let cy = cy as usize;
+    let cx_l = x.div_euclid(BLOCK_SIZE_I).max(0) as usize;
+    let cx_r = ((x + w - 1).div_euclid(BLOCK_SIZE_I)).max(0) as usize;
+    for cx in cx_l..=cx_r {
+        if cx >= grid.width {
+            continue;
+        }
+        if let Some(cell) = grid.get(cx, cy)
+            && !cell.is_passthrough()
+        {
+            return true;
         }
     }
     false
@@ -775,6 +839,36 @@ mod tests {
         // still advances upward by the full step (40 - 4 = 36).
         assert_eq!(bullet.x, 32, "knife slides flush against the wall");
         assert_eq!(bullet.y, 36, "knife still climbs on the unblocked Y axis");
+        assert!(!bullet.should_remove(), "knife must not be lost");
+    }
+
+    /// Regression: a knife thrown while flush against a wall spawns embedded in
+    /// the wall cell; the follow phase must still slide it out toward the
+    /// player rather than wedging it permanently (leading-edge wall test).
+    #[test]
+    fn follow_unwedges_knife_spawned_inside_wall() {
+        let mut grid = synthetic_grid(8, 8, CellKind::Air);
+        // Solid wall column at cell x = 2 (pixels 32..48), full height.
+        for cy in 0..8 {
+            set_cell(&mut grid, 2, cy, CellKind::Solid);
+        }
+        // 10x10 knife spawned at the wall face (x = 32), fully inside cell 2,
+        // homing left toward the player.
+        let mut bullet = BulletEntity::with_velocity(32, 40, 10, 10, -8, 0);
+        bullet.state_count = LAUNCH_END + 1; // follow phase
+        bullet.observe_player(Rect::new(0, 40, 16, 16));
+        let x0 = bullet.x;
+
+        let input = openjill_core::ActiveInput::new();
+        let state = RuntimeState::new();
+        let mut dispatcher = MessageDispatcher::new();
+        bullet.update(&input, &state, &grid, &mut dispatcher);
+
+        assert!(
+            bullet.x < x0,
+            "knife slides left out of the wall (was wedged at {x0}, now {})",
+            bullet.x
+        );
         assert!(!bullet.should_remove(), "knife must not be lost");
     }
 }
