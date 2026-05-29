@@ -491,4 +491,53 @@ mod tests {
 
         assert_eq!(checkpoint.snapshot(), None, "fired checkpoint is not saved");
     }
+
+    /// Unit under test: [`ObjectEntity::snapshot`] for the moving-hazard group -
+    /// collapsing ceiling (25), flame (31), falling spike (38), rolling rock
+    /// (35), lift (61).
+    #[test]
+    fn moving_hazard_snapshot_round_trips() {
+        let cache = AssetCache::synthetic();
+
+        // Position-only persisters (their motion/animation re-derives).
+        for type_id in [25u8, 31] {
+            let mut item = synthetic_object_of_type(type_id);
+            item.set_position(48, 32);
+            assert_eq!(
+                make_object_entity(type_id, &item, None, &cache).snapshot(),
+                Some(item.clone()),
+                "type {type_id} snapshot must round-trip"
+            );
+        }
+
+        // Falling spike: live downward speed.
+        let mut spike = synthetic_object_of_type(38);
+        spike.set_position(64, 16);
+        spike.set_speed(0, 5);
+        assert_eq!(
+            make_object_entity(38, &spike, None, &cache).snapshot(),
+            Some(spike.clone()),
+            "falling-spike snapshot must round-trip"
+        );
+
+        // Rolling rock: live roll direction.
+        let mut rock = synthetic_object_of_type(35);
+        rock.set_position(96, 80);
+        rock.set_speed(-4, 0);
+        assert_eq!(
+            make_object_entity(35, &rock, None, &cache).snapshot(),
+            Some(rock.clone()),
+            "rolling-rock snapshot must round-trip"
+        );
+
+        // Lift: live velocity along its path.
+        let mut lift = synthetic_object_of_type(61);
+        lift.set_position(32, 48);
+        lift.set_speed(2, -1);
+        assert_eq!(
+            make_object_entity(61, &lift, None, &cache).snapshot(),
+            Some(lift.clone()),
+            "lift snapshot must round-trip"
+        );
+    }
 }
