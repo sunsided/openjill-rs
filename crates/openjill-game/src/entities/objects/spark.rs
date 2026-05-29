@@ -183,10 +183,12 @@ impl ObjectEntity for SparkEntity {
     fn snapshot(&self) -> Option<JnObject> {
         let mut obj = self.origin.clone();
         obj.set_position(self.x as u16, self.y as u16);
-        // `new()` collapses an authored y_speed of 0 to the upward default, so
-        // a live speed equal to that default emits the authored value.
-        let ys = if self.y_speed == -DEFAULT_SPEED {
-            obj.y_speed()
+        // `new()` defaults only an authored y_speed of 0 to the upward speed;
+        // collapse back to 0 in that one case so the round-trip is exact, but
+        // always persist a live speed otherwise (an authored downward spark
+        // that reversed up to the default must keep its live upward direction).
+        let ys = if obj.y_speed() == 0 && self.y_speed == -DEFAULT_SPEED {
+            0
         } else {
             self.y_speed as i16
         };
