@@ -114,45 +114,31 @@ impl ObjectEntity for BonusEntity {
 
 /// Resolves a JN `counter` index to the inventory item the bonus grants.
 ///
-/// Mirrors the Java reference's `EnumInventoryObject` index order:
-///
-/// | Index | Java enum     | Rust [`InventoryObject`] |
-/// |------:|---------------|--------------------------|
-/// | 0     | `JILL`        | `Jill`                   |
-/// | 1     | `RED_KEY`     | `Key`                    |
-/// | 2     | `KNIVE`       | `Knife`                  |
-/// | 3     | `GEM`         | `Gem`                    |
-/// | 4     | `FROG`        | `FireFlower`             |
-/// | 5     | `FIREBIRD`    | `Firebird`               |
-/// | 8     | `BLADE`       | `Blade`                  |
-///
-/// Indices that the Java enum lists but the Rust port has no first-class
-/// variant for (`BAG_OF_COIN`, `FISH`, `HIGH_JUMP`, `INVINCIBILITY`) fall
-/// through to [`InventoryObject::Gem`] as the safest visible default; those
-/// variants land alongside the player-form-switch work in issue 63.
+/// The `counter` is an `EnumInventoryObject` index; resolution delegates to
+/// [`InventoryObject::from_index`], which covers all 11 indices.  A negative or
+/// out-of-range counter falls back to [`InventoryObject::Gem`] as the safest
+/// visible default.
 fn resolve_bonus_item(counter: i16) -> InventoryObject {
-    match counter {
-        0 => InventoryObject::Jill,
-        1 => InventoryObject::Key,
-        2 => InventoryObject::Knife,
-        3 => InventoryObject::Gem,
-        4 => InventoryObject::FireFlower,
-        5 => InventoryObject::Firebird,
-        8 => InventoryObject::Blade,
-        _ => InventoryObject::Gem,
-    }
+    u16::try_from(counter)
+        .ok()
+        .and_then(InventoryObject::from_index)
+        .unwrap_or(InventoryObject::Gem)
 }
 
 /// Maps an inventory item to the tile index within tileset 14 used by
 /// `BonusManager` (values from `object_conf.json`'s `BonusManager` block).
 fn bonus_tile(item: InventoryObject) -> u16 {
     match item {
-        InventoryObject::Key => 12,
+        InventoryObject::Jill => 38,
+        InventoryObject::RedKey => 12,
         InventoryObject::Knife => 13,
         InventoryObject::Gem => 11,
-        InventoryObject::FireFlower => 14,
+        InventoryObject::Frog => 14,
         InventoryObject::Firebird => 15,
+        InventoryObject::BagOfCoin => 18,
+        InventoryObject::Fish => 20,
         InventoryObject::Blade => 35,
-        InventoryObject::Jill => 38,
+        InventoryObject::HighJump => 36,
+        InventoryObject::Invincibility => 37,
     }
 }

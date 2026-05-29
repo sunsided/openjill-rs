@@ -1,7 +1,7 @@
 //! Red key pickup entity (JN object type 14).
 //!
 //! Mirrors `org.jill.game.entities.obj.RedKeyManager` from the Java reference:
-//! adds an [`InventoryObject::Key`] entry to the inventory and flags itself
+//! adds an [`InventoryObject::RedKey`] entry to the inventory and flags itself
 //! for removal on touch.
 
 use openjill_core::layout::BLOCK_SIZE_I;
@@ -91,7 +91,7 @@ impl ObjectEntity for RedKeyEntity {
         }
         dispatcher.send(
             MessageType::InventoryItem,
-            MessagePayload::InventoryItem(InventoryItemPayload::add(InventoryObject::Key)),
+            MessagePayload::InventoryItem(InventoryItemPayload::add(InventoryObject::RedKey)),
         );
         self.removed = true;
     }

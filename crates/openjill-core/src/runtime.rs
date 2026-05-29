@@ -7,24 +7,62 @@ pub const MAP_LEVEL: i32 = -1;
 
 /// An item the player can carry in their inventory.
 ///
-/// Mirrors the inventory icon set from the Java reference's
-/// `InventoryItemMessage` enum.  Episode 1 uses all variants listed below.
+/// Mirrors the Java reference's `EnumInventoryObject` exactly, including the
+/// integer index each variant occupies in the JN save-data inventory block and
+/// in `BonusManager` records.  The discriminant **is** that index, so
+/// [`InventoryObject::index`] / [`InventoryObject::from_index`] round-trip
+/// through the on-disk encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InventoryObject {
-    /// The Jill character token.
-    Jill,
-    /// Gem collectible.
-    Gem,
-    /// Key collectible (red or rock variants share this icon).
-    Key,
-    /// Knife weapon pickup.
-    Knife,
-    /// Blade weapon pickup.
-    Blade,
-    /// Fire flower collectible.
-    FireFlower,
-    /// Firebird transform power-up.
-    Firebird,
+    /// The Jill character token (`JILL`, index 0).
+    Jill = 0,
+    /// Red key collectible (`RED_KEY`, index 1).
+    RedKey = 1,
+    /// Knife weapon pickup (`KNIVE`, index 2).
+    Knife = 2,
+    /// Gem collectible (`GEM`, index 3).
+    Gem = 3,
+    /// Frog collectible / player-form token (`FROG`, index 4).
+    Frog = 4,
+    /// Firebird transform power-up (`FIREBIRD`, index 5); has no inventory icon.
+    Firebird = 5,
+    /// Bag-of-coins collectible (`BAG_OF_COIN`, index 6).
+    BagOfCoin = 6,
+    /// Fish collectible (`FISH`, index 7).
+    Fish = 7,
+    /// Blade weapon pickup (`BLADE`, index 8).
+    Blade = 8,
+    /// High-jump power-up (`HIGH_JUMP`, index 9).
+    HighJump = 9,
+    /// Invincibility power-up (`INVINCIBILITY`, index 10).
+    Invincibility = 10,
+}
+
+impl InventoryObject {
+    /// Returns the JN / `EnumInventoryObject` index for this item (the value
+    /// stored in save-data inventory slots and `BonusManager` `counter`).
+    pub fn index(self) -> u16 {
+        self as u16
+    }
+
+    /// Resolves a JN inventory index to its variant, or `None` when the index
+    /// is outside the known `EnumInventoryObject` range (0..=10).
+    pub fn from_index(index: u16) -> Option<Self> {
+        Some(match index {
+            0 => Self::Jill,
+            1 => Self::RedKey,
+            2 => Self::Knife,
+            3 => Self::Gem,
+            4 => Self::Frog,
+            5 => Self::Firebird,
+            6 => Self::BagOfCoin,
+            7 => Self::Fish,
+            8 => Self::Blade,
+            9 => Self::HighJump,
+            10 => Self::Invincibility,
+            _ => return None,
+        })
+    }
 }
 
 /// Persistent state carried across screen transitions.
@@ -97,5 +135,44 @@ impl Default for RuntimeState {
     /// Returns default runtime state for the start of episode 1.
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InventoryObject;
+
+    /// All `EnumInventoryObject` indices in JN order, paired with their variant.
+    const INDEXED: [(u16, InventoryObject); 11] = [
+        (0, InventoryObject::Jill),
+        (1, InventoryObject::RedKey),
+        (2, InventoryObject::Knife),
+        (3, InventoryObject::Gem),
+        (4, InventoryObject::Frog),
+        (5, InventoryObject::Firebird),
+        (6, InventoryObject::BagOfCoin),
+        (7, InventoryObject::Fish),
+        (8, InventoryObject::Blade),
+        (9, InventoryObject::HighJump),
+        (10, InventoryObject::Invincibility),
+    ];
+
+    /// Unit under test: [`InventoryObject::index`] / [`InventoryObject::from_index`].
+    ///
+    /// Invariants asserted: every variant's `index()` equals its Java
+    /// `EnumInventoryObject` index, `from_index` is its inverse across the full
+    /// range, and an out-of-range index resolves to `None`.
+    #[test]
+    fn inventory_index_round_trips_against_enum_inventory_object() {
+        for (index, item) in INDEXED {
+            assert_eq!(item.index(), index, "{item:?} index");
+            assert_eq!(
+                InventoryObject::from_index(index),
+                Some(item),
+                "from_index({index})"
+            );
+        }
+        assert_eq!(InventoryObject::from_index(11), None);
+        assert_eq!(InventoryObject::from_index(u16::MAX), None);
     }
 }

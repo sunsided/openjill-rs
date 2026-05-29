@@ -82,7 +82,7 @@ impl ObjectEntity for LockedDoorEntity {
             .get(cell_x, cell_y)
             .and_then(|cell| cell.dma_map_code())
             .map(resolve_key_by_map_code)
-            .unwrap_or(InventoryObject::Key);
+            .unwrap_or(InventoryObject::RedKey);
 
         if state.inventory.contains(&required_key) {
             dispatcher.send(
@@ -151,8 +151,8 @@ impl ObjectEntity for LockedDoorEntity {
 fn resolve_key_by_map_code(map_code: u16) -> InventoryObject {
     match map_code {
         MAP_CODE_MAPDOOR => InventoryObject::Gem,
-        MAP_CODE_DOORT => InventoryObject::Key,
-        _ => InventoryObject::Key,
+        MAP_CODE_DOORT => InventoryObject::RedKey,
+        _ => InventoryObject::RedKey,
     }
 }
 
