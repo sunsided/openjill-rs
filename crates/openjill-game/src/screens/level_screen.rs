@@ -292,25 +292,27 @@ const STATUS_BAR_TEXT_X: i32 = 2;
 const STATUS_BAR_TEXT_Y_OFFSET: i32 = 3;
 
 /// Returns the inventory item tileset / tile pair for an [`InventoryObject`]
-/// variant.
+/// variant, or `None` when the item has no inventory icon.
 ///
-/// Sourced from `OpenJill/src/main/resources/inventory_conf.json` `items`.
-/// The mapping covers every variant currently emitted by episode 1 pickups;
-/// [`InventoryObject::FireFlower`] reuses the `FROG` icon (tileset 14, tile
-/// 14) and [`InventoryObject::Firebird`] reuses the `INVINCIBILITY` icon
-/// (tileset 14, tile 37) because the original `inventory_conf.json` has no
-/// dedicated entries for those gameplay-only pickups; child issue 60 will
-/// refine the mapping once those pickups land.
-fn inventory_item_tile(item: InventoryObject) -> (u8, u16) {
-    match item {
+/// Sourced verbatim from `OpenJill/src/main/resources/inventory_conf.json`
+/// `items` (all tileset 14). [`InventoryObject::Firebird`] has no entry in the
+/// original config (it is a player-form transform, not a carried icon), so it
+/// returns `None` and the inventory grid leaves its slot empty - matching the
+/// Java `InventoryArea` which skips items with no configured picture.
+fn inventory_item_tile(item: InventoryObject) -> Option<(u8, u16)> {
+    Some(match item {
         InventoryObject::Jill => (14, 38),
-        InventoryObject::Gem => (14, 11),
-        InventoryObject::Key => (14, 12),
+        InventoryObject::RedKey => (14, 12),
         InventoryObject::Knife => (14, 13),
+        InventoryObject::Gem => (14, 11),
+        InventoryObject::Frog => (14, 14),
+        InventoryObject::Firebird => return None,
+        InventoryObject::BagOfCoin => (14, 18),
+        InventoryObject::Fish => (14, 20),
         InventoryObject::Blade => (14, 35),
-        InventoryObject::FireFlower => (14, 14),
-        InventoryObject::Firebird => (14, 37),
-    }
+        InventoryObject::HighJump => (14, 36),
+        InventoryObject::Invincibility => (14, 37),
+    })
 }
 
 /// Update queued by a status-bar dispatcher subscriber for the next tick.
@@ -1432,7 +1434,11 @@ impl LevelScreen {
         {
             let col = (index % ITEM_GRID_COLS) as i32;
             let row = (index / ITEM_GRID_COLS) as i32;
-            let (tileset, tile) = inventory_item_tile(*item);
+            // Items with no configured icon (Firebird) occupy their grid slot
+            // but draw nothing, matching the Java `InventoryArea`.
+            let Some((tileset, tile)) = inventory_item_tile(*item) else {
+                continue;
+            };
             commands.push(RenderCommand::Blit {
                 tileset,
                 tile,
