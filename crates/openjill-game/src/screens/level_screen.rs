@@ -1507,17 +1507,18 @@ impl LevelScreen {
     fn snapshot_jn(&self, state: &RuntimeState) -> JnFile {
         let mut jn = self.jn.clone();
 
-        // Live background: write each cell's current DMA map code back so
-        // opened doors / cleared tiles survive the round-trip.
+        // Live background: write every cell's current DMA map code back so
+        // opened doors / cleared tiles survive the round-trip.  A cleared cell
+        // is `transparent()` and reports no map code; persist `0` (the empty /
+        // open-air sentinel) so the door does not reappear on restore.
         for y in 0..BACKGROUND_GRID_HEIGHT {
             for x in 0..BACKGROUND_GRID_WIDTH {
-                if let Some(code) = self
+                let code = self
                     .backgrounds
                     .get(x, y)
                     .and_then(BackgroundEntity::dma_map_code)
-                {
-                    jn.set_background_code(x, y, code);
-                }
+                    .unwrap_or(0);
+                jn.set_background_code(x, y, code);
             }
         }
 
@@ -1704,6 +1705,11 @@ impl ScreenHandler for LevelScreen {
     /// objects + runtime save-data).
     fn snapshot_jn_bytes(&self, state: &RuntimeState) -> Option<Vec<u8>> {
         Some(self.snapshot_jn(state).to_bytes())
+    }
+
+    /// Returns `true` when this screen is acting as the world map.
+    fn is_world_map(&self) -> bool {
+        self.level_number == MAP_LEVEL
     }
 }
 
