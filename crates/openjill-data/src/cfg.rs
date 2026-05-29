@@ -18,6 +18,13 @@ const SAVE_NAME_LEN: usize = 12;
 const PRINTABLE_ASCII_MIN_EXCLUSIVE: u8 = 31;
 /// Highest byte value treated as printable by OpenJill (`< 128`).
 const PRINTABLE_ASCII_MAX_EXCLUSIVE: u8 = 128;
+/// Byte offset of the i32-LE high-score value block (after names + hole).
+const HIGH_SCORE_VALUE_OFFSET: usize = HIGH_SCORE_COUNT * HIGH_SCORE_NAME_LEN + HIGH_SCORE_HOLE_LEN;
+/// Byte offset of the save-name block (after names + hole + scores).
+const SAVE_NAME_OFFSET: usize = HIGH_SCORE_VALUE_OFFSET + HIGH_SCORE_COUNT * 4;
+/// Padding byte written after a name, mirroring Java
+/// `CfgFileImpl.FILE_SPACE_FILLER = '\0'`.
+const CFG_NAME_PAD: u8 = 0;
 
 /// One high-score entry parsed from `JILL1.CFG`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -175,6 +182,15 @@ pub struct CfgFile {
     save_slots: Vec<CfgSaveSlot>,
     /// Parsed setup/configuration block.
     setup: CfgSetup,
+    /// Verbatim source bytes, used as the source of truth for [`Self::to_bytes`].
+    ///
+    /// Mutators ([`Self::add_high_score`], [`Self::set_save_slot_name`]) patch
+    /// the relevant region here so the rest of the file (the high-score hole,
+    /// the setup/joystick block, any trailing bytes) round-trips byte-for-byte
+    /// and stays readable by the original DOS game.  Populated by
+    /// [`Self::from_bytes`]; empty when a `CfgFile` is built via [`Self::parse`]
+    /// from a streaming reader.
+    raw: Vec<u8>,
 }
 
 impl CfgFile {
@@ -241,13 +257,82 @@ impl CfgFile {
                 music_enabled,
                 sound_enabled,
             },
+            raw: Vec::new(),
         })
     }
 
     /// Parses a `CfgFile` directly from in-memory bytes using `prefix`.
+    ///
+    /// Retains the source bytes so [`Self::to_bytes`] can round-trip them.
     pub fn from_bytes(bytes: impl Into<Vec<u8>>, prefix: &str) -> Result<Self, CfgReadError> {
-        let mut reader = ByteReader::from_bytes(bytes);
-        Self::parse(&mut reader, prefix)
+        let raw: Vec<u8> = bytes.into();
+        let mut reader = ByteReader::from_bytes(raw.clone());
+        let mut cfg = Self::parse(&mut reader, prefix)?;
+        cfg.raw = raw;
+        Ok(cfg)
+    }
+
+    /// Serialises the config back to bytes, byte-identical to the source when
+    /// unmodified and patched in place after mutations.
+    ///
+    /// Requires construction via [`Self::from_bytes`]; returns an empty vector
+    /// for a `CfgFile` parsed from a streaming reader (which keeps no source
+    /// bytes).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.raw.clone()
+    }
+
+    /// Inserts a high score keeping the table sorted descending and capped at
+    /// [`HIGH_SCORE_COUNT`], then patches the name/score regions of the source
+    /// bytes.  Mirrors Java `CfgFileImpl.addNewHighScore`.
+    pub fn add_high_score(&mut self, name: &str, score: i32) {
+        let position = self
+            .high_scores
+            .iter()
+            .position(|entry| score > entry.score)
+            .unwrap_or(self.high_scores.len());
+        self.high_scores.insert(
+            position,
+            CfgHighScore {
+                name: name.to_string(),
+                score,
+            },
+        );
+        self.high_scores.truncate(HIGH_SCORE_COUNT);
+        self.rewrite_high_scores();
+    }
+
+    /// Sets a save-slot display name and patches its name region in the source
+    /// bytes.  Out-of-range indices are ignored.
+    pub fn set_save_slot_name(&mut self, index: usize, name: &str) {
+        let Some(slot) = self.save_slots.get_mut(index) else {
+            return;
+        };
+        slot.name = name.to_string();
+        let offset = SAVE_NAME_OFFSET + index * SAVE_NAME_LEN;
+        write_name_slot(&mut self.raw, offset, name, SAVE_NAME_LEN);
+    }
+
+    /// Re-emits every high-score name and score into the source bytes from the
+    /// current in-memory table.
+    fn rewrite_high_scores(&mut self) {
+        let entries: Vec<(String, i32)> = self
+            .high_scores
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.score))
+            .collect();
+        for (index, (name, score)) in entries.iter().enumerate() {
+            write_name_slot(
+                &mut self.raw,
+                index * HIGH_SCORE_NAME_LEN,
+                name,
+                HIGH_SCORE_NAME_LEN,
+            );
+            let score_offset = HIGH_SCORE_VALUE_OFFSET + index * 4;
+            if let Some(slot) = self.raw.get_mut(score_offset..score_offset + 4) {
+                slot.copy_from_slice(&score.to_le_bytes());
+            }
+        }
     }
 
     /// Returns parsed high-score entries.
@@ -350,6 +435,22 @@ fn read_save_name(reader: &mut ByteReader, entry_index: usize) -> Result<String,
 /// Returns whether `byte` is considered printable by OpenJill CFG parsing.
 fn is_openjill_printable_ascii(byte: u8) -> bool {
     byte > PRINTABLE_ASCII_MIN_EXCLUSIVE && byte < PRINTABLE_ASCII_MAX_EXCLUSIVE
+}
+
+/// Writes a fixed-width name slot at `offset`: the printable bytes of `name`
+/// (truncated to `len`) followed by [`CFG_NAME_PAD`] padding, mirroring Java
+/// `CfgFileImpl.writeName*InFile`.  No-op if the slot is out of range.
+fn write_name_slot(raw: &mut [u8], offset: usize, name: &str, len: usize) {
+    let Some(slot) = raw.get_mut(offset..offset + len) else {
+        return;
+    };
+    slot.fill(CFG_NAME_PAD);
+    for (dst, byte) in slot
+        .iter_mut()
+        .zip(name.bytes().filter(|&b| is_openjill_printable_ascii(b)))
+    {
+        *dst = byte;
+    }
 }
 
 /// Reads one `u8` field and wraps reader errors with CFG parse context.
@@ -605,5 +706,66 @@ mod tests {
             let pos = start + (index * 2);
             bytes[pos..pos + 2].copy_from_slice(&value.to_le_bytes());
         }
+    }
+
+    /// Builds a populated 254-byte fixture: one named/scored high score, one
+    /// named save slot, and a non-zero setup block.
+    fn populated_fixture() -> Vec<u8> {
+        let mut bytes = cfg_fixture_template();
+        write_high_score_name_slot(&mut bytes, 0, b"ACE\0\0\0\0\0\0\0");
+        let mut scores = [0i32; HIGH_SCORE_COUNT];
+        scores[0] = 5000;
+        write_high_scores(&mut bytes, &scores);
+        write_save_name_slot(&mut bytes, 0, b"SLOT0\0\0\0\0\0\0\0");
+        write_setup_block(&mut bytes, &[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]);
+        bytes
+    }
+
+    /// Unit under test: [`CfgFile::to_bytes`].
+    ///
+    /// Invariants asserted: an unmodified `CfgFile` round-trips its source
+    /// bytes byte-for-byte (the hole and setup block are preserved verbatim).
+    #[test]
+    fn to_bytes_round_trips_source_bytes_unmodified() {
+        let bytes = populated_fixture();
+        let cfg = CfgFile::from_bytes(bytes.clone(), "JN1").expect("fixture parses");
+        check!(cfg.to_bytes() == bytes);
+    }
+
+    /// Unit under test: [`CfgFile::add_high_score`].
+    ///
+    /// Invariants asserted: a higher score sorts to the top and the table stays
+    /// capped at `HIGH_SCORE_COUNT`; re-parsing `to_bytes` reflects the new
+    /// top entry, while the setup block stays byte-identical.
+    #[test]
+    fn add_high_score_inserts_sorted_and_persists() {
+        let bytes = populated_fixture();
+        let mut cfg = CfgFile::from_bytes(bytes.clone(), "JN1").expect("fixture parses");
+        cfg.add_high_score("WIN", 9000);
+
+        check!(cfg.high_scores().len() == HIGH_SCORE_COUNT);
+        check!(cfg.high_scores()[0].name() == "WIN");
+        check!(cfg.high_scores()[0].score() == 9000);
+
+        let reparsed = CfgFile::from_bytes(cfg.to_bytes(), "JN1").expect("re-parse");
+        check!(reparsed.high_scores()[0].name() == "WIN");
+        check!(reparsed.high_scores()[0].score() == 9000);
+        // The setup block (last 22 bytes) is untouched by the score edit.
+        check!(cfg.to_bytes()[232..] == bytes[232..]);
+    }
+
+    /// Unit under test: [`CfgFile::set_save_slot_name`].
+    ///
+    /// Invariants asserted: the slot name updates in memory and persists
+    /// through `to_bytes` / re-parse.
+    #[test]
+    fn set_save_slot_name_persists() {
+        let bytes = populated_fixture();
+        let mut cfg = CfgFile::from_bytes(bytes, "JN1").expect("fixture parses");
+        cfg.set_save_slot_name(1, "MYSAVE");
+
+        check!(cfg.save_slots()[1].name() == "MYSAVE");
+        let reparsed = CfgFile::from_bytes(cfg.to_bytes(), "JN1").expect("re-parse");
+        check!(reparsed.save_slots()[1].name() == "MYSAVE");
     }
 }
