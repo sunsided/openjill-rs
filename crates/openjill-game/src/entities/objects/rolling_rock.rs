@@ -99,6 +99,10 @@ pub struct RollingRockEntity {
     /// Pending player-kill classification armed in [`Self::on_touch`] and
     /// drained by the level loop via [`ObjectEntity::take_player_kill`].
     pending_kill: Option<DeathKind>,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position and roll direction
+    /// written back.
+    origin: JnObject,
 }
 
 impl RollingRockEntity {
@@ -111,14 +115,18 @@ impl RollingRockEntity {
         );
         let w = i32::from(item.width()).max(BLOCK_SIZE_I);
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
+        // Seed the roll direction from the JN record; authored rocks carry
+        // x_speed = 0 and default to rolling right, so fresh entry is unchanged.
+        let xd = i32::from(item.x_speed());
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()),
             w,
             h,
-            x_speed: X_SPEED_FALL,
+            x_speed: if xd != 0 { xd } else { X_SPEED_FALL },
             counter: COUNTER_MOVE_VALUE,
             pending_kill: None,
+            origin: item.clone(),
         }
     }
 
@@ -237,6 +245,24 @@ impl ObjectEntity for RollingRockEntity {
     /// loop can apply it to the player after the touch dispatch pass.
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
+    }
+
+    /// Snapshots the live rolling rock for a save game (always persisted).
+    ///
+    /// Persists position and roll direction; the animation counter re-derives
+    /// on restore.
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        // `new()` collapses an authored x_speed of 0 to the rightward default,
+        // so a live speed equal to that default emits the authored value.
+        let xs = if self.x_speed == X_SPEED_FALL && obj.x_speed() == 0 {
+            0
+        } else {
+            self.x_speed as i16
+        };
+        obj.set_speed(xs, obj.y_speed());
+        Some(obj)
     }
 }
 

@@ -39,6 +39,10 @@ pub struct LiftEntity {
     /// `true` when the player's bounding box overlapped this lift during the
     /// most recent [`ObjectEntity::observe_player`] call.
     player_on_lift: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position and velocity written
+    /// back.
+    origin: JnObject,
 }
 
 impl LiftEntity {
@@ -54,6 +58,7 @@ impl LiftEntity {
             xd: i32::from(item.x_speed()),
             yd: i32::from(item.y_speed()),
             player_on_lift: false,
+            origin: item.clone(),
         }
     }
 }
@@ -92,6 +97,17 @@ impl ObjectEntity for LiftEntity {
     /// Returns the lift's bounding box.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
+    }
+
+    /// Snapshots the live lift for a save game (always persisted).
+    ///
+    /// Persists position and velocity so the moving platform resumes its path
+    /// from where it was; the `player_on_lift` flag re-derives on the next tick.
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        obj.set_speed(self.xd as i16, self.yd as i16);
+        Some(obj)
     }
 
     /// Records whether the player is standing on the lift.

@@ -60,6 +60,10 @@ pub struct CollapsingCeilingEntity {
     /// Pending player-kill classification armed in [`Self::on_touch`] and
     /// drained by the level loop via [`ObjectEntity::take_player_kill`].
     pending_kill: Option<DeathKind>,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live (possibly fallen) position
+    /// written back.
+    origin: JnObject,
 }
 
 impl CollapsingCeilingEntity {
@@ -76,6 +80,7 @@ impl CollapsingCeilingEntity {
             removed: false,
             last_player_bbox: None,
             pending_kill: None,
+            origin: item.clone(),
         }
     }
 
@@ -201,6 +206,19 @@ impl ObjectEntity for CollapsingCeilingEntity {
     /// loop can apply it to the player after the touch dispatch pass.
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
+    }
+
+    /// Snapshots the live ceiling for a save game, or `None` once it has landed.
+    ///
+    /// Persists the live position (a mid-fall ceiling resumes from its dropped
+    /// position); the walks-under trigger re-arms on restore.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
 

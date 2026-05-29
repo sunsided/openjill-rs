@@ -62,6 +62,10 @@ pub struct FallingSpikeEntity {
     /// Pending player-kill classification armed in [`Self::on_touch`] and
     /// drained by the level loop via [`ObjectEntity::take_player_kill`].
     pending_kill: Option<DeathKind>,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position and fall speed
+    /// written back.
+    origin: JnObject,
 }
 
 impl FallingSpikeEntity {
@@ -74,10 +78,13 @@ impl FallingSpikeEntity {
             y: i32::from(item.y()),
             w,
             h,
-            y_speed: 0,
+            // Seed the fall speed from the JN record so a mid-fall spike
+            // restores; authored spikes carry y_speed = 0 (parked).
+            y_speed: i32::from(item.y_speed()),
             removed: false,
             last_player_bbox: None,
             pending_kill: None,
+            origin: item.clone(),
         }
     }
 
@@ -207,6 +214,20 @@ impl ObjectEntity for FallingSpikeEntity {
     /// loop can apply it to the player after the touch dispatch pass.
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
+    }
+
+    /// Snapshots the live spike for a save game, or `None` once it has landed.
+    ///
+    /// Persists position and the live fall speed so a mid-fall spike resumes;
+    /// the walks-under trigger re-arms on restore.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        obj.set_speed(obj.x_speed(), self.y_speed as i16);
+        Some(obj)
     }
 }
 

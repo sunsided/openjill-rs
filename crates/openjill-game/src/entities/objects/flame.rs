@@ -74,6 +74,9 @@ pub struct FlameEntity {
     /// drained by the level loop via [`ObjectEntity::take_player_kill`] so the
     /// kill can be applied to the player's [`ObjectEntity::on_kill`].
     pending_kill: Option<DeathKind>,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.
+    origin: JnObject,
 }
 
 impl FlameEntity {
@@ -94,6 +97,7 @@ impl FlameEntity {
             counter: 0,
             removed: false,
             pending_kill: None,
+            origin: item.clone(),
         }
     }
 
@@ -176,6 +180,19 @@ impl ObjectEntity for FlameEntity {
     /// loop can apply it to the player after the touch dispatch pass.
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
+    }
+
+    /// Snapshots the live flame for a save game, or `None` once burnt out.
+    ///
+    /// The animation counter restarts on restore, so only the authored record
+    /// (position) is persisted.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
 
