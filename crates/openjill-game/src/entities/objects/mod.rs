@@ -544,4 +544,44 @@ mod tests {
             "lift snapshot must round-trip"
         );
     }
+
+    /// Unit under test: [`ObjectEntity::snapshot`] for the projectile / weapon
+    /// group and the catch-all stub.
+    #[test]
+    fn projectile_and_stub_snapshot_round_trips() {
+        let cache = AssetCache::synthetic();
+
+        // Pickups (knife 2, blade 50) and the firebird player form (56):
+        // position-only.
+        for type_id in [2u8, 50, 56] {
+            let mut item = synthetic_object_of_type(type_id);
+            item.set_position(40, 56);
+            assert_eq!(
+                make_object_entity(type_id, &item, None, &cache).snapshot(),
+                Some(item.clone()),
+                "type {type_id} snapshot must round-trip"
+            );
+        }
+
+        // Velocity-carrying weapons (bullet 36, firebird weapon 62).
+        for type_id in [36u8, 62] {
+            let mut item = synthetic_object_of_type(type_id);
+            item.set_position(72, 24);
+            item.set_speed(6, -2);
+            assert_eq!(
+                make_object_entity(type_id, &item, None, &cache).snapshot(),
+                Some(item.clone()),
+                "type {type_id} snapshot must round-trip"
+            );
+        }
+
+        // Unrecognized type: the stub persists its record verbatim.
+        let mut unknown = synthetic_object_of_type(99);
+        unknown.set_position(88, 16);
+        assert_eq!(
+            make_object_entity(99, &unknown, None, &cache).snapshot(),
+            Some(unknown.clone()),
+            "stub must persist an unrecognized object verbatim"
+        );
+    }
 }

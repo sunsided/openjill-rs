@@ -26,6 +26,9 @@ pub struct BladeEntity {
     h: i32,
     /// `true` once the blade has been touched by the player.
     removed: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.
+    origin: JnObject,
 }
 
 impl BladeEntity {
@@ -39,6 +42,7 @@ impl BladeEntity {
             w,
             h,
             removed: false,
+            origin: item.clone(),
         }
     }
 }
@@ -82,5 +86,15 @@ impl ObjectEntity for BladeEntity {
     /// Returns `true` once the blade has been touched.
     fn should_remove(&self) -> bool {
         self.removed
+    }
+
+    /// Snapshots the blade pickup for a save game, or `None` once collected.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }

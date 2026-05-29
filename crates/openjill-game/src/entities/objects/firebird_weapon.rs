@@ -32,6 +32,10 @@ pub struct FirebirdWeaponEntity {
     xd: i32,
     /// Vertical velocity in pixels per tick.
     yd: i32,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position and velocity written
+    /// back.
+    origin: JnObject,
 }
 
 impl FirebirdWeaponEntity {
@@ -46,6 +50,7 @@ impl FirebirdWeaponEntity {
             h,
             xd: i32::from(item.x_speed()),
             yd: i32::from(item.y_speed()),
+            origin: item.clone(),
         }
     }
 }
@@ -77,5 +82,13 @@ impl ObjectEntity for FirebirdWeaponEntity {
     /// Returns the bounding box.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
+    }
+
+    /// Snapshots the live weapon for a save game (position + velocity).
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        obj.set_speed(self.xd as i16, self.yd as i16);
+        Some(obj)
     }
 }

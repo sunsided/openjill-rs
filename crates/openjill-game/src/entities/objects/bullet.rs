@@ -106,6 +106,10 @@ pub struct BulletEntity {
     /// Set to `true` when the projectile should be removed from the
     /// object list.
     removed: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position and velocity written
+    /// back.
+    origin: JnObject,
 }
 
 impl BulletEntity {
@@ -125,6 +129,7 @@ impl BulletEntity {
             state_count: LAUNCH_START,
             player_bbox: Rect::new(x, y, w, h),
             removed: false,
+            origin: item.clone(),
         }
     }
 
@@ -135,6 +140,10 @@ impl BulletEntity {
     /// throw key, mirroring the Java reference's `BulletObjectFactory`
     /// runtime spawn path.
     pub fn with_velocity(x: i32, y: i32, w: i32, h: i32, xd: i32, yd: i32) -> Self {
+        // Player-thrown bullets have no static JN record; synthesize one so the
+        // projectile still participates in save games.
+        let mut origin = JnObject::spawned(36, x as u16, y as u16, w as u16, h as u16);
+        origin.set_speed(xd as i16, yd as i16);
         Self {
             x,
             y,
@@ -145,6 +154,7 @@ impl BulletEntity {
             state_count: LAUNCH_START,
             player_bbox: Rect::new(x, y, w, h),
             removed: false,
+            origin,
         }
     }
 }
@@ -284,6 +294,20 @@ impl ObjectEntity for BulletEntity {
     /// Returns `true` once the projectile has been removed.
     fn should_remove(&self) -> bool {
         self.removed
+    }
+
+    /// Snapshots the live projectile for a save game, or `None` once spent.
+    ///
+    /// Persists position and velocity; the launch/return phase counter
+    /// (`state_count`) restarts on restore.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        obj.set_speed(self.xd as i16, self.yd as i16);
+        Some(obj)
     }
 }
 
