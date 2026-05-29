@@ -4,8 +4,9 @@
 //! mutates at runtime (the `JILL1.CFG` copy, save-game snapshots) lives in a
 //! separate per-user, per-episode writable directory resolved here.
 
+use std::ffi::OsStr;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use openjill_data::cfg::{CfgFile, CfgHighScore, CfgReadError, CfgSaveSlot};
 use openjill_data::{DataDirectory, Episode};
@@ -52,24 +53,53 @@ impl RuntimeDir {
     }
 
     /// Reads a file inside the runtime directory.
+    ///
+    /// `file` must be a simple relative filename (no separators, `..`, or
+    /// absolute paths) so reads cannot escape the runtime directory.
     pub fn read(&self, file: &str) -> io::Result<Vec<u8>> {
+        validate_filename(file)?;
         std::fs::read(self.root.join(file))
     }
 
-    /// Returns `true` when `file` exists in the runtime directory.
+    /// Returns `true` when `file` (a simple relative filename) exists in the
+    /// runtime directory.  An unsafe filename returns `false`.
     pub fn exists(&self, file: &str) -> bool {
-        self.root.join(file).exists()
+        validate_filename(file).is_ok() && self.root.join(file).exists()
     }
 
     /// Atomically writes `bytes` to `file`: writes a sibling `.tmp` then renames
     /// over the target, creating the directory first.  A crash mid-write leaves
     /// either the old file or the complete new one, never a partial.
+    ///
+    /// `file` must be a simple relative filename so writes stay inside the
+    /// runtime directory.
     pub fn write_atomic(&self, file: &str, bytes: &[u8]) -> io::Result<()> {
+        validate_filename(file)?;
         std::fs::create_dir_all(&self.root)?;
         let target = self.root.join(file);
         let tmp = self.root.join(format!("{file}.tmp"));
         std::fs::write(&tmp, bytes)?;
         std::fs::rename(&tmp, &target)
+    }
+}
+
+/// Rejects anything other than a single, normal relative filename so a caller
+/// cannot read or write outside the runtime directory (no separators, `..`,
+/// root, prefix, or absolute paths).  Mirrors the containment checks
+/// `DataDirectory` applies to its read paths.
+fn validate_filename(file: &str) -> io::Result<()> {
+    let mut components = Path::new(file).components();
+    let is_single_normal = matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(segment)), None) if segment == OsStr::new(file)
+    );
+    if is_single_normal {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("runtime-dir filename must be a simple relative name: {file:?}"),
+        ))
     }
 }
 
@@ -97,6 +127,14 @@ pub enum SaveStoreError {
     /// The config bytes could not be parsed.
     #[error("config parse error: {0}")]
     Cfg(#[from] CfgReadError),
+    /// A save-slot index outside the episode's save table was requested.
+    #[error("save slot {slot} out of range (0..{count})")]
+    InvalidSlot {
+        /// The requested slot index.
+        slot: usize,
+        /// Number of save slots the episode provides.
+        count: usize,
+    },
 }
 
 /// Runtime saves, high scores, and config for one episode.
@@ -177,6 +215,7 @@ impl SaveStore {
         map_bytes: &[u8],
         level_bytes: &[u8],
     ) -> Result<(), SaveStoreError> {
+        self.check_slot(slot)?;
         self.runtime
             .write_atomic(&format!("{}SAVEM.{slot}", self.prefix), map_bytes)?;
         self.runtime
@@ -187,6 +226,7 @@ impl SaveStore {
 
     /// Reads back a save-game snapshot from `slot` as `(map_bytes, level_bytes)`.
     pub fn load_game(&self, slot: usize) -> Result<(Vec<u8>, Vec<u8>), SaveStoreError> {
+        self.check_slot(slot)?;
         let map = self.runtime.read(&format!("{}SAVEM.{slot}", self.prefix))?;
         let level = self.runtime.read(&format!("{}SAVE.{slot}", self.prefix))?;
         Ok((map, level))
@@ -196,6 +236,16 @@ impl SaveStore {
     pub fn record_high_score(&mut self, name: &str, score: i32) -> Result<(), SaveStoreError> {
         self.cfg.add_high_score(name, score);
         self.persist_cfg()
+    }
+
+    /// Validates a slot index against the episode's save table.
+    fn check_slot(&self, slot: usize) -> Result<(), SaveStoreError> {
+        let count = self.cfg.save_slots().len();
+        if slot < count {
+            Ok(())
+        } else {
+            Err(SaveStoreError::InvalidSlot { slot, count })
+        }
     }
 
     /// Writes the working config back to the runtime directory.
@@ -273,6 +323,52 @@ mod tests {
         let dir = RuntimeDir::with_root(unique_temp_root());
         let err = dir.read("absent.cfg").expect_err("missing file errors");
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// Unsafe filenames (separators, `..`, absolute) are rejected so reads and
+    /// writes cannot escape the runtime directory.
+    #[test]
+    fn rejects_unsafe_filenames() {
+        let dir = RuntimeDir::with_root(unique_temp_root());
+        for bad in ["../escape", "a/b", "/etc/passwd", "..", ".", ""] {
+            assert_eq!(
+                dir.read(bad).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+                "read({bad:?}) must be rejected"
+            );
+            assert_eq!(
+                dir.write_atomic(bad, b"x").unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+                "write_atomic({bad:?}) must be rejected"
+            );
+            assert!(!dir.exists(bad), "exists({bad:?}) must be false");
+        }
+    }
+
+    /// Save/load reject a slot index outside the episode's save table.
+    #[test]
+    fn save_load_reject_out_of_range_slot() {
+        use openjill_data::episode::JILL1;
+
+        let runtime_root = unique_temp_root();
+        let mut store = SaveStore::open_with_runtime(
+            RuntimeDir::with_root(&runtime_root),
+            &DataDirectory::new(unique_temp_root()),
+            &JILL1,
+        )
+        .expect("open seeds defaults");
+        let out = store.save_slots().len();
+
+        assert!(matches!(
+            store.save_game(out, "X", b"m", b"l"),
+            Err(SaveStoreError::InvalidSlot { .. })
+        ));
+        assert!(matches!(
+            store.load_game(out),
+            Err(SaveStoreError::InvalidSlot { .. })
+        ));
+
+        std::fs::remove_dir_all(&runtime_root).ok();
     }
 
     /// Unit under test: [`SaveStore`] save-game + high-score persistence across
