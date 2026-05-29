@@ -387,4 +387,48 @@ mod tests {
             "firebird-enemy snapshot must round-trip"
         );
     }
+
+    /// Unit under test: [`ObjectEntity::snapshot`] for the remaining special
+    /// enemies - bees (46), skull (51), eyes (64), spark (65), hive (45).
+    #[test]
+    fn special_enemy_snapshot_round_trips() {
+        let cache = AssetCache::synthetic();
+
+        // Position-only persisters (their behavior re-derives on restore); the
+        // counter (skull link id, etc.) is preserved from the origin.
+        for type_id in [46u8, 51, 64] {
+            let mut item = synthetic_object_of_type(type_id);
+            item.set_position(72, 88);
+            item.set_counter(3);
+            let entity = make_object_entity(type_id, &item, None, &cache);
+            assert_eq!(
+                entity.snapshot(),
+                Some(item.clone()),
+                "type {type_id} snapshot must round-trip"
+            );
+        }
+
+        // Spark: live vertical speed (non-default) + animation counter.
+        let mut spark = synthetic_object_of_type(65);
+        spark.set_position(40, 40);
+        spark.set_speed(0, 3);
+        spark.set_counter(2);
+        spark.set_zap_hold(1);
+        assert_eq!(
+            make_object_entity(65, &spark, None, &cache).snapshot(),
+            Some(spark.clone()),
+            "spark snapshot must round-trip"
+        );
+
+        // Hive: spawn charge counter.
+        let mut hive = synthetic_object_of_type(45);
+        hive.set_position(64, 64);
+        hive.set_counter(2);
+        hive.set_zap_hold(1);
+        assert_eq!(
+            make_object_entity(45, &hive, None, &cache).snapshot(),
+            Some(hive.clone()),
+            "hive snapshot must round-trip"
+        );
+    }
 }

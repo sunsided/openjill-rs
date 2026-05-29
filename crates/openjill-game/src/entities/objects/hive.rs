@@ -59,6 +59,9 @@ pub struct HiveEntity {
     score_dispatched: bool,
     zaphold: i32,
     rng: EnemyRng,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live state written back.
+    origin: JnObject,
 }
 
 impl HiveEntity {
@@ -77,14 +80,17 @@ impl HiveEntity {
             y,
             w,
             h,
-            counter: 0,
+            // The charge counter persists across a save; authored hives carry
+            // counter = 0 (idle), so fresh level entry is unchanged.
+            counter: i32::from(item.counter()),
             counter_wait: 0,
             facing: 1,
             player_x: x,
             dead: false,
             score_dispatched: false,
-            zaphold: 0,
+            zaphold: i32::from(item.zap_hold()),
             rng: EnemyRng::new((x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32)),
+            origin: item.clone(),
         }
     }
 }
@@ -185,6 +191,21 @@ impl ObjectEntity for HiveEntity {
 
     fn is_dead(&self) -> bool {
         self.dead
+    }
+
+    /// Snapshots the live hive for a save game, or `None` once dead.
+    ///
+    /// Persists position, the spawn charge `counter`, and `zap_hold`; the
+    /// transient facing / wait timers re-derive on restore.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.dead {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        obj.set_counter(self.counter as i16);
+        obj.set_zap_hold(self.zaphold as u16);
+        Some(obj)
     }
 
     fn observe_player(&mut self, player_bbox: Rect) {

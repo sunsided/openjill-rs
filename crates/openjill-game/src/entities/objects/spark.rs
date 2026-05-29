@@ -52,6 +52,9 @@ pub struct SparkEntity {
     counter: i32,
     zaphold: i32,
     pending_kill: Option<DeathKind>,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live state written back.
+    origin: JnObject,
 }
 
 impl SparkEntity {
@@ -66,9 +69,10 @@ impl SparkEntity {
             h,
             y_speed: if yd != 0 { yd } else { -DEFAULT_SPEED },
             bounds: None,
-            counter: 0,
-            zaphold: 0,
+            counter: i32::from(item.counter()),
+            zaphold: i32::from(item.zap_hold()),
             pending_kill: None,
+            origin: item.clone(),
         }
     }
 
@@ -172,6 +176,28 @@ impl ObjectEntity for SparkEntity {
         Rect::new(self.x, self.y, self.w, self.h)
     }
 
+    /// Snapshots the live spark for a save game (always persisted).
+    ///
+    /// Writes back position, vertical travel speed, the animation `counter`,
+    /// and `zap_hold`; the lazily-computed travel bounds re-derive on restore.
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        // `new()` defaults only an authored y_speed of 0 to the upward speed;
+        // collapse back to 0 in that one case so the round-trip is exact, but
+        // always persist a live speed otherwise (an authored downward spark
+        // that reversed up to the default must keep its live upward direction).
+        let ys = if obj.y_speed() == 0 && self.y_speed == -DEFAULT_SPEED {
+            0
+        } else {
+            self.y_speed as i16
+        };
+        obj.set_speed(obj.x_speed(), ys);
+        obj.set_counter(self.counter as i16);
+        obj.set_zap_hold(self.zaphold as u16);
+        Some(obj)
+    }
+
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
     }
@@ -235,6 +261,7 @@ mod tests {
             counter: 0,
             zaphold: 0,
             pending_kill: None,
+            origin: openjill_data::jn::JnObject::spawned(65, x as u16, y as u16, 16, 16),
         }
     }
 
