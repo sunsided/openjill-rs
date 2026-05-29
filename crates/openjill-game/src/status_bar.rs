@@ -141,10 +141,13 @@ fn parse_status_bar_commands() -> Vec<RenderCommand> {
                 parse_text_entry_offset(entry, FontSize::Small, CONTROL_AREA_X, CONTROL_AREA_Y)
             }));
         }
-        // Movement hint and key-binding description text (small font).
+        // Movement hint and key-binding description text (small font).  The
+        // SHIFT/ALT rows carry placeholder labels ("-ctrl-"/"-alt-") that the
+        // Java reference replaces from `keysControlText`; substitute the
+        // default-weapon action labels so the panel reads as actions.
         if let Some(text) = ctrl.get("text").and_then(|v| v.as_array()) {
             commands.extend(text.iter().filter_map(|entry| {
-                parse_text_entry_offset(entry, FontSize::Small, CONTROL_AREA_X, CONTROL_AREA_Y)
+                parse_control_text_entry(entry, CONTROL_AREA_X, CONTROL_AREA_Y)
             }));
         }
         // N / Q / S / R / T single-character bindings (big font).
@@ -197,6 +200,37 @@ fn parse_text_entry_offset(
         y,
         color_index,
         font,
+    })
+}
+
+/// Maps a control-area placeholder label to the action it represents.
+///
+/// `control_area.json` keeps the DOS-era placeholders `-ctrl-` and `-alt-` on
+/// the SHIFT and ALT rows; the Java reference overwrites them at runtime from
+/// `keysControlText` (for the default knife weapon: SHIFT = jump, ALT = knife).
+/// Other labels pass through unchanged.
+fn control_action_label(raw: &str) -> &str {
+    match raw {
+        "-ctrl-" => "jump",
+        "-alt-" => "knife",
+        other => other,
+    }
+}
+
+/// Like [`parse_text_entry_offset`] but substitutes control-row action labels
+/// via [`control_action_label`].
+fn parse_control_text_entry(entry: &serde_json::Value, dx: i32, dy: i32) -> Option<RenderCommand> {
+    let raw = entry.get("text")?.as_str()?;
+    let text = control_action_label(raw).to_string();
+    let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
+    let x = i32::try_from(entry.get("x")?.as_i64()?).ok()? + dx;
+    let y = i32::try_from(entry.get("y")?.as_i64()?).ok()? + dy;
+    Some(RenderCommand::DrawText {
+        text,
+        x,
+        y,
+        color_index,
+        font: FontSize::Small,
     })
 }
 
