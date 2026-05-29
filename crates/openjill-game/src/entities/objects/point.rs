@@ -37,6 +37,10 @@ pub struct PointEntity {
     /// Remaining lifetime in ticks; once `counter` reaches zero the entity
     /// flags itself for removal.
     counter: i32,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position, speeds, and lifetime
+    /// written back.
+    origin: JnObject,
 }
 
 impl PointEntity {
@@ -52,6 +56,7 @@ impl PointEntity {
             x_speed: i32::from(item.x_speed()),
             y_speed: i32::from(item.y_speed()),
             counter: i32::from(item.counter()).max(0),
+            origin: item.clone(),
         }
     }
 }
@@ -100,6 +105,22 @@ impl ObjectEntity for PointEntity {
     /// Returns `true` once the popup's lifetime has expired.
     fn should_remove(&self) -> bool {
         self.counter <= 0
+    }
+
+    /// Snapshots the live popup for a save game, or `None` once its lifetime
+    /// has expired (it would be reaped on the next tick).
+    ///
+    /// Writes back position, speeds, and the remaining lifetime; the authored
+    /// dimensions and other fields are preserved from the cloned origin.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.counter <= 0 {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        obj.set_speed(self.x_speed as i16, self.y_speed as i16);
+        obj.set_counter(self.counter as i16);
+        Some(obj)
     }
 }
 

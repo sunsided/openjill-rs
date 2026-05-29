@@ -275,4 +275,40 @@ mod tests {
         assert_eq!(bbox.w, 16);
         assert_eq!(bbox.h, 16);
     }
+
+    /// Unit under test: [`ObjectEntity::snapshot`] for the pickup / static-tile
+    /// entity group.
+    ///
+    /// Invariant asserted: a live pickup built from a JN record reproduces that
+    /// record via `snapshot` (`parse -> new -> snapshot == parse`). Covers apple
+    /// (1), red key (14), rock key (33), bonus (28), text tiles (20, 21), and
+    /// huge-letter tiles (42).
+    #[test]
+    fn pickup_entities_snapshot_round_trips_their_source_record() {
+        let cache = AssetCache::synthetic();
+        for type_id in [1u8, 14, 33, 28, 20, 21, 42] {
+            let mut item = synthetic_object_of_type(type_id);
+            item.set_position(64, 80);
+            let entity = make_object_entity(type_id, &item, None, &cache);
+            assert_eq!(
+                entity.snapshot(),
+                Some(item.clone()),
+                "type {type_id} snapshot must round-trip its source record"
+            );
+        }
+    }
+
+    /// Unit under test: [`ObjectEntity::snapshot`] for the floating score popup
+    /// (type 27), whose live position, speeds, and remaining lifetime must
+    /// round-trip while the popup is still alive.
+    #[test]
+    fn point_entity_snapshot_round_trips_while_alive() {
+        let cache = AssetCache::synthetic();
+        let mut item = synthetic_object_of_type(27);
+        item.set_position(40, 50);
+        item.set_speed(2, -3);
+        item.set_counter(30);
+        let entity = make_object_entity(27, &item, None, &cache);
+        assert_eq!(entity.snapshot(), Some(item.clone()));
+    }
 }
