@@ -184,6 +184,88 @@ impl JnObject {
         self.string_index
     }
 
+    /// Creates an object record for a runtime-spawned object that has no parsed
+    /// source position (player-thrown projectiles, death-scatter particles).
+    ///
+    /// The parse-bookkeeping fields (`index`, `offset`, `string_index`) are
+    /// synthetic and `pointer` is `0` (no string-stack entry); all live state
+    /// fields start at `0` and are set by the spawning entity before a save.
+    pub fn spawned(object_type: u8, x: u16, y: u16, width: u16, height: u16) -> Self {
+        Self {
+            object_type,
+            x,
+            y,
+            x_speed: 0,
+            y_speed: 0,
+            width,
+            height,
+            state: 0,
+            sub_state: 0,
+            state_count: 0,
+            counter: 0,
+            flags: 0,
+            pointer: 0,
+            info1: 0,
+            zap_hold: 0,
+            index: 0,
+            offset: 0,
+            string_index: None,
+        }
+    }
+
+    /// Sets the object position in pixels.
+    pub fn set_position(&mut self, x: u16, y: u16) {
+        self.x = x;
+        self.y = y;
+    }
+
+    /// Sets the object dimensions in pixels.
+    pub fn set_dimensions(&mut self, width: u16, height: u16) {
+        self.width = width;
+        self.height = height;
+    }
+
+    /// Sets the signed horizontal and vertical speed fields.
+    pub fn set_speed(&mut self, x_speed: i16, y_speed: i16) {
+        self.x_speed = x_speed;
+        self.y_speed = y_speed;
+    }
+
+    /// Sets the signed object state field.
+    pub fn set_state(&mut self, state: i16) {
+        self.state = state;
+    }
+
+    /// Sets the object sub-state field.
+    pub fn set_sub_state(&mut self, sub_state: u16) {
+        self.sub_state = sub_state;
+    }
+
+    /// Sets the object state-counter field.
+    pub fn set_state_count(&mut self, state_count: u16) {
+        self.state_count = state_count;
+    }
+
+    /// Sets the signed object counter field.
+    pub fn set_counter(&mut self, counter: i16) {
+        self.counter = counter;
+    }
+
+    /// Sets the object flag bits.
+    pub fn set_flags(&mut self, flags: u16) {
+        self.flags = flags;
+    }
+
+    /// Sets the signed auxiliary `info1` field.
+    pub fn set_info1(&mut self, info1: i16) {
+        self.info1 = info1;
+    }
+
+    /// Sets the collision/hold auxiliary `zap_hold` field.
+    pub fn set_zap_hold(&mut self, zap_hold: u16) {
+        self.zap_hold = zap_hold;
+    }
+
     /// Appends this object record to `out` in OpenJill field order (matching
     /// `parse_object` and the Java `writeToFile`).
     fn write_to(&self, out: &mut Vec<u8>) {
