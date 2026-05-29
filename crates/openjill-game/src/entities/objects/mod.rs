@@ -341,4 +341,50 @@ mod tests {
             }
         }
     }
+
+    /// Unit under test: [`ObjectEntity::snapshot`] for the mover-enemy group -
+    /// snake (39), ghost (53), firebird enemy (30) - each with its own live
+    /// state (snake body width, ghost glide velocity, firebird direction).
+    #[test]
+    fn mover_enemy_snapshot_round_trips() {
+        let cache = AssetCache::synthetic();
+
+        // Snake: live body width + slither direction + animation counter.
+        let mut snake = synthetic_object_of_type(39);
+        snake.set_position(48, 64);
+        snake.set_dimensions(96, 16); // wide enough that new() does not clamp
+        snake.set_speed(-3, 0);
+        snake.set_counter(2);
+        snake.set_zap_hold(1);
+        assert_eq!(
+            make_object_entity(39, &snake, None, &cache).snapshot(),
+            Some(snake.clone()),
+            "snake snapshot must round-trip"
+        );
+
+        // Ghost: live glide velocity (non-default so it is not collapsed) plus
+        // the speed-magnitude counter.
+        let mut ghost = synthetic_object_of_type(53);
+        ghost.set_position(80, 80);
+        ghost.set_speed(0, -3);
+        ghost.set_counter(3);
+        ghost.set_zap_hold(1);
+        assert_eq!(
+            make_object_entity(53, &ghost, None, &cache).snapshot(),
+            Some(ghost.clone()),
+            "ghost snapshot must round-trip"
+        );
+
+        // Firebird enemy: flight direction + animation counter.
+        let mut firebird = synthetic_object_of_type(30);
+        firebird.set_position(96, 32);
+        firebird.set_speed(-4, 0);
+        firebird.set_counter(2);
+        firebird.set_zap_hold(1);
+        assert_eq!(
+            make_object_entity(30, &firebird, None, &cache).snapshot(),
+            Some(firebird.clone()),
+            "firebird-enemy snapshot must round-trip"
+        );
+    }
 }

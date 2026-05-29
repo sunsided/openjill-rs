@@ -60,6 +60,9 @@ pub struct FirebirdEnemyEntity {
     score_dispatched: bool,
     zaphold: i32,
     pending_kill: Option<DeathKind>,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live state written back.
+    origin: JnObject,
 }
 
 impl FirebirdEnemyEntity {
@@ -77,11 +80,12 @@ impl FirebirdEnemyEntity {
             w,
             h,
             x_speed: if xd != 0 { xd } else { DEFAULT_X_SPEED },
-            counter: 0,
+            counter: i32::from(item.counter()),
             dead: false,
             score_dispatched: false,
-            zaphold: 0,
+            zaphold: i32::from(item.zap_hold()),
             pending_kill: None,
+            origin: item.clone(),
         }
     }
 }
@@ -184,6 +188,29 @@ impl ObjectEntity for FirebirdEnemyEntity {
 
     fn is_dead(&self) -> bool {
         self.dead
+    }
+
+    /// Snapshots the live firebird enemy for a save game, or `None` once dead.
+    ///
+    /// Persists position, flight direction, the animation `counter`, and
+    /// `zap_hold`.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.dead {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        // `new()` collapses an authored x_speed of 0 to the flight default, so
+        // a live speed equal to that default emits the authored value.
+        let xs = if self.x_speed == DEFAULT_X_SPEED {
+            obj.x_speed()
+        } else {
+            self.x_speed as i16
+        };
+        obj.set_speed(xs, obj.y_speed());
+        obj.set_counter(self.counter as i16);
+        obj.set_zap_hold(self.zaphold as u16);
+        Some(obj)
     }
 
     fn take_player_kill(&mut self) -> Option<DeathKind> {

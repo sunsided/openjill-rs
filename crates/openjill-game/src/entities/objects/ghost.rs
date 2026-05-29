@@ -64,6 +64,9 @@ pub struct GhostEntity {
     score_dispatched: bool,
     zaphold: i32,
     pending_kill: Option<DeathKind>,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live state written back.
+    origin: JnObject,
 }
 
 impl GhostEntity {
@@ -93,8 +96,9 @@ impl GhostEntity {
             speed,
             dead: false,
             score_dispatched: false,
-            zaphold: 0,
+            zaphold: i32::from(item.zap_hold()),
             pending_kill: None,
+            origin: item.clone(),
         }
     }
 
@@ -237,6 +241,33 @@ impl ObjectEntity for GhostEntity {
         self.dead
     }
 
+    /// Snapshots the live ghost for a save game, or `None` once dead.
+    ///
+    /// Persists position, the live glide velocity, and `zap_hold`; the speed
+    /// magnitude lives in the authored `counter` (preserved from the origin).
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.dead {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        // `new()` maps an authored zero velocity to `(speed, 0)`; emit the
+        // authored `(0, 0)` when the live velocity is exactly that default so
+        // the round-trip stays exact, and the live velocity otherwise.
+        let (xs, ys) = if self.x_speed == self.speed
+            && self.y_speed == 0
+            && obj.x_speed() == 0
+            && obj.y_speed() == 0
+        {
+            (obj.x_speed(), obj.y_speed())
+        } else {
+            (self.x_speed as i16, self.y_speed as i16)
+        };
+        obj.set_speed(xs, ys);
+        obj.set_zap_hold(self.zaphold as u16);
+        Some(obj)
+    }
+
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
     }
@@ -294,6 +325,7 @@ mod tests {
             score_dispatched: false,
             zaphold: 0,
             pending_kill: None,
+            origin: openjill_data::jn::JnObject::spawned(53, x as u16, y as u16, 16, 16),
         }
     }
 
