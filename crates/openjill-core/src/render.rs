@@ -128,6 +128,28 @@ pub enum RenderCommand {
         /// Palette index used to fill every pixel in the region.
         color: u8,
     },
+    /// Draw one glyph from a SHA *font* tileset, recolored and with its
+    /// background keyed out.
+    ///
+    /// Unlike [`RenderCommand::Blit`] (which writes a tile's raw indexed
+    /// pixels), this treats `tileset` as a font: the glyph at `tile` is filled
+    /// with `color_index` (promoted to bright EGA like [`RenderCommand::DrawText`])
+    /// and the font's transparent background pixels are skipped.  Used for the
+    /// control-panel key-cap glyphs (SHIFT / ALT / F1) which live in a font
+    /// tileset and are recolored via `grapSpecialKey` in the Java reference.
+    BlitGlyph {
+        /// SHA font tileset index (0-based).
+        tileset: u8,
+        /// Glyph (tile) index within the font tileset.
+        tile: u16,
+        /// Destination x coordinate in framebuffer pixels.
+        x: i32,
+        /// Destination y coordinate in framebuffer pixels.
+        y: i32,
+        /// Logical EGA color index `0..=7`; the renderer applies the same
+        /// bright-EGA shift as [`RenderCommand::DrawText`].
+        color_index: u8,
+    },
 }
 
 #[cfg(test)]

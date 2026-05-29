@@ -213,9 +213,13 @@ fn parse_text_entry_offset(
 /// `TextManagerImpl.SPECIAL_LETTER_TILESET = 6`).
 const SPECIAL_KEY_TILESET: u8 = 6;
 
-/// Renders a `specialKey` entry as a key-cap tile blit (SHIFT/ALT/F1) rather
-/// than font text.  Tile indices follow Java `TextManager`:
-/// `SPECIAL_KEY_SHIFT = 0`, `SPECIAL_KEY_ALT = 1`, `SPECIAL_KEY_F1 = 9`.
+/// Renders a `specialKey` entry as a recolored key-cap glyph (SHIFT/ALT/F1).
+///
+/// The glyphs live in a SHA *font* tileset, so they must be drawn via
+/// [`RenderCommand::BlitGlyph`] (recolor + background key-out), not a raw
+/// `Blit` which would show the font's internal pixel values.  Tile indices
+/// follow Java `TextManager`: `SPECIAL_KEY_SHIFT = 0`, `SPECIAL_KEY_ALT = 1`,
+/// `SPECIAL_KEY_F1 = 9`.
 fn parse_special_key_entry(entry: &serde_json::Value, dx: i32, dy: i32) -> Option<RenderCommand> {
     let tile = match entry.get("text")?.as_str()? {
         "SHIFT" => 0,
@@ -223,15 +227,15 @@ fn parse_special_key_entry(entry: &serde_json::Value, dx: i32, dy: i32) -> Optio
         "F1" => 9,
         _ => return None,
     };
+    let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
     let x = i32::try_from(entry.get("x")?.as_i64()?).ok()? + dx;
     let y = i32::try_from(entry.get("y")?.as_i64()?).ok()? + dy;
-    Some(RenderCommand::Blit {
+    Some(RenderCommand::BlitGlyph {
         tileset: SPECIAL_KEY_TILESET,
         tile,
         x,
         y,
-        opaque: false,
-        clip: None,
+        color_index,
     })
 }
 
@@ -325,7 +329,7 @@ pub const GAME_AREA_CLIP: openjill_core::ClipRect = openjill_core::ClipRect {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONTROL_AREA_JSON, STATUS_BAR_JSON, game_area_blit, status_bar_commands};
+    use super::{STATUS_BAR_JSON, game_area_blit, status_bar_commands};
     use openjill_core::RenderCommand;
     use openjill_core::layout::{GAME_AREA_X, GAME_AREA_Y};
 
@@ -334,32 +338,33 @@ mod tests {
     /// Preconditions: `STATUS_BAR_JSON` is the embedded `status_bar_vga.json` with a valid
     /// top-level `images` array.
     ///
-    /// Invariants asserted: the number of `Blit` commands returned equals the
-    /// number of frame/border tiles in `images` plus the control-area
-    /// `specialKey` key-cap tiles (SHIFT/ALT/F1).  The `imagesInvenroy`
-    /// portrait tiles are intentionally excluded since the portrait is
-    /// main-menu-only.
+    /// Invariants asserted: the number of `Blit` commands equals the number of
+    /// `images` (frame/border tiles only); the `imagesInvenroy` portrait tiles
+    /// are excluded (main-menu-only), and the SHIFT/ALT/F1 key caps are emitted
+    /// as `BlitGlyph`, not `Blit`.
     #[test]
     fn status_bar_commands_blit_count_matches_json_images() {
         let commands = status_bar_commands();
         let json: serde_json::Value =
             serde_json::from_str(STATUS_BAR_JSON).expect("STATUS_BAR_JSON must be valid JSON");
-        let images = json["images"]
+        let expected = json["images"]
             .as_array()
             .expect("images must be an array")
             .len();
-        let ctrl: serde_json::Value =
-            serde_json::from_str(CONTROL_AREA_JSON).expect("CONTROL_AREA_JSON must be valid JSON");
-        let special_keys = ctrl["specialKey"].as_array().map_or(0, |a| a.len());
-        let expected = images + special_keys;
         let blit_count = commands
             .iter()
             .filter(|cmd| matches!(cmd, RenderCommand::Blit { .. }))
             .count();
         assert_eq!(
             blit_count, expected,
-            "Blit count must match images + specialKey tiles"
+            "Blit count must match images array length (portrait excluded)"
         );
+        // The three special-key caps render as recolored font glyphs.
+        let glyph_count = commands
+            .iter()
+            .filter(|cmd| matches!(cmd, RenderCommand::BlitGlyph { .. }))
+            .count();
+        assert_eq!(glyph_count, 3, "SHIFT/ALT/F1 emit BlitGlyph commands");
     }
 
     /// Unit under test: `status_bar_commands` `DrawText` count includes `text` + `bigtext` at
