@@ -22,6 +22,11 @@ const PRINTABLE_ASCII_MAX_EXCLUSIVE: u8 = 128;
 const HIGH_SCORE_VALUE_OFFSET: usize = HIGH_SCORE_COUNT * HIGH_SCORE_NAME_LEN + HIGH_SCORE_HOLE_LEN;
 /// Byte offset of the save-name block (after names + hole + scores).
 const SAVE_NAME_OFFSET: usize = HIGH_SCORE_VALUE_OFFSET + HIGH_SCORE_COUNT * 4;
+/// Byte length of the trailing setup block (11 × i16: setup flag, joystick
+/// flag, six calibration values, display mode, music flag, sound flag).
+const SETUP_BLOCK_LEN: usize = 11 * 2;
+/// Total byte length of a `JILL1.CFG` file.
+pub const FILE_LEN: usize = SAVE_NAME_OFFSET + SAVE_SLOT_COUNT * SAVE_NAME_LEN + SETUP_BLOCK_LEN;
 /// Padding byte written after a name, mirroring Java
 /// `CfgFileImpl.FILE_SPACE_FILLER = '\0'`.
 const CFG_NAME_PAD: u8 = 0;
@@ -270,6 +275,14 @@ impl CfgFile {
     pub fn from_bytes(bytes: impl Into<Vec<u8>>, prefix: &str) -> Result<Self, CfgReadError> {
         let mut reader = ByteReader::from_bytes(bytes);
         Self::parse(&mut reader, prefix)
+    }
+
+    /// Builds an empty default config (no high scores, no save names, zeroed
+    /// setup) for `prefix` - used to seed a fresh writable config when no
+    /// original `JILL1.CFG` is available.
+    pub fn empty(prefix: &str) -> Self {
+        Self::from_bytes(vec![0u8; FILE_LEN], prefix)
+            .expect("a zero-filled buffer of FILE_LEN always parses")
     }
 
     /// Serialises the config back to bytes: byte-identical to the source when
