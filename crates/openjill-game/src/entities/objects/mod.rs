@@ -431,4 +431,27 @@ mod tests {
             "hive snapshot must round-trip"
         );
     }
+
+    /// Unit under test: [`ObjectEntity::snapshot`] for the static / trigger
+    /// hazard group - lock door (24), toggle wall (26), switch (32),
+    /// checkpoint (12), touch trigger (15), bubbles (58), hit fire (37).
+    ///
+    /// Each persists position; the authored `counter` (key / link id /
+    /// destination) is preserved from the origin and the trigger/animation
+    /// state re-derives on restore.
+    #[test]
+    fn hazard_entities_snapshot_round_trip_their_source_record() {
+        let cache = AssetCache::synthetic();
+        for type_id in [24u8, 26, 32, 12, 15, 58, 37] {
+            let mut item = synthetic_object_of_type(type_id);
+            item.set_position(56, 72);
+            item.set_counter(4);
+            let entity = make_object_entity(type_id, &item, None, &cache);
+            assert_eq!(
+                entity.snapshot(),
+                Some(item.clone()),
+                "type {type_id} snapshot must round-trip its source record"
+            );
+        }
+    }
 }

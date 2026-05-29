@@ -32,6 +32,9 @@ pub struct HitFireEntity {
     h: i32,
     /// Remaining lifetime in ticks; entity removes itself when this reaches zero.
     counter: i32,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.
+    origin: JnObject,
 }
 
 impl HitFireEntity {
@@ -45,6 +48,7 @@ impl HitFireEntity {
             w,
             h,
             counter: HIT_FIRE_LIFETIME,
+            origin: item.clone(),
         }
     }
 }
@@ -82,5 +86,18 @@ impl ObjectEntity for HitFireEntity {
     /// Returns `true` once the animation has finished.
     fn should_remove(&self) -> bool {
         self.counter <= 0
+    }
+
+    /// Snapshots the live hit-fire for a save game, or `None` once expired.
+    ///
+    /// The fixed lifetime restarts on restore (the effect is transient), so
+    /// only the authored record (position) is persisted.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.counter <= 0 {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }

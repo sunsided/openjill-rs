@@ -41,6 +41,10 @@ pub struct LockedDoorEntity {
     triggered: bool,
     /// `true` once the door has opened and should be removed.
     removed: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.  The
+    /// authored `counter` (trigger link id) is preserved untouched.
+    origin: JnObject,
 }
 
 impl LockedDoorEntity {
@@ -55,6 +59,7 @@ impl LockedDoorEntity {
             h,
             counter: i32::from(item.counter()),
             triggered: false,
+            origin: item.clone(),
             removed: false,
         }
     }
@@ -135,6 +140,19 @@ impl ObjectEntity for LockedDoorEntity {
     /// Returns `true` once the door has opened.
     fn should_remove(&self) -> bool {
         self.removed
+    }
+
+    /// Snapshots the door for a save game, or `None` once opened.
+    ///
+    /// The trigger arming re-derives from the linked switch on restore, so only
+    /// the authored record (position + link id via `counter`) is persisted.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 
     /// Arms the door when a `Trigger` message with the matching link identifier

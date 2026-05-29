@@ -52,6 +52,10 @@ pub struct ToggleWallEntity {
     link_id: i32,
     /// `true` when the wall is in its solid (blocking) state.
     active: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.  The
+    /// authored `counter` (trigger link id) is preserved untouched.
+    origin: JnObject,
 }
 
 impl ToggleWallEntity {
@@ -68,6 +72,7 @@ impl ToggleWallEntity {
             h,
             link_id: i32::from(item.counter()),
             active: true,
+            origin: item.clone(),
         }
     }
 
@@ -102,6 +107,16 @@ impl ObjectEntity for ToggleWallEntity {
     /// Returns the wall's bounding box.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
+    }
+
+    /// Snapshots the wall for a save game (always persisted).
+    ///
+    /// The solid/passthrough toggle re-derives from the linked switch on
+    /// restore, so only the authored record (position + link id) is persisted.
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 
     /// Toggles the solid/passthrough state when `link_id` matches.
