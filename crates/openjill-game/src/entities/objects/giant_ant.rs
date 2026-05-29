@@ -202,8 +202,8 @@ impl ObjectEntity for GiantAntEntity {
         // live speed equal to that default is ambiguous; emit the authored
         // value to keep the round-trip exact. The ant has no vertical motion,
         // so the authored y_speed is preserved.
-        let xs = if self.x_speed == X_SPEED {
-            obj.x_speed()
+        let xs = if self.x_speed == X_SPEED && obj.x_speed() == 0 {
+            0
         } else {
             self.x_speed as i16
         };
@@ -215,5 +215,70 @@ impl ObjectEntity for GiantAntEntity {
 
     fn take_player_kill(&mut self) -> Option<DeathKind> {
         self.pending_kill.take()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openjill_core::BackgroundEntity;
+
+    /// Background cell that is solid (a floor/wall) iff `0` is `true`.
+    struct Solid(bool);
+    impl BackgroundEntity for Solid {
+        fn draw(&self, _: i32, _: i32) -> Option<RenderCommand> {
+            None
+        }
+        fn update(&mut self, _: i32, _: i32, _: &mut MessageDispatcher) {}
+        fn on_player_touch(&mut self, _: &mut dyn ObjectEntity, _: &mut MessageDispatcher) {}
+        fn is_passthrough(&self) -> bool {
+            !self.0
+        }
+        fn is_climbable(&self) -> bool {
+            false
+        }
+        fn is_stair(&self) -> bool {
+            false
+        }
+    }
+
+    /// Builds a grid whose `floor_row` is solid and all other cells are air.
+    fn grid_with_floor(width: usize, height: usize, floor_row: usize) -> BackgroundGrid {
+        let mut rows: Vec<Vec<Box<dyn BackgroundEntity>>> = Vec::with_capacity(height);
+        for y in 0..height {
+            let mut row: Vec<Box<dyn BackgroundEntity>> = Vec::with_capacity(width);
+            for _ in 0..width {
+                row.push(Box::new(Solid(y == floor_row)) as Box<dyn BackgroundEntity>);
+            }
+            rows.push(row);
+        }
+        BackgroundGrid::new(rows)
+    }
+
+    /// Regression for the snapshot speed-collapse guard: an ant authored
+    /// marching left that reverses into the `+X_SPEED` default must snapshot
+    /// the live (reversed, rightward) direction, not the authored leftward one.
+    #[test]
+    fn snapshot_persists_reversed_direction_not_authored() {
+        let cache = AssetCache::synthetic();
+        // Authored facing left, parked at x = 0 so the first step left is
+        // blocked (off the map edge) and the ant reverses to +X_SPEED.
+        let mut item = JnObject::spawned(29, 0, 96, 16, 16);
+        item.set_speed(-X_SPEED as i16, 0);
+        let mut ant = GiantAntEntity::new(&item, &cache);
+
+        ant.update(
+            &ActiveInput::default(),
+            &RuntimeState::new(),
+            &grid_with_floor(8, 8, 7),
+            &mut MessageDispatcher::new(),
+        );
+
+        let snapshot = ant.snapshot().expect("a live ant snapshots");
+        assert_eq!(
+            snapshot.x_speed(),
+            X_SPEED as i16,
+            "snapshot must keep the live reversed direction, not the authored one"
+        );
     }
 }

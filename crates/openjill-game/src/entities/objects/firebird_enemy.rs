@@ -202,8 +202,8 @@ impl ObjectEntity for FirebirdEnemyEntity {
         obj.set_position(self.x as u16, self.y as u16);
         // `new()` collapses an authored x_speed of 0 to the flight default, so
         // a live speed equal to that default emits the authored value.
-        let xs = if self.x_speed == DEFAULT_X_SPEED {
-            obj.x_speed()
+        let xs = if self.x_speed == DEFAULT_X_SPEED && obj.x_speed() == 0 {
+            0
         } else {
             self.x_speed as i16
         };
