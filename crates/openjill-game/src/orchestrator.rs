@@ -5,12 +5,14 @@ use openjill_core::{
     ActiveInput, MAP_LEVEL, MessageDispatcher, RenderCommand, RuntimeState, ScreenHandler,
     ScreenTransition,
 };
+use openjill_data::cfg::{CfgHighScore, CfgSaveSlot};
 use openjill_data::episode::Episode;
 use openjill_data::jn::JnReadError;
 use openjill_data::{DataDirectory, DataDirectoryError};
 use thiserror::Error;
 
 use crate::asset_cache::{AssetCache, AssetError};
+use crate::saves::{SaveStore, SaveStoreError};
 use crate::screens::intro_screens::{
     credits_screen, noisemaker_screen, ordering_info_screen, story_screen,
 };
@@ -140,6 +142,10 @@ pub struct GameOrchestrator {
     level_entry_state: Option<RuntimeState>,
     /// Set to `true` when the active handler requests [`ScreenTransition::Quit`].
     quitting: bool,
+    /// Writable runtime storage for save games, high scores, and the working
+    /// config copy.  Seeded from the original (read-only) `JILL1.CFG` on first
+    /// launch; the save/restore and high-score menu layer drives this.
+    saves: SaveStore,
 }
 
 impl GameOrchestrator {
@@ -153,6 +159,9 @@ impl GameOrchestrator {
         episode: &'static Episode,
     ) -> Result<Self, OrchestratorError> {
         let cache = AssetCache::load(&data_dir, episode)?;
+        // Open the writable runtime store before moving `data_dir` into `Self`;
+        // this seeds the per-user config copy from the original on first launch.
+        let saves = SaveStore::open(&data_dir, episode)?;
         let handler: Box<dyn ScreenHandler> = Box::new(make_start_menu(&cache));
         Ok(Self {
             cache,
@@ -168,6 +177,7 @@ impl GameOrchestrator {
             last_commands: Vec::new(),
             level_entry_state: None,
             quitting: false,
+            saves,
         })
     }
 
@@ -222,6 +232,45 @@ impl GameOrchestrator {
     /// Returns the render commands produced by the most recent game tick.
     pub fn last_commands(&self) -> &[RenderCommand] {
         &self.last_commands
+    }
+
+    /// Returns the current high-score table from the runtime config.
+    pub fn high_scores(&self) -> &[CfgHighScore] {
+        self.saves.high_scores()
+    }
+
+    /// Returns the current save slots from the runtime config.
+    pub fn save_slots(&self) -> &[CfgSaveSlot] {
+        self.saves.save_slots()
+    }
+
+    /// Records a new high score (sorted, capped) and persists the config.
+    pub fn record_high_score(&mut self, name: &str, score: i32) -> Result<(), SaveStoreError> {
+        self.saves.record_high_score(name, score)
+    }
+
+    /// Snapshots the current game into `slot` under `name`.
+    ///
+    /// Captures the live JN bytes from the active handler when it owns them
+    /// (the map screen owns the map JN; a level screen owns the level JN) and
+    /// falls back to the orchestrator's cached bytes for the half the active
+    /// screen does not own, so a save taken inside a level still records the
+    /// last-visited map state. Returns [`SaveError::NothingToSave`] when no
+    /// level has been entered yet (e.g. from the start menu).
+    pub fn save_to_slot(&mut self, slot: usize, name: &str) -> Result<(), SaveError> {
+        let map = self
+            .handler
+            .map_jn_bytes()
+            .or_else(|| self.map_jn_bytes.clone());
+        let level = self
+            .handler
+            .level_jn_bytes()
+            .or_else(|| self.level_jn_bytes.clone());
+        let (Some(map), Some(level)) = (map, level) else {
+            return Err(SaveError::NothingToSave);
+        };
+        self.saves.save_game(slot, name, &map, &level)?;
+        Ok(())
     }
 
     /// Applies a screen transition returned by the active handler.
@@ -401,6 +450,20 @@ pub enum OrchestratorError {
     /// Asset loading from the data directory failed.
     #[error("failed to load game assets: {0}")]
     AssetLoad(#[from] AssetError),
+    /// Opening the writable runtime store (config seed) failed.
+    #[error("failed to open save store: {0}")]
+    SaveStore(#[from] SaveStoreError),
+}
+
+/// Error returned when saving the current game to a slot fails.
+#[derive(Debug, Error)]
+pub enum SaveError {
+    /// A save-store operation (slot bounds, I/O, config) failed.
+    #[error(transparent)]
+    Store(#[from] SaveStoreError),
+    /// No level has been entered yet, so there is nothing to snapshot.
+    #[error("no game in progress to save")]
+    NothingToSave,
 }
 
 /// Error returned when loading a map or level JN file during a screen transition fails.
@@ -419,8 +482,9 @@ enum LevelLoadError {
 
 #[cfg(test)]
 mod tests {
-    use super::GameOrchestrator;
+    use super::{GameOrchestrator, SaveError};
     use crate::asset_cache::AssetCache;
+    use crate::saves::SaveStore;
     use openjill_core::runtime::RuntimeState;
     use openjill_core::{ActiveInput, RenderCommand, ScreenHandler, ScreenTransition, TickResult};
     use openjill_data::DataDirectory;
@@ -493,7 +557,29 @@ mod tests {
             last_commands: Vec::new(),
             level_entry_state: None,
             quitting: false,
+            saves: test_save_store(),
         }
+    }
+
+    /// Builds a [`SaveStore`] rooted at a unique temp directory with no original
+    /// config (defaults), so orchestrator tests exercise save/high-score paths
+    /// without touching the per-user data directory.
+    fn test_save_store() -> SaveStore {
+        use crate::saves::RuntimeDir;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("openjill-orch-test-{}-{nanos}", std::process::id()));
+        SaveStore::open_with_runtime(
+            RuntimeDir::with_root(root),
+            &DataDirectory::new(std::env::temp_dir()),
+            &episode::JILL1,
+        )
+        .expect("open save store with defaults")
     }
 
     /// Synthetic screen handler that returns a fixed [`ScreenTransition`] on the
@@ -817,5 +903,61 @@ mod tests {
 
         assert_eq!(orchestrator.level_jn_number, Some(1));
         assert_eq!(orchestrator.handler.level_jn_bytes(), cached_bytes);
+    }
+
+    /// Unit under test: [`GameOrchestrator::save_to_slot`] reports
+    /// [`SaveError::NothingToSave`] before any level has been entered.
+    ///
+    /// Preconditions: a fresh orchestrator on the start menu, with no cached
+    /// map or level JN bytes.
+    #[test]
+    fn save_to_slot_without_a_level_reports_nothing_to_save() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+
+        assert!(matches!(
+            orchestrator.save_to_slot(0, "ME"),
+            Err(SaveError::NothingToSave)
+        ));
+    }
+
+    /// Unit under test: [`GameOrchestrator::save_to_slot`] snapshots the cached
+    /// map and level JN bytes, names the slot, and persists the snapshot so it
+    /// reads back through the underlying [`SaveStore`].
+    ///
+    /// Preconditions: the orchestrator is seeded with distinct synthetic map
+    /// and level bytes; the active start-menu handler owns neither, so the
+    /// orchestrator's cached bytes are used.
+    #[test]
+    fn save_to_slot_snapshots_cached_map_and_level_bytes() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        let map = vec![1u8; 8];
+        let level = vec![2u8; 8];
+        orchestrator.map_jn_bytes = Some(map.clone());
+        orchestrator.level_jn_bytes = Some(level.clone());
+
+        orchestrator.save_to_slot(2, "HERO").expect("save succeeds");
+
+        assert_eq!(orchestrator.save_slots()[2].name(), "HERO");
+        assert_eq!(
+            orchestrator.saves.load_game(2).expect("load round-trips"),
+            (map, level)
+        );
+    }
+
+    /// Unit under test: [`GameOrchestrator::record_high_score`] writes through
+    /// to the runtime config and surfaces via [`GameOrchestrator::high_scores`].
+    #[test]
+    fn record_high_score_updates_table() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+
+        orchestrator
+            .record_high_score("ACE", 4242)
+            .expect("record succeeds");
+
+        assert_eq!(orchestrator.high_scores()[0].name(), "ACE");
+        assert_eq!(orchestrator.high_scores()[0].score(), 4242);
     }
 }
