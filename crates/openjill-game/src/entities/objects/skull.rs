@@ -54,6 +54,10 @@ pub struct SkullEntity {
     active: bool,
     /// Animation frame index `0..FRAMES` while active.
     frame: usize,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.  The
+    /// trigger link id lives in the authored `counter`, preserved untouched.
+    origin: JnObject,
 }
 
 impl SkullEntity {
@@ -68,6 +72,7 @@ impl SkullEntity {
             link_id: i32::from(item.counter()),
             active: false,
             frame: 0,
+            origin: item.clone(),
         }
     }
 }
@@ -147,6 +152,17 @@ impl ObjectEntity for SkullEntity {
         if link_id == self.link_id {
             self.active = true;
         }
+    }
+
+    /// Snapshots the skull for a save game (always persisted).
+    ///
+    /// The active/animation state re-arms from the linked switch on restore,
+    /// so only the authored record (position + link id via `counter`) is
+    /// persisted.
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
 

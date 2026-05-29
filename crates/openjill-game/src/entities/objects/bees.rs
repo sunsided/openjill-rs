@@ -142,6 +142,10 @@ pub struct BeesEntity {
     zaphold: i32,
     pending_kill: Option<DeathKind>,
     rng: EnemyRng,
+    /// The JN object record this entity was built from (or a synthesized one
+    /// for a hive-spawned bee), re-emitted by [`ObjectEntity::snapshot`] with
+    /// the live position written back.
+    origin: JnObject,
 }
 
 impl BeesEntity {
@@ -155,19 +159,27 @@ impl BeesEntity {
         let h = i32::from(item.height()).max(BLOCK_SIZE_I);
         let x = i32::from(item.x());
         let y = i32::from(item.y());
-        Self::build(x, y, w, h)
+        Self::build(x, y, w, h, item.clone())
     }
 
     /// Builds a `BeesEntity` spawned at runtime from a hive.
     ///
     /// Used by `LevelScreen::spawn_objects` when a `CreateObject` with
     /// `object_type = 46` arrives; bypasses the `JnObject` record because
-    /// dynamically-spawned bees have no static JN record.
+    /// dynamically-spawned bees have no static JN record, synthesizing one so
+    /// the bee still participates in save games.
     pub fn spawn_at(x: i32, y: i32) -> Self {
-        Self::build(x, y, BLOCK_SIZE_I, BLOCK_SIZE_I)
+        let origin = JnObject::spawned(
+            46,
+            x as u16,
+            y as u16,
+            BLOCK_SIZE_I as u16,
+            BLOCK_SIZE_I as u16,
+        );
+        Self::build(x, y, BLOCK_SIZE_I, BLOCK_SIZE_I, origin)
     }
 
-    fn build(x: i32, y: i32, w: i32, h: i32) -> Self {
+    fn build(x: i32, y: i32, w: i32, h: i32, origin: JnObject) -> Self {
         Self {
             x,
             y,
@@ -183,6 +195,7 @@ impl BeesEntity {
             zaphold: 0,
             pending_kill: None,
             rng: EnemyRng::new(seed_from(x, y)),
+            origin,
         }
     }
 }
@@ -288,6 +301,19 @@ impl ObjectEntity for BeesEntity {
 
     fn should_remove(&self) -> bool {
         self.removed
+    }
+
+    /// Snapshots the live bee for a save game, or `None` once expired/removed.
+    ///
+    /// The bee re-acquires the player and rebuilds its flight on the next tick,
+    /// so only the live position is written back over the cloned origin.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 
     fn take_player_kill(&mut self) -> Option<DeathKind> {

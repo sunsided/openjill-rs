@@ -52,6 +52,9 @@ pub struct EyesEntity {
     /// Current lens offset relative to `(LENS_ORIGIN_X, LENS_ORIGIN_Y)`.
     lens_dx: i32,
     lens_dy: i32,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.
+    origin: JnObject,
 }
 
 impl EyesEntity {
@@ -69,6 +72,7 @@ impl EyesEntity {
             player_y: y,
             lens_dx: 0,
             lens_dy: 0,
+            origin: item.clone(),
         }
     }
 }
@@ -167,6 +171,16 @@ impl ObjectEntity for EyesEntity {
     fn observe_player(&mut self, player_bbox: Rect) {
         self.player_x = player_bbox.x;
         self.player_y = player_bbox.y;
+    }
+
+    /// Snapshots the decorative eyes for a save game (always persisted).
+    ///
+    /// The lens aim re-derives from the player position on the next tick, so
+    /// only the authored record (position) is persisted.
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
 
