@@ -520,15 +520,19 @@ mod tests {
             "falling-spike snapshot must round-trip"
         );
 
-        // Rolling rock: live roll direction.
-        let mut rock = synthetic_object_of_type(35);
-        rock.set_position(96, 80);
-        rock.set_speed(-4, 0);
-        assert_eq!(
-            make_object_entity(35, &rock, None, &cache).snapshot(),
-            Some(rock.clone()),
-            "rolling-rock snapshot must round-trip"
-        );
+        // Rolling rock: live roll direction. Cover both a non-default
+        // direction and the authored zero that new() defaults to rolling right
+        // (which snapshot must collapse back to 0).
+        for x_speed in [-4i16, 0] {
+            let mut rock = synthetic_object_of_type(35);
+            rock.set_position(96, 80);
+            rock.set_speed(x_speed, 0);
+            assert_eq!(
+                make_object_entity(35, &rock, None, &cache).snapshot(),
+                Some(rock.clone()),
+                "rolling-rock (x_speed {x_speed}) snapshot must round-trip"
+            );
+        }
 
         // Lift: live velocity along its path.
         let mut lift = synthetic_object_of_type(61);
