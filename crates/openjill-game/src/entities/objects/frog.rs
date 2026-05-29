@@ -75,7 +75,16 @@ pub struct FrogEntity {
     /// the player horizontally (mirrors Java `FrogManager.msgUpdate`'s
     /// `PLAYER_POSITION.getX()` lookup).
     player_x: i32,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live state written back.
+    origin: JnObject,
 }
+
+/// JN `state` value for a frog resting on the floor
+/// (`FrogManager.stateOnFloor = 0`).
+const STATE_ON_FLOOR: i16 = 0;
+/// JN `state` value for an airborne frog (`FrogManager.stateOnJump = 1`).
+const STATE_ON_JUMP: i16 = 1;
 
 impl FrogEntity {
     pub fn new(item: &JnObject, cache: &AssetCache) -> Self {
@@ -87,20 +96,26 @@ impl FrogEntity {
         let (w, h) = sprite_dims(cache, TILESET_INDEX);
         let jn_h = i32::from(item.height());
         let y_adj = if jn_h > 0 { (h - jn_h).max(0) } else { 0 };
+        // Seed the live state from the JN record so a save game restores
+        // mid-jump: `state` selects floor vs air, `counter` is the jump timer,
+        // and the speeds carry the in-flight arc.  Authored frogs carry
+        // `state = 0` (floor), `counter = 0`, and zero speeds, so a freshly
+        // loaded level is unchanged.
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()) - y_adj,
             w,
             h,
-            x_speed: X_SPEED,
-            y_speed: 0,
-            jump_counter: 0,
-            on_floor: true,
+            x_speed: i32::from(item.x_speed()),
+            y_speed: i32::from(item.y_speed()),
+            jump_counter: i32::from(item.counter()),
+            on_floor: item.state() != STATE_ON_JUMP,
             dead: false,
             score_dispatched: false,
-            zaphold: 0,
+            zaphold: i32::from(item.zap_hold()),
             pending_kill: None,
             player_x: i32::from(item.x()),
+            origin: item.clone(),
         }
     }
 }
@@ -236,6 +251,31 @@ impl ObjectEntity for FrogEntity {
 
     fn is_dead(&self) -> bool {
         self.dead
+    }
+
+    /// Snapshots the live frog for a save game, or `None` once dead.
+    ///
+    /// Writes back the `FrogManager` `ObjectItem` fields: `state` (floor/jump),
+    /// `counter` (jump timer), the speeds, and `zap_hold`.  The construction
+    /// y-adjustment (sprite height vs JN height) is reversed so the position
+    /// round-trips.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.dead {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        let jn_h = i32::from(obj.height());
+        let y_adj = if jn_h > 0 { (self.h - jn_h).max(0) } else { 0 };
+        obj.set_position(self.x as u16, (self.y + y_adj) as u16);
+        obj.set_speed(self.x_speed as i16, self.y_speed as i16);
+        obj.set_state(if self.on_floor {
+            STATE_ON_FLOOR
+        } else {
+            STATE_ON_JUMP
+        });
+        obj.set_counter(self.jump_counter as i16);
+        obj.set_zap_hold(self.zaphold as u16);
+        Some(obj)
     }
 
     fn take_player_kill(&mut self) -> Option<DeathKind> {
@@ -378,5 +418,24 @@ mod tests {
         frog.update(&input, &state, &grid, &mut dispatcher);
 
         assert_eq!(*count.lock().unwrap(), 1, "score dispatched exactly once");
+    }
+
+    /// Unit under test: [`FrogEntity::snapshot`] round-trips an airborne frog
+    /// (`parse -> new -> snapshot == parse`).
+    ///
+    /// The record carries the air state, a jump-timer `counter`, a non-zero
+    /// arc velocity, `zap_hold`, and a sub-sprite height that exercises the
+    /// construction y-adjustment reversal.
+    #[test]
+    fn snapshot_round_trips_an_airborne_frog() {
+        let cache = AssetCache::synthetic();
+        let mut obj = openjill_data::jn::JnObject::spawned(22, 80, 96, 14, 2);
+        obj.set_state(STATE_ON_JUMP);
+        obj.set_counter(5);
+        obj.set_speed(-4, 3);
+        obj.set_zap_hold(2);
+
+        let frog = FrogEntity::new(&obj, &cache);
+        assert_eq!(frog.snapshot(), Some(obj.clone()));
     }
 }
