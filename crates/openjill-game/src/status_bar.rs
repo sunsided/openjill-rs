@@ -212,6 +212,48 @@ fn parse_text_entry_offset(
 /// SHA tileset holding the special-key glyphs (Java
 /// `TextManagerImpl.SPECIAL_LETTER_TILESET = 6`).
 const SPECIAL_KEY_TILESET: u8 = 6;
+/// Special-key glyph index for an "off" toggle bullet
+/// (`TextManager.SPECIAL_BULLET_OFF = 10`).
+const SPECIAL_BULLET_OFF: u16 = 10;
+/// Special-key glyph index for an "on" toggle bullet
+/// (`TextManager.SPECIAL_BULLET_ON = 11`).
+const SPECIAL_BULLET_ON: u16 = 11;
+
+/// Builds the NOISE / TURTLE toggle indicator commands for the control panel,
+/// reflecting the current on/off state.
+///
+/// Mirrors Java `ControlArea`: an "on" or "off" bullet glyph is drawn at the
+/// `noiseBullet` / `turtleBullet` positions from `control_area.json`.  The
+/// bullets live in the special-key font tileset, so they are emitted as
+/// [`RenderCommand::BlitGlyph`] (recolor + background key-out).
+pub fn control_toggle_commands(noise_on: bool, turtle_on: bool) -> Vec<RenderCommand> {
+    let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(CONTROL_AREA_JSON) else {
+        return Vec::new();
+    };
+    [("noiseBullet", noise_on), ("turtleBullet", turtle_on)]
+        .into_iter()
+        .filter_map(|(key, on)| toggle_bullet_command(ctrl.get(key)?, on))
+        .collect()
+}
+
+/// Builds one toggle-bullet [`RenderCommand::BlitGlyph`] from a
+/// `noiseBullet`/`turtleBullet` config entry and its on/off state.
+fn toggle_bullet_command(entry: &serde_json::Value, on: bool) -> Option<RenderCommand> {
+    let color_index = u8::try_from(entry.get("color")?.as_u64()?).ok()?;
+    let x = i32::try_from(entry.get("x")?.as_i64()?).ok()? + CONTROL_AREA_X;
+    let y = i32::try_from(entry.get("y")?.as_i64()?).ok()? + CONTROL_AREA_Y;
+    Some(RenderCommand::BlitGlyph {
+        tileset: SPECIAL_KEY_TILESET,
+        tile: if on {
+            SPECIAL_BULLET_ON
+        } else {
+            SPECIAL_BULLET_OFF
+        },
+        x,
+        y,
+        color_index,
+    })
+}
 
 /// Renders a `specialKey` entry as a recolored key-cap glyph (SHIFT/ALT/F1).
 ///

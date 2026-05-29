@@ -532,6 +532,11 @@ pub struct LevelScreen {
     /// Seeded to [`LEVEL_MESSAGE_TICKS`] (72 ticks ≈ 4 s) on every new
     /// `StatusBarText` message; counted down each tick by [`Self::tick`].
     status_text_ticks: u32,
+    /// Whether the NOISE toggle key was held last tick, for rising-edge
+    /// detection so one key press flips the toggle exactly once.
+    noise_key_was_down: bool,
+    /// Whether the TURTLE toggle key was held last tick (rising-edge detect).
+    turtle_key_was_down: bool,
     /// Shared queue of `Trigger` link identifiers dispatched during the
     /// current tick by switches or touch triggers.
     ///
@@ -713,6 +718,8 @@ impl LevelScreen {
             status_inbox,
             status_text: None,
             status_text_ticks: 0,
+            noise_key_was_down: false,
+            turtle_key_was_down: false,
             trigger_inbox,
             player_move_inbox,
             create_object_inbox,
@@ -1451,6 +1458,12 @@ impl LevelScreen {
             });
         }
 
+        // Control-panel NOISE / TURTLE toggle indicators, reflecting state.
+        commands.extend(crate::status_bar::control_toggle_commands(
+            state.noise_enabled,
+            state.turtle_enabled,
+        ));
+
         commands
     }
 
@@ -1483,6 +1496,19 @@ impl ScreenHandler for LevelScreen {
     fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult {
         self.pump_inbox();
         self.pump_status_inbox(state);
+
+        // Control-panel toggles: flip on the rising edge of the NOISE / TURTLE
+        // keys so a single press toggles exactly once.
+        let noise_down = input.contains(&InputCommand::ToggleNoise);
+        if noise_down && !self.noise_key_was_down {
+            state.noise_enabled = !state.noise_enabled;
+        }
+        self.noise_key_was_down = noise_down;
+        let turtle_down = input.contains(&InputCommand::ToggleTurtle);
+        if turtle_down && !self.turtle_key_was_down {
+            state.turtle_enabled = !state.turtle_enabled;
+        }
+        self.turtle_key_was_down = turtle_down;
 
         // Tick order each frame:
         // 1. Update every object entity (player moves, lifts dispatch
@@ -3241,6 +3267,37 @@ mod tests {
             state.lives, 3,
             "lives counter is independent of the life bar"
         );
+    }
+
+    /// Unit under test: the NOISE / TURTLE control-panel toggles flip on the
+    /// rising key edge only - one flip per press, not once per held tick.
+    #[test]
+    fn control_toggle_keys_flip_state_on_key_press_edge() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let mut state = RuntimeState::new();
+        assert!(state.noise_enabled, "noise starts on");
+        assert!(!state.turtle_enabled, "turtle starts off");
+
+        let mut held = ActiveInput::new();
+        held.insert(InputCommand::ToggleNoise);
+        held.insert(InputCommand::ToggleTurtle);
+
+        // First tick with the keys down toggles each exactly once.
+        screen.tick(&held, &mut state);
+        assert!(!state.noise_enabled);
+        assert!(state.turtle_enabled);
+
+        // Holding the keys must not keep toggling.
+        screen.tick(&held, &mut state);
+        assert!(!state.noise_enabled);
+        assert!(state.turtle_enabled);
+
+        // Release then press again to toggle back.
+        screen.tick(&ActiveInput::new(), &mut state);
+        screen.tick(&held, &mut state);
+        assert!(state.noise_enabled);
+        assert!(!state.turtle_enabled);
     }
 
     /// Unit under test: [`MessageType::InventoryItem`] appends the carried
