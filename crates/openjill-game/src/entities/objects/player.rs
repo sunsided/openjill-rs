@@ -538,14 +538,15 @@ impl ObjectEntity for PlayerEntity {
 
     /// Serializes the live player state back into its origin JN record.
     ///
-    /// Writes back every field the player model tracks (position, dimensions,
-    /// speeds, state, sub-state, state-count, `info1`, `zap_hold`); the
-    /// authored fields the player does not model (`counter`, `flags`,
-    /// `pointer`) are preserved from the cloned origin.
+    /// Writes back every field the player model tracks (position, speeds,
+    /// state, sub-state, state-count, `info1`, `zap_hold`); the authored fields
+    /// the player does not mutate (`counter`, `flags`, `pointer`, and the
+    /// dimensions - `new` normalizes `w`/`h` to at least `BLOCK_SIZE_I` for
+    /// collision but never changes them afterward) are preserved verbatim from
+    /// the cloned origin so saves stay byte-stable.
     fn snapshot(&self) -> Option<JnObject> {
         let mut obj = self.origin.clone();
         obj.set_position(self.x as u16, self.y as u16);
-        obj.set_dimensions(self.w as u16, self.h as u16);
         obj.set_speed(self.x_speed as i16, self.y_speed as i16);
         obj.set_state(self.state.to_state_code());
         obj.set_sub_state(self.sub_state as u16);
@@ -1669,14 +1670,18 @@ mod tests {
     /// (`JnObject -> PlayerEntity::new -> snapshot == JnObject`).
     ///
     /// Preconditions: a JN object record with distinct values in every field,
-    /// including fields the player model does not track (`counter`, `flags`).
+    /// including fields the player model does not track (`counter`, `flags`)
+    /// and sub-`BLOCK_SIZE_I` dimensions that `new()` normalizes internally.
     ///
     /// Invariant asserted: `snapshot()` reproduces the source record exactly -
     /// the modeled fields are written back and the unmodeled authored fields
-    /// are preserved from the cloned origin.
+    /// (including the un-normalized dimensions) are preserved from the cloned
+    /// origin.
     #[test]
     fn snapshot_round_trips_the_source_jn_object() {
-        let mut obj = JnObject::spawned(0, 112, 160, 16, 32);
+        // Sub-block dimensions: `new()` clamps these to >= BLOCK_SIZE_I for
+        // collision, but the snapshot must persist the authored values.
+        let mut obj = JnObject::spawned(0, 112, 160, 10, 12);
         obj.set_speed(1, -3);
         obj.set_state(PlayerStateKind::Jumping.to_state_code());
         obj.set_sub_state(4);
