@@ -54,6 +54,9 @@ pub struct AppleEntity {
     frame: u16,
     /// `true` once the apple has been touched by the player.
     removed: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.
+    origin: JnObject,
 }
 
 impl AppleEntity {
@@ -69,6 +72,7 @@ impl AppleEntity {
             h,
             frame: 0,
             removed: false,
+            origin: item.clone(),
         }
     }
 }
@@ -129,6 +133,19 @@ impl ObjectEntity for AppleEntity {
     /// Returns `true` once the apple has been touched.
     fn should_remove(&self) -> bool {
         self.removed
+    }
+
+    /// Snapshots the apple for a save game, or `None` once collected.
+    ///
+    /// The cosmetic `frame` animation counter has no JN field and resets on
+    /// restore; all authored fields are preserved from the cloned origin.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
 
@@ -236,5 +253,21 @@ mod tests {
         apple.on_touch(&state, &mut dispatcher);
 
         assert_eq!(buf.lock().unwrap().len(), 2, "second touch must be no-op");
+    }
+
+    /// Unit under test: [`AppleEntity::snapshot`] round-trips the source record
+    /// while live and returns `None` once collected.
+    #[test]
+    fn snapshot_round_trips_and_drops_when_collected() {
+        let cache = AssetCache::synthetic();
+        let mut obj = synthetic_apple_object();
+        obj.set_position(64, 80);
+
+        let apple = AppleEntity::new(&obj, &cache);
+        assert_eq!(apple.snapshot(), Some(obj.clone()));
+
+        let mut apple = AppleEntity::new(&obj, &cache);
+        apple.on_touch(&RuntimeState::new(), &mut MessageDispatcher::new());
+        assert_eq!(apple.snapshot(), None, "collected apple is not persisted");
     }
 }

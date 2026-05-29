@@ -38,6 +38,9 @@ pub struct RedKeyEntity {
     frame: u16,
     /// `true` once the key has been touched by the player.
     removed: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.
+    origin: JnObject,
 }
 
 impl RedKeyEntity {
@@ -52,6 +55,7 @@ impl RedKeyEntity {
             h,
             frame: 0,
             removed: false,
+            origin: item.clone(),
         }
     }
 }
@@ -107,5 +111,18 @@ impl ObjectEntity for RedKeyEntity {
     /// Returns `true` once the key has been touched.
     fn should_remove(&self) -> bool {
         self.removed
+    }
+
+    /// Snapshots the key for a save game, or `None` once collected.
+    ///
+    /// The cosmetic `frame` animation counter has no JN field and resets on
+    /// restore; all authored fields are preserved from the cloned origin.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }

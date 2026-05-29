@@ -39,6 +39,10 @@ pub struct BonusEntity {
     tile: u16,
     /// `true` once the bonus has been touched by the player.
     removed: bool,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.  Its
+    /// `counter` (the granted-item index) is preserved untouched.
+    origin: JnObject,
 }
 
 impl BonusEntity {
@@ -55,6 +59,7 @@ impl BonusEntity {
             tile: bonus_tile(resolved),
             item: resolved,
             removed: false,
+            origin: item.clone(),
         }
     }
 }
@@ -109,6 +114,19 @@ impl ObjectEntity for BonusEntity {
     /// Returns `true` once the bonus has been touched.
     fn should_remove(&self) -> bool {
         self.removed
+    }
+
+    /// Snapshots the bonus for a save game, or `None` once collected.
+    ///
+    /// All authored fields, including the `counter` that selects the granted
+    /// item, are preserved from the cloned origin.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.removed {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
 

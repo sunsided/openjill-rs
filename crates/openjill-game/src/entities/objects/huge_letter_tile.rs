@@ -26,6 +26,9 @@ pub struct HugeLetterTileEntity {
     w: i32,
     /// Bounding box height in pixels.
     h: i32,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live position written back.
+    origin: JnObject,
 }
 
 impl HugeLetterTileEntity {
@@ -38,6 +41,7 @@ impl HugeLetterTileEntity {
             y: i32::from(item.y()),
             w,
             h,
+            origin: item.clone(),
         }
     }
 }
@@ -67,5 +71,12 @@ impl ObjectEntity for HugeLetterTileEntity {
     /// Returns the bounding box for culling.
     fn bounding_box(&self) -> Rect {
         Rect::new(self.x, self.y, self.w, self.h)
+    }
+
+    /// Snapshots the static huge-letter tile for a save game (always persisted).
+    fn snapshot(&self) -> Option<JnObject> {
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        Some(obj)
     }
 }
