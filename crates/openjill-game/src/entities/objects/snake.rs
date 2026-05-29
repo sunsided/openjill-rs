@@ -66,6 +66,9 @@ pub struct SnakeEntity {
     score_dispatched: bool,
     zaphold: i32,
     pending_kill: Option<DeathKind>,
+    /// The JN object record this entity was built from, re-emitted by
+    /// [`ObjectEntity::snapshot`] with the live state written back.
+    origin: JnObject,
 }
 
 impl SnakeEntity {
@@ -76,18 +79,23 @@ impl SnakeEntity {
         let min_w = HEAD_W + MIDDLE_W + TAIL_W;
         let w = i32::from(item.width()).max(min_w);
         let h = i32::from(item.height()).max(HEAD_H);
+        // Seed direction and animation phase from the JN record; authored
+        // snakes carry zero speed (defaults to a rightward slither) and zero
+        // counter, so fresh level entry is unchanged.
+        let xd = i32::from(item.x_speed());
         Self {
             x: i32::from(item.x()),
             y: i32::from(item.y()),
             w,
             h,
-            x_speed: X_SPEED,
-            counter: 0,
+            x_speed: if xd != 0 { xd } else { X_SPEED },
+            counter: usize::try_from(item.counter()).unwrap_or(0),
             recoil: 0,
             dead: false,
             score_dispatched: false,
-            zaphold: 0,
+            zaphold: i32::from(item.zap_hold()),
             pending_kill: None,
+            origin: item.clone(),
         }
     }
 
@@ -231,6 +239,33 @@ impl ObjectEntity for SnakeEntity {
 
     fn is_dead(&self) -> bool {
         self.dead
+    }
+
+    /// Snapshots the live snake for a save game, or `None` once dead.
+    ///
+    /// Persists position, the current body width (which shrinks by a segment
+    /// per hit), slither direction, and the animation `counter`; the recoil
+    /// cooldown re-derives on restore.
+    fn snapshot(&self) -> Option<JnObject> {
+        if self.dead {
+            return None;
+        }
+        let mut obj = self.origin.clone();
+        obj.set_position(self.x as u16, self.y as u16);
+        // The live width tracks the remaining segments; the height is constant
+        // so the authored value is preserved.
+        obj.set_dimensions(self.w as u16, obj.height());
+        // `new()` collapses an authored x_speed of 0 to the slither default, so
+        // a live speed equal to that default emits the authored value.
+        let xs = if self.x_speed == X_SPEED {
+            obj.x_speed()
+        } else {
+            self.x_speed as i16
+        };
+        obj.set_speed(xs, obj.y_speed());
+        obj.set_counter(self.counter as i16);
+        obj.set_zap_hold(self.zaphold as u16);
+        Some(obj)
     }
 
     fn take_player_kill(&mut self) -> Option<DeathKind> {
