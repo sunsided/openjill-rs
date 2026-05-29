@@ -537,6 +537,10 @@ pub struct LevelScreen {
     noise_key_was_down: bool,
     /// Whether the TURTLE toggle key was held last tick (rising-edge detect).
     turtle_key_was_down: bool,
+    /// Alternating execution gate for turtle (slow-motion) mode; the world
+    /// updates only on ticks where this is `true` while turtle mode is on
+    /// (Java `AbstractExecutingStdLevel.turtleSwitch`).
+    turtle_switch: bool,
     /// Shared queue of `Trigger` link identifiers dispatched during the
     /// current tick by switches or touch triggers.
     ///
@@ -720,6 +724,7 @@ impl LevelScreen {
             status_text_ticks: 0,
             noise_key_was_down: false,
             turtle_key_was_down: false,
+            turtle_switch: false,
             trigger_inbox,
             player_move_inbox,
             create_object_inbox,
@@ -1535,13 +1540,20 @@ impl ScreenHandler for LevelScreen {
         if state.invincibility_ticks > 0 {
             state.invincibility_ticks -= 1;
         }
+        // Turtle (slow-motion) mode runs the world-update step only every other
+        // tick.  Mirrors Java `AbstractExecutingStdLevel.doRunNext`: it executes
+        // the cycle when `!turtleMode || turtleSwitch`, and flips `turtleSwitch`
+        // every tick regardless.  Rendering still runs each tick so the frozen
+        // frame is redrawn.
+        let run_world = !state.turtle_enabled || self.turtle_switch;
+        self.turtle_switch = !self.turtle_switch;
         // Freeze the world while a level-change message box is up: the player
         // and every object stop updating so input cannot move Jill behind the
         // modal.  Mirrors Java `AbstractMenuJillLevel.run`, which skips
         // `doRun()` whenever `levelMessageBox.isEnable()`.  Rendering, the
         // overlay, and the `message_ticks` countdown below still run, so the
         // dialogue paints over a frozen frame and the transition fires on time.
-        if self.pending.is_none() {
+        if self.pending.is_none() && run_world {
             self.update_objects(input, state);
             self.apply_platform_moves();
             self.dispatch_player_touches(state);
