@@ -1722,7 +1722,12 @@ impl ScreenHandler for LevelScreen {
         // `doRun()` whenever `levelMessageBox.isEnable()`.  Rendering, the
         // overlay, and the `message_ticks` countdown below still run, so the
         // dialogue paints over a frozen frame and the transition fires on time.
-        if self.pending.is_none() && self.control_menu.is_none() && run_world {
+        //
+        // The slot picker freezes the world the same way; `menu_was_open` keeps
+        // the freeze for the *whole* tick that handled a menu confirm/cancel, so
+        // the throw/jump press that closes the menu does not also drive the
+        // player or advance the world a frame before the save snapshot is taken.
+        if self.pending.is_none() && self.control_menu.is_none() && !menu_was_open && run_world {
             self.update_objects(input, state);
             self.apply_platform_moves();
             self.dispatch_player_touches(state);
@@ -2159,26 +2164,6 @@ fn lookup_message_text(level_number: i32) -> Vec<String> {
 /// extends past the box (e.g. the 16-tall vertical bar tile sitting on the
 /// last row of a 92-tall box that only has 12 px of slack at the bottom)
 /// do not bleed below the box border.
-/// Renders the in-level save / load slot-picker overlay.
-///
-/// Reuses the level message-box frame, listing the six save slots with a `>`
-/// cursor on the highlighted one under a `SAVE GAME` / `RESTORE GAME` title.
-/// Slot names are not shown yet (the orchestrator's CFG slot names are not
-/// plumbed into the level screen); slots are addressed by number for now.
-fn render_control_menu(menu: ControlMenu) -> Vec<RenderCommand> {
-    let title = match menu.kind {
-        ControlMenuKind::Save => "SAVE GAME",
-        ControlMenuKind::Load => "RESTORE GAME",
-    };
-    let mut lines = Vec::with_capacity(SAVE_SLOT_COUNT + 1);
-    lines.push(title.to_string());
-    for slot in 0..SAVE_SLOT_COUNT {
-        let marker = if slot == menu.cursor { ">" } else { " " };
-        lines.push(format!("{marker} SLOT {}", slot + 1));
-    }
-    render_message_box(&lines)
-}
-
 fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
     let layout = &*MESSAGE_BOX;
     let clip = openjill_core::ClipRect {
@@ -2223,6 +2208,26 @@ fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
         });
     }
     commands
+}
+
+/// Renders the in-level save / load slot-picker overlay.
+///
+/// Reuses the level message-box frame, listing the six save slots with a `>`
+/// cursor on the highlighted one under a `SAVE GAME` / `RESTORE GAME` title.
+/// Slot names are not shown yet (the orchestrator's CFG slot names are not
+/// plumbed into the level screen); slots are addressed by number for now.
+fn render_control_menu(menu: ControlMenu) -> Vec<RenderCommand> {
+    let title = match menu.kind {
+        ControlMenuKind::Save => "SAVE GAME",
+        ControlMenuKind::Load => "RESTORE GAME",
+    };
+    let mut lines = Vec::with_capacity(SAVE_SLOT_COUNT + 1);
+    lines.push(title.to_string());
+    for slot in 0..SAVE_SLOT_COUNT {
+        let marker = if slot == menu.cursor { ">" } else { " " };
+        lines.push(format!("{marker} SLOT {}", slot + 1));
+    }
+    render_message_box(&lines)
 }
 
 /// One tile blit reference parsed from `level_messagebox_vga.json`.
