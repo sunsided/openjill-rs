@@ -7,3 +7,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+openjill-core = { path = "../openjill-core" }
+openjill-data = { path = "../openjill-data" }
+# Raw 8-bit PCM playback only; rodio's default format decoders
+# (mp3/flac/vorbis/wav) are not needed and pull extra dependencies.
+rodio = { version = "0.19", default-features = false }
