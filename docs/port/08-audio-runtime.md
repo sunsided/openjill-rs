@@ -231,14 +231,35 @@ original `JILL.EXE` (the code that calls play-sound with an index per event).
 
 The shipped `JILL.EXE` is MZ / Turbo C 2.0 with no packer signature; `dosbox-x`
 (with its debugger) is available. **Never commit `JILL.EXE`, any disassembly, or
-extracted audio - keep all RE artifacts in gitignored dirs.** Two routes:
+extracted audio - keep all RE artifacts in gitignored dirs.**
 
-1. **Dynamic (most reliable):** in the `dosbox-x` debugger, break on the
-   sound-playback routine (it reads the VCL sound table and drives Sound
-   Blaster DMA), trigger each event in-game, and read the index argument.
-2. **Static:** disassemble `JILL.EXE`, find the play-sound call sites and their
-   constant indices, and look for an object-type/event -> sound-index table
-   (Epic engines usually have one).
+**What the symbol table already reveals (static recon, 2026-05-30):** the EXE
+retains its Turbo C publics as a packed NUL-separated name blob near the end of
+the load module (names only, no inline addresses). It names both the sound API
+and the event handlers, which pins the breakpoint target and the call sites:
+
+- **Sound API:** `_soundadd1` plays a sound by index, alongside `_soundadd`,
+  `_soundadd2`, `_sampadd1`, `_sampadd`, `_makesound`, `_soundstop`,
+  `_soundcount`, `_soundlen`, `_soundptr`. SFX run through the **WORX TOOLKIT
+  2.01** Sound Blaster library (Mystic Software, 1993); `jill1.vcl` is the
+  sample bank.
+- **Event handlers that should call it:** `_msg_fire` / `_msg_firebullet` /
+  `_msg_fireball`, `_msg_door` / `_msg_falldoor` / `_first_opendoor`,
+  `_msg_switch` / `_first_switch`, `_msg_key` / `_first_key`, `_msg_score` /
+  `_addscore` / `_kindscore`, `_hitplayer`, `_playerkill`, `_levelwin` /
+  `_donelevelmsg`, `_domenu` / `_menu1` / `_menu2`, `_dolevelsong`.
+
+Two routes (both now anchored on `_soundadd1`):
+
+1. **Dynamic (most reliable):** in the `dosbox-x` debugger, `bp _soundadd1`. The
+   first argument is the sound index; trigger each event in-game, read the index
+   off the stack, and attribute it to whichever `_msg_*` handler sits on the
+   call stack. This needs a human at the controls to drive each event.
+2. **Static:** with a Borland symbol-table parser (`tdump`) or a 16-bit
+   disassembler (Ghidra / IDA - **not installed here**, so this route is
+   currently blocked), resolve `_soundadd1`'s address, list its callers, read
+   the constant index pushed at each call site, and cross-reference the caller
+   against the `_msg_*` handler names above.
 
 Audition the candidates with `task data:vcl:sounds` (writes
 `extract/sounds/sound-NN.wav`). Once known, update `vcl_index` (and add the
@@ -252,6 +273,8 @@ cheap to extend.
 
 - **Index -> event mapping needs EXE RE**, not just listening (see the section
   above). The 4 player cues are confirmed; the rest await the one-time RE task.
+  Static recon has narrowed it to `bp _soundadd1` (first arg = sound index) - a
+  short dynamic `dosbox-x` session, since no static disassembler is installed.
   The mapping is one constant table in `openjill-audio`, cheap to correct.
 - **Headless / CI device init must not panic.** `AudioBackend::new` degrades to
   a logged no-op. Gameplay tests never construct it.
