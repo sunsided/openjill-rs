@@ -123,11 +123,16 @@ It currently opens on a blank board with these controls:
 | `H`             | Flood-fill the cursor row               |
 | `Z` / `N`       | Clear to a new blank board              |
 | `S` / `L`       | Save / load a board (type a file name, Space confirms, Escape cancels) |
+| `O`             | Enter object mode (Escape leaves it)    |
 | Escape          | Return to the title menu                |
 
+In **object mode** the cursor + arrows move over the object layer: `A` adds an
+object (type its name, Space confirms), `D` deletes the object under the cursor,
+`K` selects it.
+
 Saved boards go to a writable per-user directory (never the read-only original
-data). More of the original editor's commands (object placement, load tile by
-name) are in progress - see issue #210.
+data). A few original editor commands (move / paste / modify objects, load tile
+by name) are still in progress - see issue #210.
 
 ## Saving and high scores
 
