@@ -254,7 +254,8 @@ impl StartMenuScreen {
         // overlay does not immediately confirm a load.
         if self.overlay == Overlay::LoadGame {
             let slot_count = self.cfg.save_slots().len().max(1);
-            let up = input.contains(&InputCommand::PrevInventory);
+            let up =
+                input.contains(&InputCommand::Up) || input.contains(&InputCommand::PrevInventory);
             let down =
                 input.contains(&InputCommand::Duck) || input.contains(&InputCommand::NextInventory);
             let confirm =
@@ -1011,6 +1012,28 @@ mod tests {
         assert_eq!(
             result.transition,
             Some(ScreenTransition::PerformLoad { slot: 1 })
+        );
+    }
+
+    /// Unit under test: ArrowUp (`InputCommand::Up`) moves the load-overlay
+    /// cursor up, wrapping from the first slot to the last.
+    #[test]
+    fn load_overlay_arrow_up_wraps_to_last_slot() {
+        let mut screen = menu();
+        open_load_overlay(&mut screen);
+
+        let mut up = ActiveInput::new();
+        up.insert(InputCommand::Up);
+        screen.tick(&up, &mut RuntimeState::new()); // cursor 0 -> last (wrap)
+        screen.tick(&ActiveInput::new(), &mut RuntimeState::new()); // release
+
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+        let result = screen.tick(&confirm, &mut RuntimeState::new());
+        // zero_cfg carries six save slots, so wrapping up from 0 lands on 5.
+        assert_eq!(
+            result.transition,
+            Some(ScreenTransition::PerformLoad { slot: 5 })
         );
     }
 
