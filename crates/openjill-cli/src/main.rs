@@ -22,6 +22,10 @@ use openjill_game::run as run_game;
 use png::{BitDepth, ColorType, Encoder};
 use sha2::{Digest, Sha256};
 
+/// Editor / data-tool subcommand implementations (`openjill <format> <action>`).
+#[cfg(feature = "editors")]
+mod editors;
+
 /// Environment variable used as a fallback data directory for data utility commands.
 const OPENJILL_DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
 /// Task-runner environment variable used as a data directory override.
@@ -69,6 +73,12 @@ enum Command {
     Dma {
         #[command(subcommand)]
         action: DmaAction,
+    },
+    /// SHA tileset tools (`openjill sha <action>`).
+    #[cfg(feature = "editors")]
+    Sha {
+        #[command(subcommand)]
+        action: editors::sha::Action,
     },
 }
 
@@ -213,6 +223,8 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Dma {
             action: DmaAction::Extract(args),
         } => dma_extract_command(args),
+        #[cfg(feature = "editors")]
+        Command::Sha { action } => editors::sha::run(action),
     }
 }
 
@@ -1677,6 +1689,14 @@ mod tests {
             Cli::try_parse_from(["openjill", "dma", "extract", "-f", "x", "--csv", "--json"])
                 .is_err()
         );
+    }
+
+    #[cfg(feature = "editors")]
+    #[test]
+    fn accepts_sha_extract_command() {
+        let cli = Cli::try_parse_from(["openjill", "sha", "extract", "--file", "x.sha"])
+            .expect("sha extract command should parse");
+        check!(matches!(cli.command, Command::Sha { .. }));
     }
 
     /// Unit under test: `verify_data_directory` success path and deterministic checksums.

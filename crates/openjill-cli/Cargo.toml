@@ -14,11 +14,12 @@ path = "src/main.rs"
 # The editor / data-tool subcommands (`openjill <format> <action>`). On by
 # default; disable with `--no-default-features` for a slim game-only binary.
 default = ["editors"]
-editors = ["dep:openjill-export"]
+editors = ["dep:openjill-export", "dep:image"]
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+image = { workspace = true, features = ["png"], optional = true }
 openjill-audio = { path = "../openjill-audio" }
 openjill-core = { path = "../openjill-core" }
 openjill-data = { path = "../openjill-data" }
