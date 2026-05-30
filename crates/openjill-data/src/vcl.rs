@@ -9,6 +9,11 @@ const SOUND_ENTRY_SKIP: usize = 400;
 const SOUND_ENTRY_COUNT: usize = 50;
 /// Number of text-entry slots in the `JILL1.VCL` text offset/length tables.
 const TEXT_ENTRY_COUNT: usize = 40;
+/// Byte offset immediately after the contiguous table region (sound tables
+/// followed by the text offset/length tables). Sound and text payloads live at
+/// or beyond this offset, so a payload offset below it overlaps a table and is
+/// rejected.
+const TABLES_END: usize = SOUND_ENTRY_SKIP + (TEXT_ENTRY_COUNT * 4) + (TEXT_ENTRY_COUNT * 2);
 
 /// A decoded non-empty sound entry from a `JILL1.VCL` sound table.
 ///
@@ -70,7 +75,7 @@ impl VclTextEntry {
     }
 }
 
-/// Parsed text-table data from a `JILL1.VCL` file.
+/// Parsed sound and text tables from a `JILL1.VCL` file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VclFile {
     /// Non-empty text entries preserved in table order.
@@ -214,10 +219,10 @@ impl VclFile {
 /// Decodes one VCL sound payload, or `None` for an empty / out-of-range slot.
 ///
 /// The payload is `length` bytes of 8-bit signed PCM at `offset`. A slot is
-/// `None` when it is empty (`length == 0`), points into the sound-table region,
-/// or runs past the end of the file. Such slots degrade silently rather than
-/// failing the parse, keeping `openjill-data` log-free; the caller decides
-/// whether a missing sound is worth reporting.
+/// `None` when it is empty (`length == 0`), overlaps the table region (offset
+/// below [`TABLES_END`]), or runs past the end of the file. Such slots degrade
+/// silently rather than failing the parse, keeping `openjill-data` log-free; the
+/// caller decides whether a missing sound is worth reporting.
 fn decode_sound(
     reader: &mut ByteReader,
     offset: usize,
@@ -225,7 +230,7 @@ fn decode_sound(
     frequency: u16,
     file_len: usize,
 ) -> Option<VclSound> {
-    if length == 0 || offset < SOUND_ENTRY_SKIP {
+    if length == 0 || offset < TABLES_END {
         return None;
     }
     if offset.checked_add(length)? > file_len {
@@ -240,7 +245,10 @@ fn decode_sound(
     Some(VclSound { frequency, pcm })
 }
 
-/// Error returned when parsing a `JILL1.VCL` text table fails.
+/// Error returned when parsing a `JILL1.VCL` table region fails (the sound
+/// offset/length/frequency tables or the text offset/length tables). Decoding
+/// individual sound payloads never produces this error - a bad sound slot
+/// degrades to `None` instead.
 #[derive(Debug, Eq, PartialEq)]
 pub struct VclReadError {
     /// Name of the field being parsed when the failure occurred.
@@ -496,18 +504,24 @@ mod tests {
         check!(vcl.sounds().len() == SOUND_ENTRY_COUNT);
     }
 
-    /// Unit under test: a sound slot whose `(offset, length)` runs past the end
-    /// of the file degrades to `None` instead of failing the parse, keeping
-    /// `openjill-data` log-free.
+    /// Unit under test: out-of-range sound slots degrade to `None` instead of
+    /// failing the parse, keeping `openjill-data` log-free. Covers both a
+    /// payload that overlaps the table region and one that runs past EOF.
     #[test]
     fn out_of_range_sound_slot_degrades_to_none() {
-        let mut bytes = vec![0; table_end()];
-        // offset + length runs one past EOF.
-        write_sound_entry(&mut bytes, 1, (table_end() as u32) - 1, 10, 6000);
+        // Buffer extends past the tables so a payload offset can sit beyond them.
+        let mut bytes = vec![0; table_end() + 64];
+
+        let file_len = bytes.len() as u32;
+        // (a) Offset points inside the table region -> rejected.
+        write_sound_entry(&mut bytes, 1, (table_end() as u32) - 1, 4, 6000);
+        // (b) Offset is past the tables but offset + length runs past EOF.
+        write_sound_entry(&mut bytes, 2, file_len - 2, 8, 6000);
 
         let vcl =
             VclFile::from_bytes(bytes).expect("a malformed sound slot must not fail the parse");
         check!(vcl.sound(1).is_none());
+        check!(vcl.sound(2).is_none());
     }
 
     /// Returns the byte offset immediately after the end of the offset and
@@ -531,13 +545,19 @@ mod tests {
     /// offset / length / frequency tables of a synthetic VCL fixture at slot
     /// `index`.
     fn write_sound_entry(bytes: &mut [u8], index: usize, offset: u32, length: u16, frequency: u16) {
+        // Sound tables are laid out offsets (u32 x N), lengths (u16 x N), then
+        // frequencies (u16 x N); derive each base from SOUND_ENTRY_COUNT so the
+        // fixture tracks the parser's layout constants.
+        let lengths_base = SOUND_ENTRY_COUNT * 4;
+        let frequencies_base = lengths_base + (SOUND_ENTRY_COUNT * 2);
+
         let offset_pos = index * 4;
         bytes[offset_pos..offset_pos + 4].copy_from_slice(&offset.to_le_bytes());
 
-        let length_pos = 200 + (index * 2);
+        let length_pos = lengths_base + (index * 2);
         bytes[length_pos..length_pos + 2].copy_from_slice(&length.to_le_bytes());
 
-        let frequency_pos = 300 + (index * 2);
+        let frequency_pos = frequencies_base + (index * 2);
         bytes[frequency_pos..frequency_pos + 2].copy_from_slice(&frequency.to_le_bytes());
     }
 
