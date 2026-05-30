@@ -2,10 +2,38 @@ use crate::{ByteReader, ByteReaderError};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-/// Number of bytes occupied by the sound-entry area at the start of a `JILL1.VCL` file.
+/// Number of bytes occupied by the sound-entry tables at the start of a
+/// `JILL1.VCL` file (`50` u32 offsets + `50` u16 lengths + `50` u16 frequencies).
 const SOUND_ENTRY_SKIP: usize = 400;
+/// Number of sound-entry slots in the `JILL1.VCL` sound tables.
+const SOUND_ENTRY_COUNT: usize = 50;
 /// Number of text-entry slots in the `JILL1.VCL` text offset/length tables.
 const TEXT_ENTRY_COUNT: usize = 40;
+
+/// A decoded non-empty sound entry from a `JILL1.VCL` sound table.
+///
+/// The payload is 8-bit signed raw PCM (`pcm`) played at the entry's sample
+/// rate (`frequency`, Hz; Jill ships sounds at ~6000 Hz). Mirrors the VCL sound
+/// format documented in `docs/port/00-format-reference.md`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VclSound {
+    /// Sample rate in Hz from the sound-frequency table.
+    frequency: u16,
+    /// 8-bit signed PCM samples.
+    pcm: Vec<i8>,
+}
+
+impl VclSound {
+    /// Returns the sample rate in Hz.
+    pub fn frequency(&self) -> u16 {
+        self.frequency
+    }
+
+    /// Returns the 8-bit signed PCM samples.
+    pub fn pcm(&self) -> &[i8] {
+        &self.pcm
+    }
+}
 
 /// A decoded non-empty text entry from a `JILL1.VCL` text table.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,29 +75,43 @@ impl VclTextEntry {
 pub struct VclFile {
     /// Non-empty text entries preserved in table order.
     text_entries: Vec<VclTextEntry>,
+    /// All [`SOUND_ENTRY_COUNT`] sound slots in table order; empty or
+    /// out-of-range slots are `None`.
+    sounds: Vec<Option<VclSound>>,
 }
 
 impl VclFile {
-    /// Parses `JILL1.VCL` text entries from a reader.
+    /// Parses a `JILL1.VCL` file (sound + text tables) from a reader.
     ///
-    /// Parsing semantics are intentionally OpenJill-compatible:
-    /// - skip the 400-byte sound-entry region
-    /// - read 40 `u32le` text offsets
-    /// - read 40 `u16le` text lengths
-    /// - materialize only non-empty text entries
+    /// Parsing semantics follow the documented VCL layout:
+    /// - read the 400-byte sound table (50 `u32le` offsets, 50 `u16le` lengths,
+    ///   50 `u16le` frequencies)
+    /// - read 40 `u32le` text offsets and 40 `u16le` text lengths
+    /// - materialize non-empty text entries and decode non-empty sound payloads
+    ///
+    /// Sound payloads are 8-bit signed PCM at each entry's sample rate. A sound
+    /// slot that is empty or whose `(offset, length)` falls outside the file
+    /// degrades to `None` rather than failing the parse, so a malformed sound
+    /// slot never aborts parsing (and `openjill-data` stays log-free). Text
+    /// payloads keep their stricter typed-error behavior.
     ///
     /// On success the reader cursor is restored to the byte immediately after
-    /// the length table, regardless of which text payloads were seeked into,
-    /// so the post-parse position is deterministic for chained consumers.
+    /// the text length table, regardless of which payloads were seeked into, so
+    /// the post-parse position is deterministic for chained consumers.
     pub fn parse(reader: &mut ByteReader) -> Result<Self, VclReadError> {
-        reader
-            .skip(SOUND_ENTRY_SKIP)
-            .map_err(|source| VclReadError {
-                field: "sound_entry_skip",
-                entry_index: None,
-                offset: error_offset(&source, 0),
-                source,
-            })?;
+        let mut sound_offsets = [0u32; SOUND_ENTRY_COUNT];
+        let mut sound_lengths = [0u16; SOUND_ENTRY_COUNT];
+        let mut sound_frequencies = [0u16; SOUND_ENTRY_COUNT];
+
+        for (entry_index, value) in sound_offsets.iter_mut().enumerate() {
+            *value = read_u32(reader, "sound_offset", entry_index)?;
+        }
+        for (entry_index, value) in sound_lengths.iter_mut().enumerate() {
+            *value = read_u16(reader, "sound_length", entry_index)?;
+        }
+        for (entry_index, value) in sound_frequencies.iter_mut().enumerate() {
+            *value = read_u16(reader, "sound_frequency", entry_index)?;
+        }
 
         let mut text_offsets = [0u32; TEXT_ENTRY_COUNT];
         let mut text_lengths = [0u16; TEXT_ENTRY_COUNT];
@@ -113,6 +155,18 @@ impl VclFile {
             });
         }
 
+        let file_len = reader.len();
+        let mut sounds: Vec<Option<VclSound>> = Vec::with_capacity(SOUND_ENTRY_COUNT);
+        for entry_index in 0..SOUND_ENTRY_COUNT {
+            sounds.push(decode_sound(
+                reader,
+                sound_offsets[entry_index] as usize,
+                sound_lengths[entry_index] as usize,
+                sound_frequencies[entry_index],
+                file_len,
+            ));
+        }
+
         reader
             .seek(post_table_offset)
             .map_err(|source| VclReadError {
@@ -122,7 +176,10 @@ impl VclFile {
                 source,
             })?;
 
-        Ok(Self { text_entries })
+        Ok(Self {
+            text_entries,
+            sounds,
+        })
     }
 
     /// Parses a `VclFile` directly from in-memory bytes.
@@ -140,6 +197,47 @@ impl VclFile {
     pub fn text_entry_count(&self) -> usize {
         self.text_entries.len()
     }
+
+    /// Returns the decoded sound at table slot `index` (`0..SOUND_ENTRY_COUNT`),
+    /// or `None` when the slot is empty or its payload was out of range.
+    pub fn sound(&self, index: usize) -> Option<&VclSound> {
+        self.sounds.get(index).and_then(Option::as_ref)
+    }
+
+    /// Returns all sound slots in table order; empty or out-of-range slots are
+    /// `None`.
+    pub fn sounds(&self) -> &[Option<VclSound>] {
+        &self.sounds
+    }
+}
+
+/// Decodes one VCL sound payload, or `None` for an empty / out-of-range slot.
+///
+/// The payload is `length` bytes of 8-bit signed PCM at `offset`. A slot is
+/// `None` when it is empty (`length == 0`), points into the sound-table region,
+/// or runs past the end of the file. Such slots degrade silently rather than
+/// failing the parse, keeping `openjill-data` log-free; the caller decides
+/// whether a missing sound is worth reporting.
+fn decode_sound(
+    reader: &mut ByteReader,
+    offset: usize,
+    length: usize,
+    frequency: u16,
+    file_len: usize,
+) -> Option<VclSound> {
+    if length == 0 || offset < SOUND_ENTRY_SKIP {
+        return None;
+    }
+    if offset.checked_add(length)? > file_len {
+        return None;
+    }
+
+    reader.seek(offset).ok()?;
+    let mut pcm = Vec::with_capacity(length);
+    for _ in 0..length {
+        pcm.push(reader.read_i8().ok()?);
+    }
+    Some(VclSound { frequency, pcm })
 }
 
 /// Error returned when parsing a `JILL1.VCL` text table fails.
@@ -236,7 +334,7 @@ fn error_offset(source: &ByteReaderError, lower_bound_offset: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{SOUND_ENTRY_SKIP, TEXT_ENTRY_COUNT, VclFile, VclReadError};
+    use super::{SOUND_ENTRY_COUNT, SOUND_ENTRY_SKIP, TEXT_ENTRY_COUNT, VclFile, VclReadError};
     use crate::{ByteReader, ByteReaderError};
     use assert2::check;
 
@@ -370,6 +468,48 @@ mod tests {
         check!(reader.offset() == table_end());
     }
 
+    /// Unit under test: `VclFile::parse` decoding of the sound table - sparse
+    /// non-empty slots, the signed-PCM byte mapping, and `sound`/`sounds`.
+    ///
+    /// Preconditions: slot 3 declares a 4-byte payload at offset 800 (freq
+    /// 6000) whose bytes span the signed extremes; slot 7 declares a payload
+    /// offset but a zero length.
+    ///
+    /// Invariants asserted: slot 3 decodes to the expected `i8` samples at the
+    /// declared frequency, the zero-length slot 7 and the never-written slot 0
+    /// are `None`, and `sounds()` exposes all 50 slots.
+    #[test]
+    fn parses_sparse_sound_entries_and_decodes_signed_pcm() {
+        let mut bytes = vec![0; table_end()];
+        write_sound_entry(&mut bytes, 3, 800, 4, 6000);
+        write_sound_entry(&mut bytes, 7, 900, 0, 6000);
+        // 0x00 -> 0, 0x7f -> 127, 0x80 -> -128, 0xff -> -1.
+        write_text_at(&mut bytes, 800, &[0x00, 0x7f, 0x80, 0xff]);
+
+        let vcl = VclFile::from_bytes(bytes).expect("VCL parse should succeed");
+
+        let sound = vcl.sound(3).expect("slot 3 must decode to a sound");
+        check!(sound.frequency() == 6000);
+        check!(sound.pcm() == [0i8, 127, -128, -1]);
+        check!(vcl.sound(7).is_none());
+        check!(vcl.sound(0).is_none());
+        check!(vcl.sounds().len() == SOUND_ENTRY_COUNT);
+    }
+
+    /// Unit under test: a sound slot whose `(offset, length)` runs past the end
+    /// of the file degrades to `None` instead of failing the parse, keeping
+    /// `openjill-data` log-free.
+    #[test]
+    fn out_of_range_sound_slot_degrades_to_none() {
+        let mut bytes = vec![0; table_end()];
+        // offset + length runs one past EOF.
+        write_sound_entry(&mut bytes, 1, (table_end() as u32) - 1, 10, 6000);
+
+        let vcl =
+            VclFile::from_bytes(bytes).expect("a malformed sound slot must not fail the parse");
+        check!(vcl.sound(1).is_none());
+    }
+
     /// Returns the byte offset immediately after the end of the offset and
     /// length tables for a synthetic VCL fixture (sound skip plus 40 `u32`
     /// offsets plus 40 `u16` lengths).
@@ -385,6 +525,20 @@ mod tests {
 
         let length_pos = SOUND_ENTRY_SKIP + (TEXT_ENTRY_COUNT * 4) + (index * 2);
         bytes[length_pos..length_pos + 2].copy_from_slice(&length.to_le_bytes());
+    }
+
+    /// Writes a sound `(offset, length, frequency)` triple into the sound
+    /// offset / length / frequency tables of a synthetic VCL fixture at slot
+    /// `index`.
+    fn write_sound_entry(bytes: &mut [u8], index: usize, offset: u32, length: u16, frequency: u16) {
+        let offset_pos = index * 4;
+        bytes[offset_pos..offset_pos + 4].copy_from_slice(&offset.to_le_bytes());
+
+        let length_pos = 200 + (index * 2);
+        bytes[length_pos..length_pos + 2].copy_from_slice(&length.to_le_bytes());
+
+        let frequency_pos = 300 + (index * 2);
+        bytes[frequency_pos..frequency_pos + 2].copy_from_slice(&frequency.to_le_bytes());
     }
 
     /// Writes a text payload into the synthetic fixture at the given offset,
