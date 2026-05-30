@@ -93,7 +93,9 @@ fn boots_and_runs_episode_1_from_original_data() {
 
     // Confirm the default selection ("play") to enter the world map; the map
     // must render its game area (proving PLAY -> Map, not a menu fallback).
-    orchestrator.tick(&input(InputCommand::ThrowItem));
+    // Confirm is Jump (Space): Ctrl/ThrowItem no longer confirms the menu so the
+    // Ctrl+E / Ctrl+P chords work.
+    orchestrator.tick(&input(InputCommand::Jump));
     let mut saw_map_sky = false;
     for _ in 0..30 {
         let commands = orchestrator.tick(&ActiveInput::new());

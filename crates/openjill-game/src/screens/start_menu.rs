@@ -279,7 +279,7 @@ impl StartMenuScreen {
         // Load-game overlay: navigate the save slots and confirm to load.
         if self.overlay == Overlay::LoadGame {
             let slot_count = self.cfg.save_slots().len().max(1);
-            if input.contains(&InputCommand::ThrowItem) || input.contains(&InputCommand::Jump) {
+            if input.contains(&InputCommand::Jump) {
                 let slot = self.load_cursor;
                 self.overlay = Overlay::None;
                 return Some(ScreenTransition::PerformLoad { slot });
@@ -294,18 +294,15 @@ impl StartMenuScreen {
             return None;
         }
 
-        // Ctrl+P: play the intro level (the title-screen cheat). Checked before
-        // the confirm key because Ctrl also maps to ThrowItem (confirm), so this
-        // early return keeps the chord from also activating the selected item.
+        // Ctrl+P / Ctrl+E: title-screen cheats. Ctrl (ThrowItem) deliberately
+        // does not confirm the menu (see the confirm block below), so these
+        // chords are the only thing a held Ctrl triggers here.
         if input.contains(&InputCommand::PlayIntro) {
             return Some(ScreenTransition::Level {
                 file: self.intro_file.clone(),
                 number: 0,
             });
         }
-
-        // Ctrl+E: open the level editor (title-screen cheat). Checked before the
-        // confirm key for the same reason as Ctrl+P above (Ctrl = ThrowItem).
         if input.contains(&InputCommand::EnterEditor) {
             return Some(ScreenTransition::Editor);
         }
@@ -315,8 +312,13 @@ impl StartMenuScreen {
             return None;
         }
 
-        // Confirm selection: ThrowItem (Ctrl) or Jump (Space / Alt).
-        if input.contains(&InputCommand::ThrowItem) || input.contains(&InputCommand::Jump) {
+        // Confirm selection: Jump (Space / Shift) only. Ctrl/Alt (ThrowItem) must
+        // NOT confirm here: Ctrl is the modifier for the Ctrl+E / Ctrl+P
+        // title-screen cheats, and a bare Ctrl press lands one tick before the
+        // chord forms, so treating it as confirm would select "play" before the
+        // editor / intro chord could ever register. (In-game ThrowItem still
+        // throws the knife - that path is unaffected.)
+        if input.contains(&InputCommand::Jump) {
             return self.apply_value(layout.items[self.selected].value);
         }
 
@@ -952,9 +954,39 @@ mod tests {
     fn confirm_play_item_transitions_to_map() {
         let mut screen = menu();
         let mut input = ActiveInput::new();
-        input.insert(InputCommand::ThrowItem);
+        input.insert(InputCommand::Jump);
         let result = screen.tick(&input, &mut RuntimeState::new());
         assert_eq!(result.transition, Some(ScreenTransition::Map));
+    }
+
+    /// Unit under test: a bare `ThrowItem` (Ctrl / Alt) does **not** confirm the
+    /// menu, so a held Ctrl can form the `Ctrl+E` / `Ctrl+P` chord.
+    ///
+    /// Regression: Ctrl-down lands one tick before the chord; when ThrowItem
+    /// confirmed the menu it selected "play" (-> Map) before `EnterEditor` /
+    /// `PlayIntro` could register. Tick 1 (Ctrl alone) must not transition; tick
+    /// 2 (chord complete) opens the editor.
+    #[test]
+    fn ctrl_alone_does_not_confirm_then_chord_opens_editor() {
+        let mut screen = menu();
+
+        // Tick 1: Ctrl down -> ThrowItem only. Must not select "play".
+        let mut ctrl = ActiveInput::new();
+        ctrl.insert(InputCommand::ThrowItem);
+        assert_eq!(
+            screen.tick(&ctrl, &mut RuntimeState::new()).transition,
+            None,
+            "bare Ctrl must not confirm the menu"
+        );
+
+        // Tick 2: E added -> the Ctrl+E chord opens the editor.
+        let mut chord = ActiveInput::new();
+        chord.insert(InputCommand::ThrowItem);
+        chord.insert(InputCommand::EnterEditor);
+        assert_eq!(
+            screen.tick(&chord, &mut RuntimeState::new()).transition,
+            Some(ScreenTransition::Editor)
+        );
     }
 
     /// Unit under test: the `Ctrl+P` intro-play cheat on the base menu.
@@ -963,7 +995,7 @@ mod tests {
     /// this tick, together with the `ThrowItem` that `Ctrl` also produces.
     ///
     /// Invariants asserted: it transitions straight to the playable intro level
-    /// (`INTRO.JN1`), taking priority over the `Ctrl`-as-`ThrowItem` confirm.
+    /// (`INTRO.JN1`); the also-held `ThrowItem` (Ctrl) no longer confirms the menu.
     #[test]
     fn ctrl_p_plays_the_intro_level() {
         let mut screen = menu();
@@ -985,8 +1017,8 @@ mod tests {
     /// Preconditions: no overlay; `InputCommand::EnterEditor` (the chord) pressed
     /// this tick, together with the `ThrowItem` that `Ctrl` also produces.
     ///
-    /// Invariants asserted: it transitions to `ScreenTransition::Editor`, beating
-    /// the `Ctrl`-as-`ThrowItem` confirm.
+    /// Invariants asserted: it transitions to `ScreenTransition::Editor`; the
+    /// also-held `ThrowItem` (Ctrl) no longer confirms the menu.
     #[test]
     fn ctrl_e_opens_the_editor() {
         let mut screen = menu();
@@ -1077,7 +1109,7 @@ mod tests {
     fn open_load_overlay(screen: &mut StartMenuScreen) {
         press(screen, InputCommand::Duck); // navigate to item 1 ("restore")
         assert_eq!(
-            press(screen, InputCommand::ThrowItem),
+            press(screen, InputCommand::Jump),
             None,
             "opening the load overlay must not transition"
         );
@@ -1091,7 +1123,7 @@ mod tests {
         open_load_overlay(&mut screen);
 
         assert_eq!(
-            press(&mut screen, InputCommand::ThrowItem),
+            press(&mut screen, InputCommand::Jump),
             Some(ScreenTransition::PerformLoad { slot: 0 })
         );
     }
@@ -1105,7 +1137,7 @@ mod tests {
         press(&mut screen, InputCommand::Duck); // cursor 0 -> 1
 
         assert_eq!(
-            press(&mut screen, InputCommand::ThrowItem),
+            press(&mut screen, InputCommand::Jump),
             Some(ScreenTransition::PerformLoad { slot: 1 })
         );
     }
@@ -1121,7 +1153,7 @@ mod tests {
 
         // zero_cfg carries six save slots, so wrapping up from 0 lands on 5.
         assert_eq!(
-            press(&mut screen, InputCommand::ThrowItem),
+            press(&mut screen, InputCommand::Jump),
             Some(ScreenTransition::PerformLoad { slot: 5 })
         );
     }
@@ -1141,7 +1173,7 @@ mod tests {
         press(&mut screen, InputCommand::Duck);
 
         assert_eq!(
-            press(&mut screen, InputCommand::ThrowItem),
+            press(&mut screen, InputCommand::Jump),
             Some(ScreenTransition::Story)
         );
     }
@@ -1161,7 +1193,7 @@ mod tests {
             press(&mut screen, InputCommand::Duck);
         }
         assert_eq!(
-            press(&mut screen, InputCommand::ThrowItem),
+            press(&mut screen, InputCommand::Jump),
             Some(ScreenTransition::Map)
         );
     }
@@ -1195,7 +1227,7 @@ mod tests {
             press(screen, InputCommand::Duck);
         }
         let mut confirm = ActiveInput::new();
-        confirm.insert(InputCommand::ThrowItem);
+        confirm.insert(InputCommand::Jump);
         let commands = screen.tick(&confirm, &mut RuntimeState::new()).commands;
         screen.tick(&ActiveInput::new(), &mut RuntimeState::new()); // release
         commands

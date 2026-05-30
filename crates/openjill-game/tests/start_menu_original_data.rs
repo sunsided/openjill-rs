@@ -63,7 +63,7 @@ fn resolve_data_dir(env_override: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
 ///   `JILL1.SHA` tileset 8 tile 16 at framebuffer position
 ///   `(JILL_BLIT_X, JILL_BLIT_Y)` - the Jill stand-pose sprite from
 ///   `INTRO.JN1`'s type 0 player record at world (1960, 944).
-/// - Pressing `ThrowItem` with the default selection (item 0, "play") returns
+/// - Pressing `Jump` (Space) with the default selection (item 0, "play") returns
 ///   `ScreenTransition::Map`.
 /// - Pressing `Pause` (Escape) from the base menu returns
 ///   `ScreenTransition::Quit`.
@@ -148,9 +148,11 @@ fn start_menu_constructs_and_renders_with_original_data() {
         "idle tick must emit the Jill stand-pose Blit (tileset 8 tile 16) at (JILL_BLIT_X, JILL_BLIT_Y)"
     );
 
-    // Confirming item 0 ("play") transitions to Map.
+    // Confirming item 0 ("play") transitions to Map. Confirm is Jump (Space);
+    // Ctrl/ThrowItem no longer confirms the menu (it is the Ctrl+E/Ctrl+P chord
+    // modifier).
     let mut confirm = ActiveInput::new();
-    confirm.insert(InputCommand::ThrowItem);
+    confirm.insert(InputCommand::Jump);
     let confirm_result = screen.tick(&confirm, &mut RuntimeState::new());
     check!(
         confirm_result.transition == Some(ScreenTransition::Map),
