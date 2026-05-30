@@ -68,19 +68,26 @@ enum ControlMenuKind {
     Save,
     /// RESTORE: pick a slot to load.
     Load,
+    /// EXIT: "really quit?" yes/no confirmation opened by Escape. Mirrors the
+    /// Java reference `AbstractExecutingStdLevel.doEscape`, which enables the
+    /// `exit_menu.json` menu rather than leaving the level outright.
+    Exit,
 }
 
-/// In-level save / load slot-picker overlay state.
+/// In-level control-panel overlay state (save / load slot picker, or the
+/// "really quit?" exit confirmation).
 ///
 /// While present the world is frozen (like the level-change message box) and
-/// the player navigates the six save slots with up/down, confirms with the
-/// throw/jump key, and cancels with Escape.  Confirming a SAVE slot enters a
-/// name-entry phase ([`ControlMenu::name`] becomes `Some`).
+/// the player navigates with up/down, confirms with the throw/jump key, and
+/// cancels with Escape.  Confirming a SAVE slot enters a name-entry phase
+/// ([`ControlMenu::name`] becomes `Some`).  For [`ControlMenuKind::Exit`] the
+/// cursor selects `0` = yes (quit to the start menu) or `1` = no (resume).
 #[derive(Clone, Debug)]
 struct ControlMenu {
-    /// Whether this menu saves or loads.
+    /// Whether this menu saves, loads, or confirms exit.
     kind: ControlMenuKind,
-    /// Currently highlighted slot index (`0..SAVE_SLOT_COUNT`).
+    /// Currently highlighted index: a save slot (`0..SAVE_SLOT_COUNT`) for
+    /// SAVE / RESTORE, or `0` = yes / `1` = no for EXIT.
     cursor: usize,
     /// `Some` once a SAVE slot is chosen and the player is typing the save
     /// name; `None` while picking a slot.
@@ -581,8 +588,12 @@ pub struct LevelScreen {
     save_key_was_down: bool,
     /// Whether the RESTORE key was held last tick (rising-edge detect).
     restore_key_was_down: bool,
-    /// Active in-level save / load slot-picker overlay, or `None` when no menu
-    /// is open.  While `Some`, the world is frozen.
+    /// Whether the Escape/Pause key was held last tick (rising-edge detect, so
+    /// one press opens the exit-confirmation menu exactly once).
+    pause_key_was_down: bool,
+    /// Active in-level control-panel overlay - the save / load slot picker or
+    /// the Escape "really quit?" confirmation - or `None` when no menu is open.
+    /// While `Some`, the world is frozen.
     control_menu: Option<ControlMenu>,
     /// Whether any menu-navigation key was held last tick, debouncing the
     /// slot-picker so one key press moves / confirms exactly once.
@@ -780,6 +791,7 @@ impl LevelScreen {
             turtle_key_was_down: false,
             save_key_was_down: false,
             restore_key_was_down: false,
+            pause_key_was_down: false,
             control_menu: None,
             menu_nav_was_active: false,
             save_slot_names: Vec::new(),
@@ -1612,9 +1624,30 @@ impl LevelScreen {
         let backspace = input.contains(&InputCommand::PrevInventory);
         let active = up || down || confirm || cancel || backspace;
 
+        let is_exit = self
+            .control_menu
+            .as_ref()
+            .is_some_and(|menu| menu.kind == ControlMenuKind::Exit);
+
         let mut transition = None;
         if active && !self.menu_nav_was_active {
-            if in_name_entry {
+            if is_exit {
+                // "really quit?" confirmation: up/down toggle yes (0) / no (1),
+                // confirm acts on the choice, Escape cancels (resume).
+                if cancel {
+                    self.control_menu = None;
+                } else if confirm {
+                    let yes = self.control_menu.as_ref().is_some_and(|m| m.cursor == 0);
+                    self.control_menu = None;
+                    if yes {
+                        transition = Some(ScreenTransition::StartMenu);
+                    }
+                } else if (up || down)
+                    && let Some(menu) = self.control_menu.as_mut()
+                {
+                    menu.cursor ^= 1;
+                }
+            } else if in_name_entry {
                 if cancel {
                     self.control_menu = None;
                 } else if confirm {
@@ -1644,6 +1677,9 @@ impl LevelScreen {
                     .map(|m| (m.kind, m.cursor))
                     .expect("control menu present");
                 match kind {
+                    // EXIT confirmations are handled in the `is_exit` branch
+                    // above, so the slot-picker confirm only sees Save / Load.
+                    ControlMenuKind::Exit => self.control_menu = None,
                     ControlMenuKind::Load => {
                         self.control_menu = None;
                         transition = Some(ScreenTransition::PerformLoad { slot: cursor });
@@ -1752,17 +1788,23 @@ impl ScreenHandler for LevelScreen {
         let mut menu_transition: Option<ScreenTransition> = None;
         let save_down = input.contains(&InputCommand::Save);
         let restore_down = input.contains(&InputCommand::Restore);
+        let pause_down = input.contains(&InputCommand::Pause);
         if self.control_menu.is_none() && self.pending.is_none() {
             if save_down && !self.save_key_was_down {
                 self.open_control_menu(ControlMenuKind::Save);
             } else if restore_down && !self.restore_key_was_down {
                 self.open_control_menu(ControlMenuKind::Load);
+            } else if pause_down && !self.pause_key_was_down {
+                // Escape opens the "really quit?" confirmation rather than
+                // leaving the level outright (Java `doEscape` enables the menu).
+                self.open_control_menu(ControlMenuKind::Exit);
             }
         } else if self.control_menu.is_some() {
             menu_transition = self.update_control_menu(input, &state.text_input);
         }
         self.save_key_was_down = save_down;
         self.restore_key_was_down = restore_down;
+        self.pause_key_was_down = pause_down;
 
         // Tick order each frame:
         // 1. Update every object entity (player moves, lifts dispatch
@@ -1869,13 +1911,11 @@ impl ScreenHandler for LevelScreen {
                 }
             }
         } else if menu_transition.is_some() {
-            // A confirmed SAVE / RESTORE from the slot picker.
+            // A confirmed SAVE / RESTORE / EXIT from the control menu. EXIT
+            // "yes" returns `StartMenu`; SAVE / RESTORE return their slot
+            // transition. Escape no longer quits the level directly: it opens
+            // the exit confirmation handled above.
             transition = menu_transition;
-        } else if !menu_was_open && input.contains(&InputCommand::Pause) {
-            // Escape returns to the start menu only when no slot picker was up
-            // this tick; while one is open, Escape cancels it instead of also
-            // quitting to the start menu on the same key press.
-            transition = Some(ScreenTransition::StartMenu);
         }
 
         TickResult {
@@ -2303,6 +2343,20 @@ fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
 /// In the name-entry phase (SAVE only), shows the chosen slot and the typed
 /// name with a trailing `_` caret.
 fn render_control_menu(menu: &ControlMenu, names: &[String]) -> Vec<RenderCommand> {
+    if menu.kind == ControlMenuKind::Exit {
+        // "really quit?" yes/no confirmation (Java `exit_menu.json`). The
+        // cursor marks the highlighted option: 0 = yes, 1 = no.
+        let yes = if menu.cursor == 0 { ">" } else { " " };
+        let no = if menu.cursor == 1 { ">" } else { " " };
+        let lines = vec![
+            String::from("REALLY QUIT?"),
+            String::new(),
+            format!("{yes} YES"),
+            format!("{no} NO"),
+        ];
+        return render_message_box(&lines);
+    }
+
     if let Some(name) = &menu.name {
         let lines = vec![
             String::from("SAVE GAME"),
@@ -2317,6 +2371,8 @@ fn render_control_menu(menu: &ControlMenu, names: &[String]) -> Vec<RenderComman
     let title = match menu.kind {
         ControlMenuKind::Save => "SAVE GAME",
         ControlMenuKind::Load => "RESTORE GAME",
+        // EXIT renders via the early return above; keep the match exhaustive.
+        ControlMenuKind::Exit => "REALLY QUIT?",
     };
     let mut lines = Vec::with_capacity(SAVE_SLOT_COUNT + 1);
     lines.push(title.to_string());
@@ -2959,17 +3015,84 @@ mod tests {
         );
     }
 
-    /// Unit under test: pressing Escape with no pending transition returns
-    /// to the start menu, mirroring the abort behavior of the reference
-    /// implementation.
+    /// Unit under test: pressing Escape in-level opens the "really quit?"
+    /// confirmation rather than leaving the level outright, and does not
+    /// transition on the opening tick.  Mirrors Java `doEscape`, which enables
+    /// the `exit_menu.json` menu.
     #[test]
-    fn escape_returns_to_start_menu_when_idle() {
+    fn escape_opens_exit_confirmation_without_transitioning() {
         let bytes = jn_bytes_with_objects(&[]);
         let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
         let mut input = ActiveInput::new();
         input.insert(InputCommand::Pause);
         let result = screen.tick(&input, &mut RuntimeState::new());
-        assert_eq!(result.transition, Some(ScreenTransition::StartMenu));
+        assert_eq!(
+            result.transition, None,
+            "Escape must open the confirmation, not transition immediately"
+        );
+        assert!(
+            screen.control_menu.is_some(),
+            "Escape must open the exit-confirmation menu"
+        );
+    }
+
+    /// Unit under test: confirming "yes" (cursor default 0) in the exit menu
+    /// returns to the start menu.
+    #[test]
+    fn exit_menu_confirm_yes_returns_to_start_menu() {
+        let transition = run_control_menu(
+            InputCommand::Pause,
+            &[
+                &[],                        // release (reset debounce)
+                &[InputCommand::ThrowItem], // confirm "yes" (cursor 0)
+            ],
+        );
+        assert_eq!(transition, Some(ScreenTransition::StartMenu));
+    }
+
+    /// Unit under test: selecting "no" (down to cursor 1) then confirming
+    /// resumes play - no transition and the menu closes.
+    #[test]
+    fn exit_menu_confirm_no_resumes_play() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let mut state = RuntimeState::new();
+
+        let mut esc = ActiveInput::new();
+        esc.insert(InputCommand::Pause);
+        let mut down = ActiveInput::new();
+        down.insert(InputCommand::Duck);
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+
+        screen.tick(&esc, &mut state); // open exit menu
+        screen.tick(&ActiveInput::new(), &mut state); // release
+        screen.tick(&down, &mut state); // cursor yes -> no
+        screen.tick(&ActiveInput::new(), &mut state); // release
+        let result = screen.tick(&confirm, &mut state); // confirm "no"
+
+        assert_eq!(
+            result.transition, None,
+            "confirming 'no' must not transition"
+        );
+        assert!(
+            screen.control_menu.is_none(),
+            "confirming 'no' must close the exit menu and resume play"
+        );
+    }
+
+    /// Unit under test: Escape cancels the open exit menu (resume), without a
+    /// transition.
+    #[test]
+    fn exit_menu_escape_cancels_and_resumes() {
+        let transition = run_control_menu(
+            InputCommand::Pause,
+            &[
+                &[],                    // release (reset debounce)
+                &[InputCommand::Pause], // Escape again -> cancel
+            ],
+        );
+        assert_eq!(transition, None, "a second Escape cancels the exit menu");
     }
 
     /// Unit under test: `render_message_box` clips every frame blit to the
