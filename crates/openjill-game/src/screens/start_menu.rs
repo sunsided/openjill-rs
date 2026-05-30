@@ -304,6 +304,12 @@ impl StartMenuScreen {
             });
         }
 
+        // Ctrl+E: open the level editor (title-screen cheat). Checked before the
+        // confirm key for the same reason as Ctrl+P above (Ctrl = ThrowItem).
+        if input.contains(&InputCommand::EnterEditor) {
+            return Some(ScreenTransition::Editor);
+        }
+
         let layout = &*MENU_LAYOUT;
         if layout.items.is_empty() {
             return None;
@@ -972,6 +978,23 @@ mod tests {
                 number: 0,
             })
         );
+    }
+
+    /// Unit under test: the `Ctrl+E` editor cheat on the base menu.
+    ///
+    /// Preconditions: no overlay; `InputCommand::EnterEditor` (the chord) pressed
+    /// this tick, together with the `ThrowItem` that `Ctrl` also produces.
+    ///
+    /// Invariants asserted: it transitions to `ScreenTransition::Editor`, beating
+    /// the `Ctrl`-as-`ThrowItem` confirm.
+    #[test]
+    fn ctrl_e_opens_the_editor() {
+        let mut screen = menu();
+        let mut input = ActiveInput::new();
+        input.insert(InputCommand::EnterEditor);
+        input.insert(InputCommand::ThrowItem);
+        let result = screen.tick(&input, &mut RuntimeState::new());
+        assert_eq!(result.transition, Some(ScreenTransition::Editor));
     }
 
     /// Unit under test: Escape (`InputCommand::Pause`) quits from the start menu.
