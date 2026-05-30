@@ -5,6 +5,8 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(feature = "editors")]
+use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use openjill_core::Palette;
@@ -62,11 +64,43 @@ enum Command {
         command: DataCommand,
     },
     Dump(DumpArgs),
+    /// DMA tile-metadata tools (`openjill dma <action>`).
+    #[cfg(feature = "editors")]
+    Dma {
+        #[command(subcommand)]
+        action: DmaAction,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum DataCommand {
     Verify(VerifyArgs),
+}
+
+/// Actions for the `openjill dma` editor subcommand.
+#[cfg(feature = "editors")]
+#[derive(Debug, Subcommand)]
+enum DmaAction {
+    /// Dump the `JILL.DMA` tile-metadata table (text, CSV, or JSON).
+    Extract(DmaExtractArgs),
+}
+
+/// Arguments for `openjill dma extract`.
+#[cfg(feature = "editors")]
+#[derive(Args, Debug)]
+struct DmaExtractArgs {
+    /// DMA file to read.
+    #[arg(short, long)]
+    file: PathBuf,
+    /// Output file (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+    /// Emit CSV output.
+    #[arg(long, conflicts_with = "json")]
+    csv: bool,
+    /// Emit JSON output.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -175,7 +209,62 @@ fn dispatch(command: Command) -> Result<()> {
             command: DataCommand::Verify(args),
         } => data_verify_command(args),
         Command::Dump(args) => dump_command(args),
+        #[cfg(feature = "editors")]
+        Command::Dma {
+            action: DmaAction::Extract(args),
+        } => dma_extract_command(args),
     }
+}
+
+/// Dumps `JILL.DMA` tile metadata as text (default), CSV, or JSON.
+///
+/// Replaces the former standalone `openjill-dma-extract` binary; the
+/// conversions come from `openjill-export::dma`.
+#[cfg(feature = "editors")]
+fn dma_extract_command(args: DmaExtractArgs) -> Result<()> {
+    use openjill_data::dma::DmaFile;
+    use openjill_export::dma::{table_to_csv, table_to_text};
+
+    let bytes = std::fs::read(&args.file)
+        .with_context(|| format!("failed to read DMA file {}", args.file.display()))?;
+    let dma = DmaFile::from_bytes(bytes)
+        .with_context(|| format!("failed to parse DMA file {}", args.file.display()))?;
+
+    let rendered = if args.json {
+        dma_entries_to_json(&dma)
+    } else if args.csv {
+        table_to_csv(&dma)
+    } else {
+        table_to_text(&dma)
+    };
+
+    match &args.out {
+        Some(path) => std::fs::write(path, rendered)
+            .with_context(|| format!("failed to write {}", path.display()))?,
+        None => print!("{rendered}"),
+    }
+    Ok(())
+}
+
+/// Serialises the DMA entries to a pretty-printed JSON array (round-trippable
+/// numeric `map_code` / `tileset` / `tile` / `flags`).
+#[cfg(feature = "editors")]
+fn dma_entries_to_json(dma: &openjill_data::dma::DmaFile) -> String {
+    let entries: Vec<serde_json::Value> = dma
+        .entries()
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "map_code": entry.map_code(),
+                "tileset": entry.tileset(),
+                "tile": entry.tile(),
+                "flags": entry.flags(),
+            })
+        })
+        .collect();
+    let mut text = serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string());
+    text.push('\n');
+    text
 }
 
 /// Runs the interactive game loop using the configured data directory.
@@ -1505,6 +1594,8 @@ fn print_file_report(label: &str, file: &FileVerification) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "editors")]
+    use super::DmaAction;
     use super::{
         Cli, Command, DataCommand, DataDirArgs, FileVerification, RunArgs, SHA_ATLAS_INDEXED_FILE,
         SHA_ATLAS_RGB_FILE, SHA_ATLAS_TILE_PADDING, VerificationStatus, dispatch,
@@ -1564,6 +1655,28 @@ mod tests {
         let cli = Cli::try_parse_from(["openjill", "dump", "dma", "--format", "json"])
             .expect("dump format flag should parse");
         check!(matches!(cli.command, Command::Dump(_)));
+    }
+
+    #[cfg(feature = "editors")]
+    #[test]
+    fn accepts_dma_extract_command() {
+        let cli = Cli::try_parse_from(["openjill", "dma", "extract", "--file", "x.dma"])
+            .expect("dma extract command should parse");
+        check!(matches!(
+            cli.command,
+            Command::Dma {
+                action: DmaAction::Extract(_)
+            }
+        ));
+    }
+
+    #[cfg(feature = "editors")]
+    #[test]
+    fn dma_extract_rejects_csv_and_json_together() {
+        check!(
+            Cli::try_parse_from(["openjill", "dma", "extract", "-f", "x", "--csv", "--json"])
+                .is_err()
+        );
     }
 
     /// Unit under test: `verify_data_directory` success path and deterministic checksums.
