@@ -50,13 +50,35 @@ const LEVEL_MESSAGEBOX_JSON: &str =
 /// expressed through the canonical descriptor rather than a bare literal.
 const EPISODE_SAVE_PREFIX: &str = openjill_data::episode::JILL1.jn_ext;
 
-/// Save slot used by the control-panel SAVE / RESTORE keys until the slot
-/// picker menu lands.
-const QUICK_SAVE_SLOT: usize = 0;
+/// Number of save slots offered by the control-panel save/load menu (matches
+/// the CFG save table, `SAVE_SLOT_COUNT`).
+const SAVE_SLOT_COUNT: usize = 6;
 
-/// Default save name written for a quick-save until the menu's name entry
-/// lands (kept within the 12-byte CFG save-name field).
-const QUICK_SAVE_NAME: &str = "QUICKSAVE";
+/// Default save name written until the menu's text name-entry lands (kept
+/// within the 12-byte CFG save-name field).
+const DEFAULT_SAVE_NAME: &str = "SAVED GAME";
+
+/// Whether the in-level control-panel menu is saving or restoring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControlMenuKind {
+    /// SAVE: pick a slot to write the live game into.
+    Save,
+    /// RESTORE: pick a slot to load.
+    Load,
+}
+
+/// In-level save / load slot-picker overlay state.
+///
+/// While present the world is frozen (like the level-change message box) and
+/// the player navigates the six save slots with up/down, confirms with the
+/// throw/jump key, and cancels with Escape.
+#[derive(Clone, Copy, Debug)]
+struct ControlMenu {
+    /// Whether this menu saves or loads.
+    kind: ControlMenuKind,
+    /// Currently highlighted slot index (`0..SAVE_SLOT_COUNT`).
+    cursor: usize,
+}
 
 /// Sky / game-area background color for episode 1 levels, as a VGA palette
 /// index.
@@ -548,10 +570,16 @@ pub struct LevelScreen {
     /// Whether the TURTLE toggle key was held last tick (rising-edge detect).
     turtle_key_was_down: bool,
     /// Whether the SAVE key was held last tick (rising-edge detect, so one
-    /// press triggers exactly one save).
+    /// press opens the menu exactly once).
     save_key_was_down: bool,
     /// Whether the RESTORE key was held last tick (rising-edge detect).
     restore_key_was_down: bool,
+    /// Active in-level save / load slot-picker overlay, or `None` when no menu
+    /// is open.  While `Some`, the world is frozen.
+    control_menu: Option<ControlMenu>,
+    /// Whether any menu-navigation key was held last tick, debouncing the
+    /// slot-picker so one key press moves / confirms exactly once.
+    menu_nav_was_active: bool,
     /// Alternating execution gate for turtle (slow-motion) mode; the world
     /// updates only on ticks where this is `true` while turtle mode is on
     /// (Java `AbstractExecutingStdLevel.turtleSwitch`).
@@ -741,6 +769,8 @@ impl LevelScreen {
             turtle_key_was_down: false,
             save_key_was_down: false,
             restore_key_was_down: false,
+            control_menu: None,
+            menu_nav_was_active: false,
             turtle_switch: false,
             trigger_inbox,
             player_move_inbox,
@@ -1510,6 +1540,57 @@ impl LevelScreen {
         self.entity_dispatcher.clear_pending();
     }
 
+    /// Opens the in-level save / load slot-picker overlay.
+    ///
+    /// Seeds the cursor at the first slot and marks the navigation keys as
+    /// already active, so the SAVE / RESTORE key that opened the menu must be
+    /// released before the first slot move or confirm registers.
+    fn open_control_menu(&mut self, kind: ControlMenuKind) {
+        self.control_menu = Some(ControlMenu { kind, cursor: 0 });
+        self.menu_nav_was_active = true;
+    }
+
+    /// Drives the open slot-picker overlay for one tick.
+    ///
+    /// Up / down move the cursor (wrapping), the throw/jump key confirms and
+    /// returns the matching [`ScreenTransition::PerformSave`] /
+    /// [`ScreenTransition::PerformLoad`], and Escape cancels.  All actions are
+    /// debounced so one key press performs exactly one action.
+    fn update_control_menu(&mut self, input: &ActiveInput) -> Option<ScreenTransition> {
+        let mut menu = self.control_menu?;
+        let up = input.contains(&InputCommand::Up) || input.contains(&InputCommand::PrevInventory);
+        let down =
+            input.contains(&InputCommand::Duck) || input.contains(&InputCommand::NextInventory);
+        let confirm =
+            input.contains(&InputCommand::ThrowItem) || input.contains(&InputCommand::Jump);
+        let cancel = input.contains(&InputCommand::Pause);
+        let active = up || down || confirm || cancel;
+
+        let mut transition = None;
+        if active && !self.menu_nav_was_active {
+            if cancel {
+                self.control_menu = None;
+            } else if confirm {
+                transition = Some(match menu.kind {
+                    ControlMenuKind::Save => ScreenTransition::PerformSave {
+                        slot: menu.cursor,
+                        name: DEFAULT_SAVE_NAME.to_string(),
+                    },
+                    ControlMenuKind::Load => ScreenTransition::PerformLoad { slot: menu.cursor },
+                });
+                self.control_menu = None;
+            } else if up {
+                menu.cursor = (menu.cursor + SAVE_SLOT_COUNT - 1) % SAVE_SLOT_COUNT;
+                self.control_menu = Some(menu);
+            } else if down {
+                menu.cursor = (menu.cursor + 1) % SAVE_SLOT_COUNT;
+                self.control_menu = Some(menu);
+            }
+        }
+        self.menu_nav_was_active = active;
+        transition
+    }
+
     /// Builds a live save-game snapshot of this screen as a [`JnFile`].
     ///
     /// Mirrors the Java reference's `AbstractChangeLevel` save path: the live
@@ -1583,25 +1664,24 @@ impl ScreenHandler for LevelScreen {
         }
         self.turtle_key_was_down = turtle_down;
 
-        // Control-panel SAVE / RESTORE: on the rising edge, request the
-        // orchestrator to snapshot or restore the quick-save slot. The slot
-        // picker and name entry land with the save/load menu; for now this is
-        // a single quick-save slot.
-        let mut save_load_request: Option<ScreenTransition> = None;
+        // Control-panel SAVE / RESTORE: open the slot-picker overlay on the
+        // rising edge (only when no menu and no level-change box are already
+        // up). While the overlay is open, drive it instead; the world stays
+        // frozen below.
+        let menu_was_open = self.control_menu.is_some();
+        let mut menu_transition: Option<ScreenTransition> = None;
         let save_down = input.contains(&InputCommand::Save);
-        if save_down && !self.save_key_was_down {
-            save_load_request = Some(ScreenTransition::PerformSave {
-                slot: QUICK_SAVE_SLOT,
-                name: QUICK_SAVE_NAME.to_string(),
-            });
+        let restore_down = input.contains(&InputCommand::Restore);
+        if self.control_menu.is_none() && self.pending.is_none() {
+            if save_down && !self.save_key_was_down {
+                self.open_control_menu(ControlMenuKind::Save);
+            } else if restore_down && !self.restore_key_was_down {
+                self.open_control_menu(ControlMenuKind::Load);
+            }
+        } else if self.control_menu.is_some() {
+            menu_transition = self.update_control_menu(input);
         }
         self.save_key_was_down = save_down;
-        let restore_down = input.contains(&InputCommand::Restore);
-        if restore_down && !self.restore_key_was_down {
-            save_load_request = Some(ScreenTransition::PerformLoad {
-                slot: QUICK_SAVE_SLOT,
-            });
-        }
         self.restore_key_was_down = restore_down;
 
         // Tick order each frame:
@@ -1642,7 +1722,7 @@ impl ScreenHandler for LevelScreen {
         // `doRun()` whenever `levelMessageBox.isEnable()`.  Rendering, the
         // overlay, and the `message_ticks` countdown below still run, so the
         // dialogue paints over a frozen frame and the transition fires on time.
-        if self.pending.is_none() && run_world {
+        if self.pending.is_none() && self.control_menu.is_none() && run_world {
             self.update_objects(input, state);
             self.apply_platform_moves();
             self.dispatch_player_touches(state);
@@ -1670,6 +1750,9 @@ impl ScreenHandler for LevelScreen {
 
         if self.pending.is_some() {
             commands.extend(render_message_box(&self.message_text));
+        }
+        if let Some(menu) = self.control_menu {
+            commands.extend(render_control_menu(menu));
         }
 
         self.drain_entity_dispatcher();
@@ -1700,11 +1783,13 @@ impl ScreenHandler for LevelScreen {
                     self.message_text.clear();
                 }
             }
-        } else if save_load_request.is_some() {
-            // A SAVE / RESTORE request takes priority over Escape; it is only
-            // armed when no level-change message box is pending.
-            transition = save_load_request;
-        } else if input.contains(&InputCommand::Pause) {
+        } else if menu_transition.is_some() {
+            // A confirmed SAVE / RESTORE from the slot picker.
+            transition = menu_transition;
+        } else if !menu_was_open && input.contains(&InputCommand::Pause) {
+            // Escape returns to the start menu only when no slot picker was up
+            // this tick; while one is open, Escape cancels it instead of also
+            // quitting to the start menu on the same key press.
             transition = Some(ScreenTransition::StartMenu);
         }
 
@@ -2074,6 +2159,26 @@ fn lookup_message_text(level_number: i32) -> Vec<String> {
 /// extends past the box (e.g. the 16-tall vertical bar tile sitting on the
 /// last row of a 92-tall box that only has 12 px of slack at the bottom)
 /// do not bleed below the box border.
+/// Renders the in-level save / load slot-picker overlay.
+///
+/// Reuses the level message-box frame, listing the six save slots with a `>`
+/// cursor on the highlighted one under a `SAVE GAME` / `RESTORE GAME` title.
+/// Slot names are not shown yet (the orchestrator's CFG slot names are not
+/// plumbed into the level screen); slots are addressed by number for now.
+fn render_control_menu(menu: ControlMenu) -> Vec<RenderCommand> {
+    let title = match menu.kind {
+        ControlMenuKind::Save => "SAVE GAME",
+        ControlMenuKind::Load => "RESTORE GAME",
+    };
+    let mut lines = Vec::with_capacity(SAVE_SLOT_COUNT + 1);
+    lines.push(title.to_string());
+    for slot in 0..SAVE_SLOT_COUNT {
+        let marker = if slot == menu.cursor { ">" } else { " " };
+        lines.push(format!("{marker} SLOT {}", slot + 1));
+    }
+    render_message_box(&lines)
+}
+
 fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
     let layout = &*MESSAGE_BOX;
     let clip = openjill_core::ClipRect {
@@ -2843,50 +2948,78 @@ mod tests {
         );
     }
 
-    /// Unit under test: the control-panel SAVE key emits a one-shot
-    /// [`ScreenTransition::PerformSave`] on its rising edge.
+    /// Drives a level screen through a control-menu interaction: a `key`
+    /// opens the menu, the keys are released to reset the debounce, then a
+    /// `confirm`/`nav` sequence is applied. Returns the final transition.
     ///
-    /// Invariants asserted: the first tick with SAVE held requests a save of
-    /// the quick-save slot; holding the key produces no further request.
-    #[test]
-    fn save_key_edge_emits_perform_save_transition() {
+    /// Each entry in `after` is one tick's input; the transition of the last
+    /// tick is returned.
+    fn run_control_menu(
+        open_key: InputCommand,
+        after: &[&[InputCommand]],
+    ) -> Option<ScreenTransition> {
         let bytes = jn_bytes_with_objects(&[]);
         let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
         let mut state = RuntimeState::new();
 
-        let mut input = ActiveInput::new();
-        input.insert(InputCommand::Save);
-        let result = screen.tick(&input, &mut state);
+        // Open the menu (no transition on this tick).
+        let mut open = ActiveInput::new();
+        open.insert(open_key);
         assert!(
-            matches!(
-                result.transition,
-                Some(ScreenTransition::PerformSave { slot: 0, .. })
-            ),
-            "SAVE rising edge must request a save of the quick-save slot"
+            screen.tick(&open, &mut state).transition.is_none(),
+            "opening the control menu must not transition"
         );
 
-        // Held key: no new edge, so no further save request.
-        let held = screen.tick(&input, &mut state);
-        assert!(held.transition.is_none(), "held SAVE key must not re-save");
+        let mut last = None;
+        for keys in after {
+            let mut input = ActiveInput::new();
+            for key in *keys {
+                input.insert(*key);
+            }
+            last = screen.tick(&input, &mut state).transition;
+        }
+        last
     }
 
-    /// Unit under test: the control-panel RESTORE key emits a one-shot
-    /// [`ScreenTransition::PerformLoad`] on its rising edge.
+    /// Unit under test: the SAVE key opens the slot picker, and confirming the
+    /// default cursor requests a save of slot 0.
     #[test]
-    fn restore_key_edge_emits_perform_load_transition() {
-        let bytes = jn_bytes_with_objects(&[]);
-        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
-        let mut state = RuntimeState::new();
+    fn save_menu_confirm_requests_save_of_selected_slot() {
+        // Release (reset debounce) then confirm with the throw key.
+        let transition = run_control_menu(InputCommand::Save, &[&[], &[InputCommand::ThrowItem]]);
+        assert!(matches!(
+            transition,
+            Some(ScreenTransition::PerformSave { slot: 0, .. })
+        ));
+    }
 
-        let mut input = ActiveInput::new();
-        input.insert(InputCommand::Restore);
-        let result = screen.tick(&input, &mut state);
+    /// Unit under test: the RESTORE key opens the slot picker, down moves the
+    /// cursor, and confirm requests a load of the highlighted slot.
+    #[test]
+    fn restore_menu_down_then_confirm_requests_load_of_that_slot() {
+        let transition = run_control_menu(
+            InputCommand::Restore,
+            &[
+                &[],                        // release (reset debounce)
+                &[InputCommand::Duck],      // cursor 0 -> 1
+                &[],                        // release
+                &[InputCommand::ThrowItem], // confirm
+            ],
+        );
+        assert!(matches!(
+            transition,
+            Some(ScreenTransition::PerformLoad { slot: 1 })
+        ));
+    }
+
+    /// Unit under test: Escape cancels the slot picker without saving, and does
+    /// not also fall through to the start-menu transition on the same press.
+    #[test]
+    fn save_menu_escape_cancels_without_saving() {
+        let transition = run_control_menu(InputCommand::Save, &[&[], &[InputCommand::Pause]]);
         assert!(
-            matches!(
-                result.transition,
-                Some(ScreenTransition::PerformLoad { slot: 0 })
-            ),
-            "RESTORE rising edge must request a load of the quick-save slot"
+            transition.is_none(),
+            "Escape must cancel the menu, not save or quit to the start menu"
         );
     }
 
