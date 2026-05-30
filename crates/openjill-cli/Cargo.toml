@@ -10,12 +10,19 @@ authors.workspace = true
 name = "openjill"
 path = "src/main.rs"
 
+[features]
+# The editor / data-tool subcommands (`openjill <format> <action>`). On by
+# default; disable with `--no-default-features` for a slim game-only binary.
+default = ["editors"]
+editors = ["dep:openjill-export"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 openjill-audio = { path = "../openjill-audio" }
 openjill-core = { path = "../openjill-core" }
 openjill-data = { path = "../openjill-data" }
+openjill-export = { path = "../openjill-export", optional = true }
 openjill-game = { path = "../openjill-game" }
 openjill-render = { path = "../openjill-render" }
 png.workspace = true

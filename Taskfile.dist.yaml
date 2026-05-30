@@ -133,7 +133,7 @@ tasks:
     vars:
       DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
     cmds:
-      - cargo run -p openjill-dma-extract -- --file {{.DATA_DIR}}/JILL.DMA {{.CLI_ARGS}}
+      - cargo run --bin openjill -- dma extract --file {{.DATA_DIR}}/JILL.DMA {{.CLI_ARGS}}
 
   data:vcl:extract:
     desc: Dump JILL1.VCL text entries (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1; pass flags like --json/--entry via --)
@@ -174,7 +174,7 @@ tasks:
       - mkdir -p {{.OUT}}/sha
       - cargo run -p openjill-sha-extract -- --file {{.DATA_DIR}}/JILL1.SHA --out {{.OUT}}/sha
       - cargo run -p openjill-jn-extract -- --file {{.DATA_DIR}}/{{.JN}} --out {{.OUT}}/{{.JN}}.png
-      - cargo run -p openjill-dma-extract -- --file {{.DATA_DIR}}/JILL.DMA --csv --out {{.OUT}}/dma.csv
+      - cargo run --bin openjill -- dma extract --file {{.DATA_DIR}}/JILL.DMA --csv --out {{.OUT}}/dma.csv
       - cargo run -p openjill-vcl-extract -- --file {{.DATA_DIR}}/JILL1.VCL --out {{.OUT}}/vcl.txt
       - cargo run -p openjill-cfg-extract -- --file {{.DATA_DIR}}/JILL1.CFG --out {{.OUT}}/cfg.txt
 

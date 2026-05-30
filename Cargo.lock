@@ -2298,6 +2298,7 @@ dependencies = [
  "openjill-audio",
  "openjill-core",
  "openjill-data",
+ "openjill-export",
  "openjill-game",
  "openjill-render",
  "png",
@@ -2317,18 +2318,6 @@ name = "openjill-data"
 version = "0.1.0"
 dependencies = [
  "assert2",
-]
-
-[[package]]
-name = "openjill-dma-extract"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert2",
- "clap",
- "openjill-data",
- "openjill-export",
- "serde_json",
 ]
 
 [[package]]

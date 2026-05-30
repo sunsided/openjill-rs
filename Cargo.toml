@@ -12,7 +12,6 @@ members = [
     "tools/openjill-sha-edit",
     "tools/openjill-jn-extract",
     "tools/openjill-jn-view",
-    "tools/openjill-dma-extract",
     "tools/openjill-vcl-extract",
     "tools/openjill-cfg-extract",
     "tools/openjill-cfg-view",
