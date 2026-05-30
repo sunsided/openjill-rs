@@ -100,8 +100,9 @@ pub struct GameApp {
     /// which case the event loop continues with no game logic.
     orchestrator: Option<GameOrchestrator>,
     /// Audio backend that plays the original VCL sounds for the orchestrator's
-    /// emitted [`SoundEvent`]s.  `None` when no orchestrator (and thus no VCL)
-    /// is available; a no-op internally when no audio device is present.
+    /// emitted [`openjill_core::SoundEvent`]s.  `None` when no orchestrator (and
+    /// thus no VCL) is available; a no-op internally when no audio device is
+    /// present.
     audio: Option<AudioBackend>,
     /// Timestamp of the last fired game tick, used to enforce the 55 ms tick
     /// interval regardless of the vsync rate.
