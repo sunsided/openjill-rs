@@ -39,8 +39,7 @@ use crate::screens::map_screen::render_map_background;
 use crate::status_bar::GAME_AREA_CLIP;
 
 /// Embedded `level_messagebox_vga.json` layout resource from the Java reference port.
-const LEVEL_MESSAGEBOX_JSON: &str =
-    include_str!("../../../../OpenJill/src/main/resources/level_messagebox_vga.json");
+const LEVEL_MESSAGEBOX_JSON: &str = include_str!("../../resources/level_messagebox_vga.json");
 
 /// Save prefix for the episode 1 messages table inside
 /// [`LEVEL_MESSAGEBOX_JSON`]; the JSON also carries `JN2` and `JN3` entries

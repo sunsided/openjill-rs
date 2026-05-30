@@ -24,8 +24,7 @@ use openjill_data::vcl::VclFile;
 use std::sync::LazyLock;
 
 /// Embedded `start_menu.json` layout resource from the Java reference port.
-const START_MENU_JSON: &str =
-    include_str!("../../../../OpenJill/src/main/resources/start_menu.json");
+const START_MENU_JSON: &str = include_str!("../../resources/start_menu.json");
 
 /// Background viewport X offset from `StartMenuJill1Handler::centerScreen`.
 ///
