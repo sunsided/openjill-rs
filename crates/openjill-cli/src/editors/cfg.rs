@@ -474,6 +474,60 @@ mod view {
                 }
             });
     }
+
+    #[cfg(test)]
+    mod ui_tests {
+        use super::CfgViewApp;
+        use std::path::{Path, PathBuf};
+
+        /// Resolves the test data directory from `OPENJILL_DATA_DIR` or the
+        /// workspace-relative default, returning `None` when neither exists so
+        /// the GUI runtime tests self-skip without the copyrighted bytes.
+        fn data_dir() -> Option<PathBuf> {
+            if let Some(path) = std::env::var_os("OPENJILL_DATA_DIR") {
+                return Some(PathBuf::from(path));
+            }
+            let default = Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1");
+            default.is_dir().then_some(default)
+        }
+
+        /// Unit under test: `CfgViewApp` constructed against a real `JILL1.CFG`.
+        ///
+        /// Invariant: the app loads + parses the config on construction without
+        /// a window - `loaded` is populated and the status line reports success.
+        /// Guards the GUI inspector's load path against the original data. Skips
+        /// without data.
+        #[test]
+        fn cfg_view_app_loads_real_file() {
+            let Some(dir) = data_dir() else {
+                eprintln!("skipping CfgViewApp runtime test; data directory missing");
+                return;
+            };
+            let app = CfgViewApp::new(&dir, Some(dir.join("JILL1.CFG")));
+            assert!(app.loaded.is_some(), "CfgViewApp must load JILL1.CFG");
+            assert!(
+                app.status.starts_with("Loaded"),
+                "status must report success, got: {}",
+                app.status
+            );
+        }
+
+        /// Unit under test: `CfgViewApp::load_file` on a missing path.
+        ///
+        /// Invariant: a failed load clears `loaded` and reports the error in the
+        /// status line rather than panicking. Needs no data.
+        #[test]
+        fn cfg_view_app_reports_missing_file() {
+            let mut app = CfgViewApp::new(Path::new("."), None);
+            app.load_file(Path::new("does-not-exist.CFG"));
+            assert!(app.loaded.is_none(), "missing file must not load");
+            assert!(
+                app.status.starts_with("Failed to load"),
+                "status must report failure, got: {}",
+                app.status
+            );
+        }
+    }
 }
 
 #[cfg(test)]

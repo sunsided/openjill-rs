@@ -516,6 +516,61 @@ mod edit {
             }
         }
     }
+
+    #[cfg(test)]
+    mod ui_tests {
+        use super::ShaEditApp;
+        use std::path::{Path, PathBuf};
+
+        /// Resolves the test data directory from `OPENJILL_DATA_DIR` or the
+        /// workspace-relative default, returning `None` when neither exists so
+        /// the GUI runtime tests self-skip without the copyrighted bytes.
+        fn data_dir() -> Option<PathBuf> {
+            if let Some(path) = std::env::var_os("OPENJILL_DATA_DIR") {
+                return Some(PathBuf::from(path));
+            }
+            let default = Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1");
+            default.is_dir().then_some(default)
+        }
+
+        /// Unit under test: `ShaEditApp` constructed against a real `JILL1.SHA`.
+        ///
+        /// Invariant: the app loads + parses the tileset on construction without
+        /// a window - `loaded` is populated, the first tileset is selected, and
+        /// the status line reports success. Guards that the GUI viewer's load
+        /// path works end to end against the original data. Skips without data.
+        #[test]
+        fn sha_edit_app_loads_real_file() {
+            let Some(dir) = data_dir() else {
+                eprintln!("skipping ShaEditApp runtime test; data directory missing");
+                return;
+            };
+            let app = ShaEditApp::new(&dir, Some(dir.join("JILL1.SHA")));
+            assert!(app.loaded.is_some(), "ShaEditApp must load JILL1.SHA");
+            assert_eq!(app.selected_tileset, Some(0), "first tileset selected");
+            assert!(
+                app.status.starts_with("Loaded"),
+                "status must report success, got: {}",
+                app.status
+            );
+        }
+
+        /// Unit under test: `ShaEditApp::load_file` on a missing path.
+        ///
+        /// Invariant: a failed load clears `loaded` and reports the error in the
+        /// status line rather than panicking. Needs no data.
+        #[test]
+        fn sha_edit_app_reports_missing_file() {
+            let mut app = ShaEditApp::new(Path::new("."), None);
+            app.load_file(Path::new("does-not-exist.SHA"));
+            assert!(app.loaded.is_none(), "missing file must not load");
+            assert!(
+                app.status.starts_with("Failed to load"),
+                "status must report failure, got: {}",
+                app.status
+            );
+        }
+    }
 }
 
 #[cfg(test)]
