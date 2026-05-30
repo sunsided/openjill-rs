@@ -538,6 +538,69 @@ mod view {
         let image = map_to_png(&jn, &sha, &dma, &palette);
         Ok((jn, image))
     }
+
+    #[cfg(test)]
+    mod ui_tests {
+        use super::JnViewApp;
+        use std::path::{Path, PathBuf};
+
+        /// Returns the test data directory only when it exists and contains
+        /// every `required` file, resolving it from `OPENJILL_DATA_DIR` or the
+        /// workspace-relative default. Returns `None` (so the GUI runtime tests
+        /// self-skip) when the directory is missing or the install is partial -
+        /// including when `OPENJILL_DATA_DIR` points at a wrong directory -
+        /// rather than failing on absent or misconfigured data.
+        fn data_dir_with(required: &[&str]) -> Option<PathBuf> {
+            let dir = match std::env::var_os("OPENJILL_DATA_DIR") {
+                Some(path) => PathBuf::from(path),
+                None => Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1"),
+            };
+            (dir.is_dir() && required.iter().all(|name| dir.join(name).is_file())).then_some(dir)
+        }
+
+        /// Unit under test: `JnViewApp` loading + rendering a real `1.JN1` map.
+        ///
+        /// Invariant: `new` defers loading to `ui`, and `load_file` against a
+        /// headless `egui::Context` reads the JN, resolves the sibling SHA/DMA,
+        /// renders the map, uploads the texture, and reports success. Exercises
+        /// the GUI viewer's full render path (incl. `ctx.load_texture`) without a
+        /// window. Skips without data.
+        #[test]
+        fn jn_view_app_loads_and_renders_real_map() {
+            let Some(dir) = data_dir_with(&["1.JN1", "JILL1.SHA", "JILL.DMA"]) else {
+                eprintln!("skipping JnViewApp runtime test; 1.JN1/SHA/DMA missing");
+                return;
+            };
+            let map = dir.join("1.JN1");
+            let mut app = JnViewApp::new(&dir, Some(map.clone()));
+            assert!(app.loaded.is_none(), "new() must defer loading to ui()");
+            let ctx = egui::Context::default();
+            app.load_file(&ctx, &map);
+            assert!(app.loaded.is_some(), "JnViewApp must load+render 1.JN1");
+            assert!(
+                app.status.starts_with("Loaded"),
+                "status must report success, got: {}",
+                app.status
+            );
+        }
+
+        /// Unit under test: `JnViewApp::load_file` on a missing path.
+        ///
+        /// Invariant: a failed load clears `loaded` and reports the error in the
+        /// status line rather than panicking. Needs no data.
+        #[test]
+        fn jn_view_app_reports_missing_file() {
+            let ctx = egui::Context::default();
+            let mut app = JnViewApp::new(Path::new("."), None);
+            app.load_file(&ctx, Path::new("does-not-exist.JN1"));
+            assert!(app.loaded.is_none(), "missing file must not load");
+            assert!(
+                app.status.starts_with("Failed to load"),
+                "status must report failure, got: {}",
+                app.status
+            );
+        }
+    }
 }
 
 #[cfg(test)]
