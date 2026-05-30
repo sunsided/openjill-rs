@@ -514,6 +514,51 @@ impl JnFile {
         self.objects = objects;
     }
 
+    /// Appends `object` to the object layer (the level editor's "add object"
+    /// command) and returns its new index.
+    ///
+    /// String-stack entries link to objects positionally: the n-th object with
+    /// a nonzero `pointer` owns the n-th string. An object with a zero `pointer`
+    /// (e.g. from [`JnObject::spawned`], and every object the in-game editor
+    /// places) carries no string, so appending it keeps that linkage intact
+    /// across [`to_bytes`](Self::to_bytes) and a re-parse. Appending an object
+    /// with a nonzero `pointer` additionally requires its string to be appended
+    /// to the stack, since this method touches only the object layer.
+    pub fn push_object(&mut self, object: JnObject) -> usize {
+        let index = self.objects.len();
+        self.objects.push(object);
+        index
+    }
+
+    /// Removes and returns the object at `index` (the level editor's "delete
+    /// object" command), or `None` when `index` is out of range.
+    ///
+    /// When the removed object owns a string-stack entry (nonzero `pointer`),
+    /// that entry is pruned too, so the positional object-to-string linkage that
+    /// [`to_bytes`](Self::to_bytes) relies on stays consistent across a
+    /// re-parse. The owned string's position is recomputed from the surviving
+    /// object order on each call (not from a cached index), so repeated removals
+    /// remain correct.
+    pub fn remove_object(&mut self, index: usize) -> Option<JnObject> {
+        if index >= self.objects.len() {
+            return None;
+        }
+        let removed = self.objects.remove(index);
+        if removed.pointer != 0 {
+            // Objects `[0, index)` are unchanged by the removal, so the count of
+            // string-owning objects in that prefix is the removed object's rank
+            // among string owners - the index of the string it owned.
+            let string_rank = self.objects[..index]
+                .iter()
+                .filter(|object| object.pointer != 0)
+                .count();
+            if string_rank < self.strings.len() {
+                self.strings.remove(string_rank);
+            }
+        }
+        Some(removed)
+    }
+
     /// Rewrites the save-data block from live runtime state.
     ///
     /// `inventory` is the list of `EnumInventoryObject` indices (capped at
@@ -1032,6 +1077,100 @@ mod tests {
         check!(reparsed.save_data().inventory() == [1, 3, 8]);
         check!(reparsed.save_data().score() == 12_345);
         check!(reparsed.save_data().hole().iter().all(|byte| *byte == 0));
+    }
+
+    /// Unit under test: [`JnFile::push_object`].
+    ///
+    /// Invariant asserted: a pushed (stringless) object is appended at the
+    /// returned index and survives a `to_bytes -> parse` round-trip with its
+    /// fields intact, leaving the rest of the layer untouched.
+    #[test]
+    fn push_object_appends_and_round_trips() {
+        let mut bytes = base_background();
+        write_u16(&mut bytes, 1);
+        write_object(&mut bytes, ObjectFixture::sample(5, 1, 2, 0));
+        write_save_data(&mut bytes, 1, 6, &[], 0);
+        let mut jn = JnFile::from_bytes(bytes).expect("JN parse should succeed");
+
+        let mut obj = super::JnObject::spawned(9, 100, 50, 16, 16);
+        obj.set_counter(7);
+        let new_index = jn.push_object(obj);
+        check!(new_index == 1);
+
+        let reparsed = JnFile::from_bytes(jn.to_bytes()).expect("re-parse should succeed");
+        check!(reparsed.objects().len() == 2);
+        check!(reparsed.objects()[1].object_type() == 9);
+        check!(reparsed.objects()[1].x() == 100);
+        check!(reparsed.objects()[1].counter() == 7);
+    }
+
+    /// Unit under test: [`JnFile::remove_object`] on a stringless object.
+    ///
+    /// Invariant asserted: the record is dropped, the returned object is the one
+    /// that was removed, and the shortened layer round-trips through `to_bytes`.
+    #[test]
+    fn remove_object_drops_record_and_round_trips() {
+        let mut bytes = base_background();
+        write_u16(&mut bytes, 2);
+        write_object(&mut bytes, ObjectFixture::sample(5, 1, 2, 0));
+        write_object(&mut bytes, ObjectFixture::sample(6, 3, 4, 0));
+        write_save_data(&mut bytes, 1, 6, &[], 0);
+        let mut jn = JnFile::from_bytes(bytes).expect("JN parse should succeed");
+
+        let removed = jn.remove_object(0).expect("object 0 should exist");
+        check!(removed.object_type() == 5);
+
+        let reparsed = JnFile::from_bytes(jn.to_bytes()).expect("re-parse should succeed");
+        check!(reparsed.objects().len() == 1);
+        check!(reparsed.objects()[0].object_type() == 6);
+    }
+
+    /// Unit under test: [`JnFile::remove_object`] prunes the removed object's
+    /// owned string-stack entry so the positional object-to-string linkage
+    /// stays consistent.
+    ///
+    /// Invariant asserted: removing the first of two string-owning objects drops
+    /// its string, and after a round-trip the surviving object re-links to the
+    /// surviving string.
+    #[test]
+    fn remove_object_prunes_owned_string() {
+        let mut bytes = base_background();
+        write_u16(&mut bytes, 2);
+        write_object(&mut bytes, ObjectFixture::sample(5, 1, 2, 17)); // owns string[0]
+        write_object(&mut bytes, ObjectFixture::sample(6, 3, 4, 18)); // owns string[1]
+        write_save_data(&mut bytes, 1, 6, &[], 0);
+        write_string(&mut bytes, b"HELLO");
+        write_string(&mut bytes, b"WORLD");
+        let mut jn = JnFile::from_bytes(bytes).expect("JN parse should succeed");
+        check!(jn.strings().len() == 2);
+
+        let removed = jn.remove_object(0).expect("object 0 should exist");
+        check!(removed.object_type() == 5);
+        check!(jn.strings().len() == 1);
+        check!(jn.strings()[0].value() == "WORLD");
+
+        let reparsed = JnFile::from_bytes(jn.to_bytes()).expect("re-parse should succeed");
+        check!(reparsed.objects().len() == 1);
+        check!(reparsed.objects()[0].object_type() == 6);
+        check!(reparsed.strings().len() == 1);
+        check!(reparsed.strings()[0].value() == "WORLD");
+        check!(reparsed.objects()[0].string_index() == Some(0));
+    }
+
+    /// Unit under test: [`JnFile::remove_object`] with an out-of-range index.
+    ///
+    /// Invariant asserted: it returns `None` and leaves the layer unchanged.
+    #[test]
+    fn remove_object_out_of_range_returns_none() {
+        let mut bytes = base_background();
+        write_u16(&mut bytes, 1);
+        write_object(&mut bytes, ObjectFixture::sample(5, 1, 2, 0));
+        write_save_data(&mut bytes, 1, 6, &[], 0);
+        let mut jn = JnFile::from_bytes(bytes).expect("JN parse should succeed");
+
+        check!(jn.remove_object(1).is_none());
+        check!(jn.remove_object(99).is_none());
+        check!(jn.objects().len() == 1);
     }
 
     /// Builds the fixed zero-filled background fixture.
