@@ -450,7 +450,9 @@ impl GameOrchestrator {
     /// [`map_jn_bytes`] before swapping (mirroring `putCurrentLevelInFileMemory`
     /// from the Java reference). Handlers that do not own a JN file return
     /// `None`, and the stored bytes are left intact so map state survives
-    /// trips through start-menu and intro/credits screens.
+    /// trips through the intro/credits screens. The [`ScreenTransition::StartMenu`]
+    /// arm is the exception: returning to the title menu abandons the run, so it
+    /// resets the runtime state and clears the cached bytes.
     ///
     /// [`map_jn_bytes`]: GameOrchestrator::map_jn_bytes
     fn apply_transition(&mut self, transition: ScreenTransition) {
@@ -463,8 +465,12 @@ impl GameOrchestrator {
 
         match transition {
             ScreenTransition::StartMenu => {
-                self.dispatcher.clear();
-                self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
+                // Returning to the title menu abandons any game in progress, so
+                // reset the runtime state (inventory, score, lives) and the
+                // cached level/map bytes. Without this, leaving a level to the
+                // main menu kept the inventory, letting the player re-collect
+                // the same pickups on the next run.
+                self.reset_to_start_menu();
             }
             ScreenTransition::Story => {
                 self.dispatcher.clear();
@@ -1090,14 +1096,15 @@ mod tests {
     /// handler does not own a JN file.
     ///
     /// Preconditions: the orchestrator is seeded with synthetic map bytes and
-    /// runs a `OneShotTransitionHandler` (returns `None` from
-    /// `map_jn_bytes`) that transitions to `StartMenu`.
+    /// runs a `OneShotTransitionHandler` (returns `None` from `map_jn_bytes`)
+    /// that transitions to `Story` (a JN-less screen that, unlike `StartMenu`,
+    /// does not reset the run).
     ///
     /// Invariants asserted: `self.map_jn_bytes` is still `Some(synthetic)`
     /// after the transition.
     #[test]
     fn transition_does_not_drop_preserved_bytes_for_jn_less_handlers() {
-        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Story));
         let mut orchestrator = orchestrator_with_handler(handler);
         let synthetic_map = vec![0u8; JN_MIN_BYTES];
         orchestrator.map_jn_bytes = Some(synthetic_map.clone());
@@ -1106,6 +1113,39 @@ mod tests {
         orchestrator.tick(&input);
 
         assert_eq!(orchestrator.map_jn_bytes, Some(synthetic_map));
+    }
+
+    /// Unit under test: a transition to the start menu abandons the run -
+    /// resetting the runtime state (inventory, score) and clearing the cached
+    /// level/map bytes - so the next game starts fresh.
+    ///
+    /// Regression: leaving a level to the main menu kept the inventory, letting
+    /// the player re-collect the same pickups on the next run.
+    #[test]
+    fn start_menu_transition_resets_runtime_state_and_caches() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        // Simulate a game in progress: stale inventory, score, and cached bytes.
+        orchestrator.state.inventory.push(InventoryObject::Gem);
+        orchestrator.state.score = 1234;
+        orchestrator.map_jn_bytes = Some(vec![0u8; JN_MIN_BYTES]);
+        seed_level_cache(&mut orchestrator, "1.JN1", 1);
+
+        orchestrator.tick(&ActiveInput::default());
+
+        assert_eq!(
+            orchestrator.state.score, 0,
+            "score must reset on return to the main menu"
+        );
+        assert_eq!(
+            orchestrator.state.inventory,
+            RuntimeState::new().inventory,
+            "inventory must reset to the fresh-game default"
+        );
+        assert!(
+            orchestrator.map_jn_bytes.is_none() && orchestrator.level_jn_number.is_none(),
+            "cached level/map bytes must clear so the next game starts fresh"
+        );
     }
 
     /// Test helper: seeds the orchestrator with an in-memory level file so a
