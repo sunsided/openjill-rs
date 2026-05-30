@@ -57,6 +57,22 @@ pub enum ScreenTransition {
     OrderingInfo,
     /// Show the noisemaker screen (backed by `INTRO.JN1`).
     Noisemaker,
+    /// Save the live game into `slot` under `name`, then resume play.
+    ///
+    /// Emitted by an active level/map screen when the player triggers the
+    /// control-panel SAVE option. The orchestrator performs the save against
+    /// the still-active screen and does **not** swap handlers.
+    PerformSave {
+        /// Save-slot index.
+        slot: usize,
+        /// Player-entered (or default) save name.
+        name: String,
+    },
+    /// Restore the saved game in `slot`, replacing the active screen.
+    PerformLoad {
+        /// Save-slot index.
+        slot: usize,
+    },
     /// Exit the application.
     Quit,
 }

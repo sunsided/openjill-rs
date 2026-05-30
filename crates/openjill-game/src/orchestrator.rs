@@ -397,6 +397,20 @@ impl GameOrchestrator {
             ScreenTransition::Quit => {
                 self.quitting = true;
             }
+            ScreenTransition::PerformSave { slot, name } => {
+                // Snapshot the still-active screen into the slot; the handler is
+                // intentionally not swapped so play resumes on the next tick.
+                if let Err(err) = self.save_to_slot(slot, &name) {
+                    eprintln!("openjill-game: save to slot {slot} failed: {err}");
+                }
+            }
+            ScreenTransition::PerformLoad { slot } => {
+                // `restore_from_slot` reconstructs the saved screen on success;
+                // on failure the current screen is left untouched.
+                if let Err(err) = self.restore_from_slot(slot) {
+                    eprintln!("openjill-game: restore from slot {slot} failed: {err}");
+                }
+            }
             ScreenTransition::Map => {
                 self.dispatcher.clear();
                 let map_file = self.episode.map_jn();
