@@ -157,6 +157,76 @@ pub fn make_object_entity(
     }
 }
 
+/// Canonical editor-facing name for each implemented JN object type id.
+///
+/// Single source of truth shared by [`make_object_entity`] (the runtime
+/// factory above) and the in-game level editor's add-/identify-object commands
+/// (epic #210). Only type ids with a registered entity implementation are
+/// named; unimplemented / stubbed ids (e.g. 40, 49, 67) have no canonical name.
+/// The names mirror the port's entity types - the Java reference's
+/// `objects_manager_mapping.json`, now removed, was the original id-to-name
+/// source. The table is ordered by ascending id; a couple of ids share a name
+/// (e.g. the two text-tile ids 20/21).
+pub const OBJECT_TYPE_NAMES: &[(u8, &str)] = &[
+    (0, "Player"),
+    (1, "Apple"),
+    (2, "Knife"),
+    (12, "Checkpoint"),
+    (14, "RedKey"),
+    (15, "TouchTrigger"),
+    (20, "TextTile"),
+    (21, "TextTile"),
+    (22, "Frog"),
+    (24, "LockedDoor"),
+    (25, "CollapsingCeiling"),
+    (26, "ToggleWall"),
+    (27, "Point"),
+    (28, "Bonus"),
+    (29, "GiantAnt"),
+    (30, "Firebird"),
+    (31, "Flame"),
+    (32, "Switch"),
+    (33, "RockKey"),
+    (35, "RollingRock"),
+    (36, "Bullet"),
+    (37, "HitFire"),
+    (38, "FallingSpike"),
+    (39, "Snake"),
+    (42, "HugeLetterTile"),
+    (45, "Hive"),
+    (46, "Bees"),
+    (47, "Crab"),
+    (48, "Gator"),
+    (50, "Blade"),
+    (51, "Skull"),
+    (53, "Ghost"),
+    (56, "FirebirdPlayer"),
+    (58, "Bubbles"),
+    (61, "Lift"),
+    (62, "FirebirdWeapon"),
+    (64, "Eyes"),
+    (65, "Spark"),
+];
+
+/// Returns the canonical name for `type_id`, or `None` for an unnamed
+/// (unimplemented) type. Ids that share a name each resolve to that name.
+pub fn object_type_name(type_id: u8) -> Option<&'static str> {
+    OBJECT_TYPE_NAMES
+        .iter()
+        .find_map(|&(id, name)| (id == type_id).then_some(name))
+}
+
+/// Returns the type id for `name` (ASCII case-insensitive), or `None` when no
+/// implemented type carries that name. When a name maps to several ids the
+/// lowest (canonical) id is returned.
+pub fn object_type_id(name: &str) -> Option<u8> {
+    OBJECT_TYPE_NAMES
+        .iter()
+        .filter(|&&(_, candidate)| candidate.eq_ignore_ascii_case(name))
+        .map(|&(id, _)| id)
+        .min()
+}
+
 #[cfg(test)]
 mod tests {
     use super::make_object_entity;
@@ -583,5 +653,52 @@ mod tests {
             Some(unknown.clone()),
             "stub must persist an unrecognized object verbatim"
         );
+    }
+
+    /// Unit under test: [`super::object_type_name`] over the registry.
+    ///
+    /// Invariants: implemented ids resolve to their canonical name, ids sharing
+    /// a name both resolve to it, and unnamed / stubbed ids return `None`.
+    #[test]
+    fn object_type_name_resolves_implemented_ids() {
+        use super::object_type_name;
+        assert_eq!(object_type_name(0), Some("Player"));
+        assert_eq!(object_type_name(48), Some("Gator"));
+        assert_eq!(object_type_name(20), Some("TextTile"));
+        assert_eq!(object_type_name(21), Some("TextTile"));
+        assert_eq!(object_type_name(40), None); // explicitly stubbed
+        assert_eq!(object_type_name(99), None); // unimplemented
+    }
+
+    /// Unit under test: [`super::object_type_id`] (case-insensitive lookup).
+    ///
+    /// Invariants: names resolve regardless of case, a shared name resolves to
+    /// the lowest (canonical) id, and unknown names return `None`.
+    #[test]
+    fn object_type_id_is_case_insensitive_and_canonical() {
+        use super::object_type_id;
+        assert_eq!(object_type_id("apple"), Some(1));
+        assert_eq!(object_type_id("GATOR"), Some(48));
+        assert_eq!(object_type_id("TextTile"), Some(20)); // lowest of 20/21
+        assert_eq!(object_type_id("nope"), None);
+    }
+
+    /// Unit under test: registry self-consistency.
+    ///
+    /// Invariants: every `(id, name)` entry round-trips through
+    /// [`super::object_type_name`], and the table's ids are strictly ascending
+    /// (so unique), guarding future edits against typos and duplicates.
+    #[test]
+    fn object_type_names_are_self_consistent() {
+        use super::{OBJECT_TYPE_NAMES, object_type_name};
+        for &(id, name) in OBJECT_TYPE_NAMES {
+            assert_eq!(object_type_name(id), Some(name), "id {id} must name {name}");
+        }
+        for window in OBJECT_TYPE_NAMES.windows(2) {
+            assert!(
+                window[0].0 < window[1].0,
+                "object type ids must be strictly ascending (unique)"
+            );
+        }
     }
 }
