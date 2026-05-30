@@ -4,11 +4,24 @@ use crate::ActiveInput;
 use crate::render::RenderCommand;
 use crate::runtime::RuntimeState;
 
-/// A sound event emitted by a screen handler during one tick.
+/// A semantic sound cue emitted by gameplay during one tick.
 ///
-/// Extend as the audio epic defines specific sound identifiers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SoundEvent {}
+/// This is the rodio-free boundary of the audio runtime (epic #8): gameplay and
+/// the orchestrator only produce `SoundEvent`s; the audio backend maps each to a
+/// VCL sound index and plays it. Variants are added as their emit points are
+/// wired, so the enum only ever names sounds the game can actually trigger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SoundEvent {
+    /// The player started a jump.
+    PlayerJump,
+    /// The player threw a knife / fired a weapon.
+    PlayerFire,
+    /// The player took a hit but survived.
+    PlayerHurt,
+    /// The player lost their last health point and died.
+    PlayerDie,
+}
 
 /// Result produced by one call to [`ScreenHandler::tick`].
 pub struct TickResult {

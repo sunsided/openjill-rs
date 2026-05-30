@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use crate::runtime::InventoryObject;
+use crate::screen::SoundEvent;
 
 /// Message types that cross subsystem boundaries.
 ///
@@ -44,6 +45,9 @@ pub enum MessageType {
     MessageBox,
     /// Change the active player character.
     ChangePlayerCharacter,
+    /// Request to play a [`SoundEvent`]; collected by the active screen into its
+    /// `TickResult::sound_events` and forwarded to the audio backend.
+    PlaySound,
 }
 
 /// Payload for a `CheckpointChangeLevel` or `CheckpointChangeLevelPrevious` message.
@@ -139,6 +143,8 @@ pub enum MessagePayload {
         /// Grid Y index of the cell to clear.
         cell_y: i32,
     },
+    /// A sound cue to play, carried by a [`MessageType::PlaySound`] message.
+    Sound(SoundEvent),
     /// No payload; used by stateless messages such as `DieRestartLevel`.
     None,
 }

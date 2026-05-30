@@ -17,7 +17,7 @@
 use openjill_core::layout::{BLOCK_SIZE_I, ZAPHOLD_AFTER_TOUCH};
 use openjill_core::{
     ActiveInput, BackgroundGrid, DeathKind, InputCommand, InventoryObject, MessageDispatcher,
-    MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, RuntimeState,
+    MessagePayload, MessageType, ObjectEntity, Rect, RenderCommand, RuntimeState, SoundEvent,
 };
 
 /// Ticks between successive player shots.
@@ -454,6 +454,10 @@ impl ObjectEntity for PlayerEntity {
                 )),
             );
             self.fire_cooldown = FIRE_COOLDOWN_TICKS;
+            dispatcher.send(
+                MessageType::PlaySound,
+                MessagePayload::Sound(SoundEvent::PlayerFire),
+            );
         }
 
         // Promote a pending die request before any state-specific handlers run
@@ -463,6 +467,7 @@ impl ObjectEntity for PlayerEntity {
             self.enter_die_state(dispatcher);
         }
 
+        let was_jumping = matches!(self.state, PlayerStateKind::Jumping);
         match self.state {
             PlayerStateKind::Stand | PlayerStateKind::Still => {
                 self.tick_stand(input, backgrounds);
@@ -479,6 +484,15 @@ impl ObjectEntity for PlayerEntity {
             PlayerStateKind::Die => {
                 self.tick_die(dispatcher);
             }
+        }
+
+        // A fresh transition into Jumping (a ground jump from Stand/Still or a
+        // jump off a vine) plays the jump cue exactly once.
+        if !was_jumping && matches!(self.state, PlayerStateKind::Jumping) {
+            dispatcher.send(
+                MessageType::PlaySound,
+                MessagePayload::Sound(SoundEvent::PlayerJump),
+            );
         }
     }
 
@@ -1703,6 +1717,63 @@ mod tests {
         assert!(
             spawn_xd > 0,
             "a right-facing throw launches the knife rightward"
+        );
+    }
+
+    /// Collects the `SoundEvent`s dispatched via `PlaySound` into a log.
+    fn recorded_sounds(log: &Arc<Mutex<Vec<(MessageType, MessagePayload)>>>) -> Vec<SoundEvent> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(t, p)| match (t, p) {
+                (MessageType::PlaySound, MessagePayload::Sound(event)) => Some(*event),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Unit under test: starting a jump dispatches a `PlaySound(PlayerJump)`.
+    #[test]
+    fn jump_emits_player_jump_sound() {
+        let mut grid = synthetic_grid(8, 4, CellKind::Air);
+        for cx in 0..8 {
+            set_cell(&mut grid, cx, 1, CellKind::Solid);
+        }
+        let mut player = make_player(16, 0);
+        let runtime = RuntimeState::new();
+        let log: Arc<Mutex<Vec<(MessageType, MessagePayload)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut dispatcher = MessageDispatcher::new();
+        dispatcher.subscribe(MessageType::PlaySound, Box::new(Recorder(log.clone())));
+
+        let mut input = ActiveInput::new();
+        input.insert(InputCommand::Jump);
+        player.update(&input, &runtime, &grid, &mut dispatcher);
+
+        assert!(
+            recorded_sounds(&log).contains(&SoundEvent::PlayerJump),
+            "starting a jump must emit PlayerJump"
+        );
+    }
+
+    /// Unit under test: throwing a knife dispatches a `PlaySound(PlayerFire)`.
+    #[test]
+    fn fire_emits_player_fire_sound() {
+        let mut player = make_player(64, 32);
+        let mut runtime = RuntimeState::new();
+        runtime.inventory.push(InventoryObject::Knife);
+
+        let grid = synthetic_grid(8, 4, CellKind::Air);
+        let log: Arc<Mutex<Vec<(MessageType, MessagePayload)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut dispatcher = MessageDispatcher::new();
+        dispatcher.subscribe(MessageType::PlaySound, Box::new(Recorder(log.clone())));
+
+        let mut input = ActiveInput::new();
+        input.insert(InputCommand::ThrowItem);
+        player.update(&input, &runtime, &grid, &mut dispatcher);
+
+        assert!(
+            recorded_sounds(&log).contains(&SoundEvent::PlayerFire),
+            "throwing a knife must emit PlayerFire"
         );
     }
 

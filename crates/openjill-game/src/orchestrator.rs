@@ -3,7 +3,7 @@
 
 use openjill_core::{
     ActiveInput, InventoryObject, MAP_LEVEL, MessageDispatcher, RenderCommand, RuntimeState,
-    ScreenHandler, ScreenTransition,
+    ScreenHandler, ScreenTransition, SoundEvent,
 };
 use openjill_data::cfg::{CfgFile, CfgHighScore, CfgSaveSlot};
 use openjill_data::episode::Episode;
@@ -173,6 +173,11 @@ pub struct GameOrchestrator {
     level_entry_state: Option<RuntimeState>,
     /// Set to `true` when the active handler requests [`ScreenTransition::Quit`].
     quitting: bool,
+    /// Sound cues emitted by the active handler on the most recent tick, drained
+    /// by the host via [`GameOrchestrator::take_sound_events`] and forwarded to
+    /// the audio backend. The gameplay/orchestrator layer never links `rodio`;
+    /// this `Vec<SoundEvent>` is the rodio-free boundary.
+    sound_events: Vec<SoundEvent>,
     /// Set after a transition installs a menu / passive screen so keys still
     /// held from the previous screen are ignored until released.  Prevents a
     /// confirm key (e.g. the in-level "really quit?" YES press) from bleeding
@@ -216,6 +221,7 @@ impl GameOrchestrator {
             last_commands: Vec::new(),
             level_entry_state: None,
             quitting: false,
+            sound_events: Vec::new(),
             suppress_input_until_release: false,
             saves,
         })
@@ -264,6 +270,9 @@ impl GameOrchestrator {
         };
 
         let result = self.handler.tick(effective_input, &mut self.state);
+        // Capture the sounds this handler emitted before any transition swap, so
+        // the host can forward them to the audio backend after the tick.
+        self.sound_events = result.sound_events;
         if let Some(transition) = result.transition {
             // Only arm the guard when keys are actually held: a screen that
             // auto-advances on a timer (e.g. the intro -> start menu) transitions
@@ -282,6 +291,17 @@ impl GameOrchestrator {
         commands.extend(result.commands);
         self.last_commands = commands.clone();
         commands
+    }
+
+    /// Removes and returns the sound cues emitted on the most recent [`tick`],
+    /// leaving the buffer empty.
+    ///
+    /// The host (the winit `GameApp`) calls this after each tick and forwards
+    /// the cues to the audio backend, keeping the gameplay layer `rodio`-free.
+    ///
+    /// [`tick`]: GameOrchestrator::tick
+    pub fn take_sound_events(&mut self) -> Vec<SoundEvent> {
+        std::mem::take(&mut self.sound_events)
     }
 
     /// Sets the printable characters typed since the previous tick, for text
@@ -753,7 +773,7 @@ mod tests {
     use openjill_core::runtime::RuntimeState;
     use openjill_core::{
         ActiveInput, InputCommand, InventoryObject, RenderCommand, ScreenHandler, ScreenTransition,
-        TickResult,
+        SoundEvent, TickResult,
     };
     use openjill_data::DataDirectory;
     use openjill_data::cfg::CfgFile;
@@ -825,6 +845,7 @@ mod tests {
             last_commands: Vec::new(),
             level_entry_state: None,
             quitting: false,
+            sound_events: Vec::new(),
             suppress_input_until_release: false,
             saves: test_save_store(),
         }
@@ -902,6 +923,44 @@ mod tests {
             self.seen_empty.lock().unwrap().push(input.is_empty());
             TickResult::empty()
         }
+    }
+
+    /// Synthetic handler that emits a fixed [`SoundEvent`] every tick.
+    struct SoundEmittingHandler {
+        /// Sound emitted in each tick's `TickResult`.
+        event: SoundEvent,
+    }
+
+    impl ScreenHandler for SoundEmittingHandler {
+        fn tick(&mut self, _input: &ActiveInput, _state: &mut RuntimeState) -> TickResult {
+            TickResult {
+                commands: Vec::new(),
+                transition: None,
+                sound_events: vec![self.event],
+            }
+        }
+    }
+
+    /// Unit under test: the orchestrator surfaces the active handler's sound
+    /// events via `take_sound_events`, which drains the buffer.
+    #[test]
+    fn tick_surfaces_handler_sound_events_via_take() {
+        let handler = Box::new(SoundEmittingHandler {
+            event: SoundEvent::PlayerJump,
+        });
+        let mut orchestrator = orchestrator_with_handler(handler);
+
+        orchestrator.tick(&ActiveInput::new());
+
+        assert_eq!(
+            orchestrator.take_sound_events(),
+            vec![SoundEvent::PlayerJump],
+            "tick must surface the handler's emitted sound events"
+        );
+        assert!(
+            orchestrator.take_sound_events().is_empty(),
+            "take_sound_events must drain the buffer"
+        );
     }
 
     /// Unit under test: after the suppression guard is armed, the orchestrator
