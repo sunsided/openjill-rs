@@ -117,10 +117,14 @@ fn decode(sound: &VclSound) -> DecodedSound {
 
 /// Maps a [`SoundEvent`] to its VCL sound slot index.
 ///
-/// PROVISIONAL: the slot for each cue is a best guess pending the by-ear
-/// calibration child issue - the original game-event mapping is not recorded by
-/// either port. Returns `None` for events with no assigned sound (including
-/// future `#[non_exhaustive]` variants).
+/// The four player cues are confirmed by ear against `JILL1.VCL`. Future cues
+/// (pickups, enemies, doors, menu) need a slot each, but the original
+/// event->sound mapping is not recorded by either port and could not be
+/// identified by ear - it must be reverse-engineered from `JILL.EXE`. See the
+/// "Sound index -> event mapping" section of `docs/port/08-audio-runtime.md`.
+///
+/// Returns `None` for events with no assigned sound (including future
+/// `#[non_exhaustive]` variants).
 fn vcl_index(event: SoundEvent) -> Option<usize> {
     let index = match event {
         SoundEvent::PlayerJump => 1,

@@ -202,11 +202,56 @@ PCM); unsupported data documented with next-steps (✓ music + unmapped indices)
 5. **Index -> event mapping calibration** - extract + listen to the 23 sounds,
    assign each `SoundEvent`, document the table + confidence, log the unmapped.
 
+## Sound index -> event mapping (open follow-up)
+
+`openjill-audio::vcl_index` maps each `SoundEvent` to a VCL sound slot. The
+**player** cues are confirmed by ear against `JILL1.VCL`:
+
+| `SoundEvent` | VCL slot | Status    |
+|--------------|----------|-----------|
+| `PlayerJump` | 1        | confirmed |
+| `PlayerFire` | 2        | confirmed |
+| `PlayerHurt` | 3        | confirmed |
+| `PlayerDie`  | 4        | confirmed |
+
+The remaining **19** non-empty slots are unassigned (sample lengths in frames,
+all 6000 Hz): `05`=4226 `06`=8160 `08`=1918 `10`=3013 `11`=3198 `12`=6253
+`15`=638 `16`=2558 `18`=1918 `19`=3838 `23`=2558 `24`=2558 `25`=3198 `28`=1918
+`33`=6398 `35`=2170 `39`=3838 `41`=7551 `48`=11518 (plus `01`-`04`, taken).
+
+Future cues (`ItemPickup`, `ExtraLife`, `EnemyHit`, `DoorOpen`, `SwitchToggle`,
+`LevelComplete`, `MenuMove`, `MenuSelect`) need a slot each. **The mapping could
+not be determined by ear**, and is **not** present in the ported data: the
+OpenJill config (`object_conf.json`) and Java reference carry no sound fields,
+and the ModdingWiki documents only the VCL *format*. It exists only in the
+original `JILL.EXE` (the code that calls play-sound with an index per event).
+
+### How to recover it (one-time RE task)
+
+The shipped `JILL.EXE` is MZ / Turbo C 2.0 with no packer signature; `dosbox-x`
+(with its debugger) is available. **Never commit `JILL.EXE`, any disassembly, or
+extracted audio - keep all RE artifacts in gitignored dirs.** Two routes:
+
+1. **Dynamic (most reliable):** in the `dosbox-x` debugger, break on the
+   sound-playback routine (it reads the VCL sound table and drives Sound
+   Blaster DMA), trigger each event in-game, and read the index argument.
+2. **Static:** disassemble `JILL.EXE`, find the play-sound call sites and their
+   constant indices, and look for an object-type/event -> sound-index table
+   (Epic engines usually have one).
+
+Audition the candidates with `task data:vcl:sounds` (writes
+`extract/sounds/sound-NN.wav`). Once known, update `vcl_index` (and add the
+`SoundEvent` variants + emit points) - the mapping is a single constant table,
+cheap to extend.
+
+> `AUDIO.EPC` was ruled out: it is waveform data (built by `SMAKE.EXE`), not an
+> event map.
+
 ## Risks and handoff notes
 
-- **Index -> event mapping is by-ear** (no EXE reverse-engineering). Ship a
-  documented table with per-entry confidence; wrong guesses are cheap to correct
-  (one constant table in `openjill-audio`).
+- **Index -> event mapping needs EXE RE**, not just listening (see the section
+  above). The 4 player cues are confirmed; the rest await the one-time RE task.
+  The mapping is one constant table in `openjill-audio`, cheap to correct.
 - **Headless / CI device init must not panic.** `AudioBackend::new` degrades to
   a logged no-op. Gameplay tests never construct it.
 - **`rodio`/`cpal` platform variance** (Linux ALSA vs Pulse). Pin a known-good
