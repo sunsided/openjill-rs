@@ -591,8 +591,9 @@ pub struct LevelScreen {
     /// Whether the Escape/Pause key was held last tick (rising-edge detect, so
     /// one press opens the exit-confirmation menu exactly once).
     pause_key_was_down: bool,
-    /// Active in-level save / load slot-picker overlay, or `None` when no menu
-    /// is open.  While `Some`, the world is frozen.
+    /// Active in-level control-panel overlay - the save / load slot picker or
+    /// the Escape "really quit?" confirmation - or `None` when no menu is open.
+    /// While `Some`, the world is frozen.
     control_menu: Option<ControlMenu>,
     /// Whether any menu-navigation key was held last tick, debouncing the
     /// slot-picker so one key press moves / confirms exactly once.
