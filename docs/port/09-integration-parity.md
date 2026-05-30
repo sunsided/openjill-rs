@@ -51,11 +51,12 @@ in-level "really quit?" / dismisses menus; `Q` quits; `N` toggles sound;
 
 ### 2. Full-game smoke test (gated)
 
-Add a real-data integration test (self-skips without data, like the others) that
-constructs the orchestrator from `data/original/JILL1`, then drives a few hundred
-ticks across a representative path - start menu -> PLAY -> world map -> enter a
-level - feeding scripted input, asserting it never panics and keeps producing
-non-empty frames. This is a **smoke test, not a scripted full playthrough**: a
+Add a real-data integration test that resolves the data dir the same way the
+existing real-data tests do (`OPENJILL_DATA_DIR` override, else the default
+`data/original/JILL1`) and self-skips when neither is present. It constructs the
+orchestrator from that dir, then drives a few hundred ticks across a
+representative path - start menu -> PLAY -> world map -> enter a level - feeding
+scripted input, asserting it never panics and keeps producing non-empty frames. This is a **smoke test, not a scripted full playthrough**: a
 deterministic clear of every level needs authored input sequences out of scope
 here; the smoke test guards integration (asset load + screen transitions + tick
 loop) end to end.
@@ -78,10 +79,11 @@ the jar); note it as optional manual validation.
 
 ### 5. `data verify` scope
 
-Keep verifying the fixed core-file set; level JNs (`1.JN1` ...) are discovered at
-runtime and intentionally not in the required list. Document this in the run
-guide so a user is not surprised that `verify` passing does not enumerate levels.
-(If desired later, a `--levels` flag could list discovered JNs - out of scope.)
+`data verify` already discovers and **lists** the additional `*.JN1` level files
+(beyond intro/map) in its report, but keeps them out of the fixed
+`required_files` set, so they do not affect the pass/fail `ok()` result. Keep
+this behavior; document in the run guide that the level JNs appear as
+informational "discovered" entries while only the core files gate the result.
 
 ### 6. Acceptance evidence
 
