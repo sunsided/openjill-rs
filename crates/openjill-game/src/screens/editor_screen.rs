@@ -5,18 +5,21 @@
 //! cursor, and `Escape` returns to the start menu. The board starts blank
 //! ([`JnFile::blank`]).
 //!
-//! Controls (mapped onto the existing [`InputCommand`] vocabulary):
+//! Controls (movement/paint via [`InputCommand`]; letter commands via the
+//! per-tick typed-character channel [`RuntimeState::text_input`]):
 //!
 //! | Input | Action |
 //! |-------|--------|
 //! | Arrow keys | Move the tile cursor (one tile per press) |
 //! | Tab / Backspace | Next / previous palette tile |
 //! | Space / Shift | Paint the selected tile at the cursor |
+//! | `K` | Pick the tile under the cursor as the selected tile |
+//! | `Z` / `N` | Clear to a new blank board |
 //! | Escape | Return to the start menu |
 //!
-//! The original DOS editor's wider key map (`K` pick, `L`/`S` load/save, `O`
-//! object mode, ...) needs raw-key input that [`ScreenHandler::tick`] does not
-//! yet carry; those land in later epic-#210 sub-issues.
+//! The remaining DOS editor commands (`L`/`S` load/save, `H` flood-fill, `O`
+//! object mode, `Enter` load-by-name, Tab continuous-draw, Shift half-screen
+//! jumps) land in later epic-#210 sub-issues.
 
 use crate::screens::intro_background::render_intro_background;
 use openjill_core::layout::{BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
@@ -123,6 +126,43 @@ impl EditorScreen {
             .set_background_code(self.cursor_x, self.cursor_y, code);
     }
 
+    /// Picks the tile under the cursor as the selected palette tile (the `K`
+    /// command): looks up the DMA entry whose map code matches the cell. A no-op
+    /// when the cell's code has no DMA entry (e.g. a blank `0` cell).
+    fn pick_tile(&mut self) {
+        let code = self
+            .board
+            .background()
+            .map_code(self.cursor_x, self.cursor_y)
+            .unwrap_or(0);
+        if let Some(entry) = self.dma.get_by_map_code(code) {
+            self.selected_entry = Some(entry.index());
+        }
+    }
+
+    /// Replaces the board with a fresh blank one and resets the cursor/camera
+    /// (the `Z` clear / `N` new-board commands).
+    fn clear_board(&mut self) {
+        self.board = JnFile::blank();
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.camera_x = 0;
+        self.camera_y = 0;
+    }
+
+    /// Applies the editor's letter-key commands from this tick's typed
+    /// characters ([`RuntimeState::text_input`]): `K` picks the tile under the
+    /// cursor, `Z`/`N` clear to a new blank board. Case-insensitive.
+    fn handle_text_commands(&mut self, typed: &[char]) {
+        for ch in typed {
+            match ch.to_ascii_lowercase() {
+                'k' => self.pick_tile(),
+                'z' | 'n' => self.clear_board(),
+                _ => {}
+            }
+        }
+    }
+
     /// Processes the rising-edge input set, returning a transition when the
     /// player exits.
     fn process_input(&mut self, input: &ActiveInput) -> Option<ScreenTransition> {
@@ -218,8 +258,13 @@ impl EditorScreen {
 impl ScreenHandler for EditorScreen {
     /// Advances the editor one tick: applies input, then renders the board and
     /// cursor.
-    fn tick(&mut self, input: &ActiveInput, _state: &mut RuntimeState) -> TickResult {
+    fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult {
         let transition = self.process_input(input);
+        // Letter-key commands arrive as typed characters on the per-tick
+        // text-input channel; skip them on the tick we leave the editor.
+        if transition.is_none() {
+            self.handle_text_commands(&state.text_input);
+        }
         let commands = self.render();
         TickResult {
             commands,
@@ -258,9 +303,31 @@ mod tests {
         DmaFile::from_bytes(bytes).expect("single-entry DMA should parse")
     }
 
+    /// A DMA file with one entry per map code in `codes` (index = position).
+    fn dma_with_codes(codes: &[u16]) -> DmaFile {
+        let mut bytes = Vec::new();
+        for (i, &code) in codes.iter().enumerate() {
+            bytes.extend_from_slice(&code.to_le_bytes()); // map_code
+            bytes.push(i as u8); // tile
+            bytes.push(7); // tileset (+flags)
+            bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+            bytes.push(1); // name_len
+            bytes.push(b'T'); // name
+        }
+        DmaFile::from_bytes(bytes).expect("multi-entry DMA should parse")
+    }
+
     /// Empty DMA palette.
     fn empty_dma() -> DmaFile {
         DmaFile::from_bytes(vec![]).expect("empty DMA should parse")
+    }
+
+    /// Feeds one typed character to the editor for a single tick (the editor's
+    /// letter-key command channel), with no held `InputCommand`s.
+    fn type_char(screen: &mut EditorScreen, ch: char) {
+        let mut state = RuntimeState::new();
+        state.text_input = vec![ch];
+        screen.tick(&ActiveInput::new(), &mut state);
     }
 
     /// Presses `cmd` for one tick (rising edge), then releases it, returning the
@@ -335,5 +402,37 @@ mod tests {
         assert_eq!(empty.selected_entry, None);
         press(&mut empty, InputCommand::NextInventory);
         assert_eq!(empty.selected_entry, None);
+    }
+
+    /// Unit under test: the `K` command picks the tile under the cursor.
+    ///
+    /// Paints entry 0 at (0,0) and entry 1 at (1,0), leaving entry 1 selected;
+    /// moving back over (0,0) and typing `K` re-selects entry 0.
+    #[test]
+    fn k_picks_the_tile_under_the_cursor() {
+        let mut screen = EditorScreen::new(JnFile::blank(), dma_with_codes(&[0x0A, 0x0B]));
+        press(&mut screen, InputCommand::Jump); // paint entry 0 (0x0A) at (0,0)
+        press(&mut screen, InputCommand::MoveRight);
+        press(&mut screen, InputCommand::NextInventory); // select entry 1 (0x0B)
+        press(&mut screen, InputCommand::Jump); // paint entry 1 at (1,0)
+        assert_eq!(screen.selected_entry, Some(1));
+
+        press(&mut screen, InputCommand::MoveLeft); // back to (0,0)
+        type_char(&mut screen, 'k');
+        assert_eq!(screen.selected_entry, Some(0));
+    }
+
+    /// Unit under test: the `N`/`Z` command clears to a new blank board and
+    /// resets the cursor.
+    #[test]
+    fn n_clears_the_board_and_resets_cursor() {
+        let mut screen = EditorScreen::new(JnFile::blank(), dma_with_codes(&[0x0A]));
+        press(&mut screen, InputCommand::MoveRight);
+        press(&mut screen, InputCommand::Jump); // paint at (1,0)
+        type_char(&mut screen, 'n');
+
+        assert_eq!((screen.cursor_x, screen.cursor_y), (0, 0));
+        let reparsed = JnFile::from_bytes(screen.board.to_bytes()).expect("board round-trips");
+        assert!(reparsed.background().map_codes().iter().all(|&c| c == 0));
     }
 }
