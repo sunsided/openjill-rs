@@ -23,6 +23,7 @@
 //! Tab continuous-draw, Shift half-screen jumps) land in later epic-#210
 //! sub-issues.
 
+use crate::saves::RuntimeDir;
 use crate::screens::intro_background::render_intro_background;
 use openjill_core::layout::{BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
 use openjill_core::runtime::RuntimeState;
@@ -31,7 +32,6 @@ use openjill_core::{
 };
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::{BACKGROUND_HEIGHT, BACKGROUND_MAP_CODE_MASK, BACKGROUND_WIDTH, JnFile};
-use std::path::PathBuf;
 
 /// Number of whole tile columns the game area shows.
 const VISIBLE_TILES_X: usize = GAME_AREA_W as usize / BLOCK_SIZE_I as usize;
@@ -90,18 +90,18 @@ pub struct EditorScreen {
     prev_input: ActiveInput,
     /// Current input mode (normal editing or a save/load name prompt).
     mode: EditorMode,
-    /// Writable directory boards are saved to / loaded from. Never the read-only
-    /// original data directory.
-    save_dir: PathBuf,
+    /// Writable directory boards are saved to / loaded from (atomic writes +
+    /// file-name validation). Never the read-only original data directory.
+    levels: RuntimeDir,
     /// Last save/load result, shown as a status line until the next prompt.
     status: Option<String>,
 }
 
 impl EditorScreen {
     /// Creates the editor over `board` with the `dma` palette, cursor at the
-    /// top-left and the first palette tile selected (if any). `save_dir` is the
+    /// top-left and the first palette tile selected (if any). `levels` is the
     /// writable directory boards are saved to / loaded from.
-    pub fn new(board: JnFile, dma: DmaFile, save_dir: PathBuf) -> Self {
+    pub fn new(board: JnFile, dma: DmaFile, levels: RuntimeDir) -> Self {
         let selected_entry = (!dma.entries().is_empty()).then_some(0);
         Self {
             board,
@@ -113,7 +113,7 @@ impl EditorScreen {
             selected_entry,
             prev_input: ActiveInput::new(),
             mode: EditorMode::Normal,
-            save_dir,
+            levels,
             status: None,
         }
     }
@@ -282,23 +282,24 @@ impl EditorScreen {
         }
     }
 
-    /// Writes the current board to `save_dir/name`, creating the directory if
-    /// needed.
+    /// Writes the current board to `name` in the levels directory (atomic write,
+    /// validated file name).
     fn save_to(&mut self, name: &str) {
-        let path = self.save_dir.join(name);
-        let result = std::fs::create_dir_all(&self.save_dir)
-            .and_then(|()| std::fs::write(&path, self.board.to_bytes()));
-        self.status = Some(match result {
-            Ok(()) => format!("Saved {name}"),
-            Err(error) => format!("Save failed: {error}"),
-        });
+        self.status = Some(
+            match self.levels.write_atomic(name, &self.board.to_bytes()) {
+                Ok(()) => format!("Saved {name}"),
+                Err(error) => format!("Save failed: {error}"),
+            },
+        );
     }
 
-    /// Loads a board from `save_dir/name`, replacing the current board and
-    /// resetting the cursor/camera. Leaves the board unchanged on failure.
+    /// Loads a board named `name` from the levels directory, replacing the
+    /// current board and resetting the cursor/camera. Leaves the board unchanged
+    /// on failure.
     fn load_from(&mut self, name: &str) {
-        let path = self.save_dir.join(name);
-        match std::fs::read(&path)
+        match self
+            .levels
+            .read(name)
             .map_err(|error| error.to_string())
             .and_then(|bytes| JnFile::from_bytes(bytes).map_err(|error| error.to_string()))
         {
@@ -314,15 +315,19 @@ impl EditorScreen {
         }
     }
 
-    /// Handles input while a file-name prompt is open: Escape cancels, Jump
-    /// (Space) confirms, Backspace deletes a character, and printable non-path
+    /// Handles input while a file-name prompt is open: Escape cancels, a typed
+    /// Space confirms, Backspace deletes a character, and printable non-path
     /// characters extend the name (path separators and over-length are ignored).
+    ///
+    /// Confirm is the typed Space character rather than [`InputCommand::Jump`]:
+    /// Jump is also produced by Shift, which the player holds to type uppercase
+    /// letters, so binding confirm to Jump would submit a partial name.
     fn update_prompt(&mut self, pressed: &ActiveInput, typed: &[char]) {
         if pressed.contains(&InputCommand::Pause) {
             self.mode = EditorMode::Normal;
             return;
         }
-        if pressed.contains(&InputCommand::Jump) {
+        if typed.contains(&' ') {
             self.confirm_prompt();
             return;
         }
@@ -557,7 +562,7 @@ mod tests {
         }
     }
 
-    /// Builds an editor over `dma` with a fresh, unique temporary save dir.
+    /// Builds an editor over `dma` with a fresh, unique temporary levels dir.
     fn editor(dma: DmaFile) -> EditorScreen {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -566,7 +571,16 @@ mod tests {
             "openjill-editor-test-{}-{unique}",
             std::process::id()
         ));
-        EditorScreen::new(JnFile::blank(), dma, dir)
+        EditorScreen::new(
+            JnFile::blank(),
+            dma,
+            crate::saves::RuntimeDir::with_root(dir),
+        )
+    }
+
+    /// Confirms an open prompt by typing the Space character.
+    fn confirm_prompt(screen: &mut EditorScreen) {
+        type_char(screen, ' ');
     }
 
     /// Presses `cmd` for one tick (rising edge), then releases it, returning the
@@ -791,7 +805,7 @@ mod tests {
 
         type_char(&mut screen, 's'); // open save prompt
         type_string(&mut screen, "lvl1");
-        press(&mut screen, InputCommand::Jump); // confirm save
+        confirm_prompt(&mut screen); // typed Space confirms save
 
         type_char(&mut screen, 'n'); // clear board
         let cleared = JnFile::from_bytes(screen.board.to_bytes()).expect("round-trips");
@@ -803,7 +817,7 @@ mod tests {
 
         type_char(&mut screen, 'l'); // open load prompt
         type_string(&mut screen, "lvl1");
-        press(&mut screen, InputCommand::Jump); // confirm load
+        confirm_prompt(&mut screen); // typed Space confirms load
 
         let loaded = JnFile::from_bytes(screen.board.to_bytes()).expect("round-trips");
         assert_eq!(
@@ -831,5 +845,26 @@ mod tests {
             press(&mut screen, InputCommand::Pause),
             Some(ScreenTransition::StartMenu)
         );
+    }
+
+    /// Unit under test: `Jump` (Space *or Shift*) does not confirm a prompt.
+    ///
+    /// Regression: confirm must be the typed Space character, not the `Jump`
+    /// command, so holding Shift to type an uppercase name letter cannot submit
+    /// a partial name. A `Jump` press leaves the prompt open; a typed Space then
+    /// confirms.
+    #[test]
+    fn jump_does_not_confirm_the_prompt() {
+        let mut screen = editor(dma_with_codes(&[0x0A]));
+        type_char(&mut screen, 's'); // open save prompt
+
+        press(&mut screen, InputCommand::Jump); // as Shift would, without a typed space
+        assert!(
+            matches!(screen.mode, super::EditorMode::Prompt { .. }),
+            "Jump/Shift must not confirm the prompt"
+        );
+
+        type_char(&mut screen, ' '); // a typed Space confirms
+        assert!(matches!(screen.mode, super::EditorMode::Normal));
     }
 }
