@@ -1991,11 +1991,10 @@ impl ScreenHandler for LevelScreen {
         // Drain the sounds emitted by entities this tick (PlaySound handlers run
         // synchronously during the update passes above), leaving the inbox empty
         // for the next tick.
-        let sound_events = self
-            .sound_inbox
-            .lock()
-            .map(|mut queue| std::mem::take(&mut *queue))
-            .unwrap_or_default();
+        let sound_events = {
+            let mut queue = self.sound_inbox.lock().expect("sound inbox mutex poisoned");
+            std::mem::take(&mut *queue)
+        };
 
         TickResult {
             commands,
