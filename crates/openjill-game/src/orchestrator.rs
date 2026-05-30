@@ -36,6 +36,31 @@ fn make_start_menu(cache: &AssetCache, cfg: &CfgFile) -> StartMenuScreen {
     )
 }
 
+/// Returns `true` when a transition installs a menu / passive screen that
+/// should ignore keys held over from the previous screen until they are
+/// released.
+///
+/// These screens act on a single key press (the start menu confirms a
+/// selection; the story / credits / ordering / noisemaker screens dismiss on
+/// any key), so a key still held from the screen that triggered the transition
+/// would otherwise fire an unintended action on the first tick.  Gameplay
+/// destinations ([`ScreenTransition::Level`] / [`ScreenTransition::Map`] /
+/// [`ScreenTransition::RestartLevel`]) are excluded so a movement key held
+/// through a level-change door keeps the player moving, matching the original.
+fn transition_resets_input(transition: &ScreenTransition) -> bool {
+    matches!(
+        transition,
+        ScreenTransition::StartMenu
+            | ScreenTransition::Story
+            | ScreenTransition::Credits
+            | ScreenTransition::OrderingInfo
+            | ScreenTransition::Noisemaker
+            // RecordHighScore resets to the start menu via reset_to_start_menu,
+            // so a held confirm key would bleed into it the same way.
+            | ScreenTransition::RecordHighScore { .. }
+    )
+}
+
 /// Loads the active episode's world-map JN file ([`Episode::map_jn`]) from
 /// `data_dir` and constructs a [`LevelScreen`] with [`MAP_LEVEL`] as the level
 /// number.
@@ -148,6 +173,14 @@ pub struct GameOrchestrator {
     level_entry_state: Option<RuntimeState>,
     /// Set to `true` when the active handler requests [`ScreenTransition::Quit`].
     quitting: bool,
+    /// Set after a transition installs a menu / passive screen so keys still
+    /// held from the previous screen are ignored until released.  Prevents a
+    /// confirm key (e.g. the in-level "really quit?" YES press) from bleeding
+    /// into the freshly built start menu and immediately re-triggering its
+    /// default action (auto-selecting PLAY -> world map).  Mirrors the Java
+    /// reference, which calls `keyboard.clear()` before switching screens from
+    /// a menu (`AbstractMenuJillLevel.validateMenu`).
+    suppress_input_until_release: bool,
     /// Writable runtime storage for save games, high scores, and the working
     /// config copy.  Seeded from the original (read-only) `JILL1.CFG` on first
     /// launch; the save/restore and high-score menu layer drives this.
@@ -183,6 +216,7 @@ impl GameOrchestrator {
             last_commands: Vec::new(),
             level_entry_state: None,
             quitting: false,
+            suppress_input_until_release: false,
             saves,
         })
     }
@@ -214,9 +248,32 @@ impl GameOrchestrator {
     /// status bar commands before the handler's commands. The returned command list begins with
     /// the status bar so renderers always draw it first without each screen needing to emit it.
     pub fn tick(&mut self, input: &ActiveInput) -> Vec<RenderCommand> {
-        let result = self.handler.tick(input, &mut self.state);
+        // After switching to a menu / passive screen, ignore keys held over
+        // from the previous screen until they are released, then resume normal
+        // input.  A held key is not a fresh press, so it must not drive the new
+        // screen's per-key rising-edge logic (which would, for example, treat a
+        // held confirm key as an immediate menu selection).
+        let empty_input = ActiveInput::new();
+        if self.suppress_input_until_release && input.is_empty() {
+            self.suppress_input_until_release = false;
+        }
+        let effective_input = if self.suppress_input_until_release {
+            &empty_input
+        } else {
+            input
+        };
+
+        let result = self.handler.tick(effective_input, &mut self.state);
         if let Some(transition) = result.transition {
+            // Only arm the guard when keys are actually held: a screen that
+            // auto-advances on a timer (e.g. the intro -> start menu) transitions
+            // with empty input, and arming then would swallow the user's first
+            // fresh key press on the new screen.
+            let guard_input = !input.is_empty() && transition_resets_input(&transition);
             self.apply_transition(transition);
+            if guard_input {
+                self.suppress_input_until_release = true;
+            }
         }
         // The typed-text channel is single-tick: clear it once the handler has
         // had its chance to consume it for text entry.
@@ -762,6 +819,7 @@ mod tests {
             last_commands: Vec::new(),
             level_entry_state: None,
             quitting: false,
+            suppress_input_until_release: false,
             saves: test_save_store(),
         }
     }
@@ -824,6 +882,124 @@ mod tests {
                 sound_events: Vec::new(),
             }
         }
+    }
+
+    /// Synthetic handler that records, per tick, whether the input it received
+    /// was empty.  Used to verify the post-transition input-suppression guard.
+    struct InputRecordingHandler {
+        /// One `is_empty()` flag appended per tick.
+        seen_empty: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+    }
+
+    impl ScreenHandler for InputRecordingHandler {
+        fn tick(&mut self, input: &ActiveInput, _state: &mut RuntimeState) -> TickResult {
+            self.seen_empty.lock().unwrap().push(input.is_empty());
+            TickResult::empty()
+        }
+    }
+
+    /// Unit under test: after the suppression guard is armed, the orchestrator
+    /// passes empty input to the handler while a key stays held, and resumes
+    /// passing real input only once the key is released. This is what stops a
+    /// confirm key held across a menu transition from immediately driving the
+    /// new screen.
+    #[test]
+    fn held_input_is_suppressed_until_release_after_a_menu_transition() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler = Box::new(InputRecordingHandler {
+            seen_empty: seen.clone(),
+        });
+        let mut orchestrator = orchestrator_with_handler(handler);
+        // Simulate the guard a menu transition would have armed.
+        orchestrator.suppress_input_until_release = true;
+
+        let mut held = ActiveInput::new();
+        held.insert(InputCommand::ThrowItem);
+
+        // Key still held: the handler must see empty input, guard stays armed.
+        orchestrator.tick(&held);
+        assert!(
+            orchestrator.suppress_input_until_release,
+            "guard stays armed while a key is held"
+        );
+
+        // Key released: the guard disarms this tick.
+        orchestrator.tick(&ActiveInput::new());
+        assert!(
+            !orchestrator.suppress_input_until_release,
+            "guard disarms once all keys are released"
+        );
+
+        // Fresh press after release flows through to the handler.
+        orchestrator.tick(&held);
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[true, true, false],
+            "handler sees empty while suppressed and on the release tick, then the real (non-empty) input"
+        );
+    }
+
+    /// Unit under test: a transition to the start menu arms the input
+    /// suppression guard, so a confirm key held from the previous screen
+    /// cannot bleed into the new menu.
+    #[test]
+    fn menu_transition_arms_input_suppression_guard() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        assert!(!orchestrator.suppress_input_until_release);
+
+        // A key held when the menu transition fires is what must be guarded.
+        let mut held = ActiveInput::new();
+        held.insert(InputCommand::ThrowItem);
+        orchestrator.tick(&held);
+
+        assert!(
+            orchestrator.suppress_input_until_release,
+            "transitioning to the start menu with a key held must arm the suppression guard"
+        );
+    }
+
+    /// Unit under test: a menu transition produced with no keys held does NOT
+    /// arm the guard, so a screen that auto-advances on its timer (e.g. the
+    /// intro) does not swallow the user's first fresh key press afterward.
+    #[test]
+    fn menu_transition_with_no_keys_held_does_not_arm_guard() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+
+        orchestrator.tick(&ActiveInput::new());
+
+        assert!(
+            !orchestrator.suppress_input_until_release,
+            "a transition with empty input has nothing to suppress"
+        );
+    }
+
+    /// Unit under test: a transition to a gameplay screen does NOT arm the
+    /// guard, so a movement key held through a level-change door keeps the
+    /// player moving (matching the original).
+    #[test]
+    fn gameplay_transition_does_not_arm_input_suppression_guard() {
+        let handler = Box::new(OneShotTransitionHandler::new(
+            ScreenTransition::RestartLevel,
+        ));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        // RestartLevel with no cached level bytes and lives intact falls back to
+        // the start menu, which would arm the guard; give it a life budget and
+        // cached bytes so it restarts a level instead.
+        orchestrator.state.lives = 3;
+        seed_level_cache(&mut orchestrator, "1.JN1", 1);
+
+        // A movement key is held across the transition; it must still carry.
+        let mut held = ActiveInput::new();
+        held.insert(InputCommand::MoveRight);
+        orchestrator.tick(&held);
+
+        assert!(
+            !orchestrator.suppress_input_until_release,
+            "a gameplay (RestartLevel) transition must not suppress held movement keys"
+        );
     }
 
     /// Unit under test: `GameOrchestrator::tick` and `apply_transition`.
