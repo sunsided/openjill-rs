@@ -13,15 +13,12 @@ use thiserror::Error;
 
 use crate::asset_cache::{AssetCache, AssetError};
 use crate::saves::{SaveStore, SaveStoreError};
+use crate::screens::high_score_entry::HighScoreEntryScreen;
 use crate::screens::intro_screens::{
     credits_screen, noisemaker_screen, ordering_info_screen, story_screen,
 };
 use crate::screens::level_screen::{EPISODE_1_SKY_COLOR, LevelScreen};
 use crate::screens::start_menu::StartMenuScreen;
-
-/// Placeholder high-score name recorded on game over until the arcade-style
-/// name entry lands (kept within the 10-byte CFG high-score name field).
-const GAME_OVER_NAME: &str = "JILL";
 
 /// Constructs a fresh [`StartMenuScreen`] from the given asset cache and the
 /// runtime config.
@@ -457,6 +454,14 @@ impl GameOrchestrator {
                     eprintln!("openjill-game: restore from slot {slot} failed: {err}");
                 }
             }
+            ScreenTransition::RecordHighScore { name, score } => {
+                // From the high-score name-entry screen: record the run's score
+                // then start a fresh game at the menu.
+                if let Err(err) = self.record_high_score(&name, score) {
+                    eprintln!("openjill-game: failed to record high score: {err}");
+                }
+                self.reset_to_start_menu();
+            }
             ScreenTransition::Map => {
                 self.dispatcher.clear();
                 let map_file = self.episode.map_jn();
@@ -585,18 +590,36 @@ impl GameOrchestrator {
         self.push_save_slot_names();
     }
 
-    /// Ends the current run: records the final score in the high-score table
-    /// (best-effort), resets the runtime state and cached level/map bytes for a
-    /// fresh game, and returns to the start menu.
+    /// Ends the current run.
     ///
-    /// The high score is recorded under a placeholder name for now; the
-    /// arcade-style name entry replaces it in a follow-up.
+    /// When the final score qualifies for the high-score table, installs the
+    /// [`HighScoreEntryScreen`] so the player can enter a name (recording and
+    /// the reset then happen on the resulting
+    /// [`ScreenTransition::RecordHighScore`]); otherwise resets straight to the
+    /// start menu.
     fn game_over(&mut self) {
-        if self.state.score > 0
-            && let Err(err) = self.record_high_score(GAME_OVER_NAME, self.state.score)
-        {
-            eprintln!("openjill-game: failed to record high score: {err}");
+        if self.score_qualifies(self.state.score) {
+            self.dispatcher.clear();
+            self.handler = Box::new(HighScoreEntryScreen::new(self.state.score));
+        } else {
+            self.reset_to_start_menu();
         }
+    }
+
+    /// Returns `true` when `score` would make the high-score table (it is
+    /// positive and beats at least one existing entry, including empty slots).
+    fn score_qualifies(&self, score: i32) -> bool {
+        score > 0
+            && self
+                .saves
+                .high_scores()
+                .iter()
+                .any(|entry| score > entry.score())
+    }
+
+    /// Resets the runtime state and cached level/map bytes for a fresh game and
+    /// returns to the start menu (built from the runtime config).
+    fn reset_to_start_menu(&mut self) {
         self.state = RuntimeState::new();
         self.map_jn_bytes = None;
         self.level_jn_bytes = None;
@@ -666,7 +689,8 @@ mod tests {
     use crate::saves::SaveStore;
     use openjill_core::runtime::RuntimeState;
     use openjill_core::{
-        ActiveInput, InventoryObject, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
+        ActiveInput, InputCommand, InventoryObject, RenderCommand, ScreenHandler, ScreenTransition,
+        TickResult,
     };
     use openjill_data::DataDirectory;
     use openjill_data::cfg::CfgFile;
@@ -1183,7 +1207,8 @@ mod tests {
         orchestrator.state.score = 500;
 
         // Three deaths exhaust the three starting lives (3 -> 2 -> 1 -> 0); the
-        // third is game over.
+        // third is game over, which (with a qualifying score) opens the
+        // high-score name-entry screen.
         for _ in 0..3 {
             orchestrator.dispatcher_mut().send(
                 openjill_core::MessageType::DieRestartLevel,
@@ -1191,6 +1216,19 @@ mod tests {
             );
             drive_message_box_countdown(&mut orchestrator);
         }
+
+        // The run is not recorded or reset yet - the entry screen is up.
+        assert_eq!(
+            orchestrator.state.score, 500,
+            "score held during name entry"
+        );
+
+        // Confirm the (default) name: release to reset the debounce, then press
+        // the throw key to record the high score and return to a fresh game.
+        orchestrator.tick(&ActiveInput::default());
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+        orchestrator.tick(&confirm);
 
         assert_eq!(
             orchestrator.high_scores()[0].score(),

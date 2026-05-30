@@ -1,5 +1,6 @@
 //! Screen handler implementations for each game screen.
 
+pub mod high_score_entry;
 pub mod intro_background;
 pub mod intro_screens;
 pub mod jn_object_layer;

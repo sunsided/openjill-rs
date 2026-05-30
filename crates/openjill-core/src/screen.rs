@@ -73,6 +73,17 @@ pub enum ScreenTransition {
         /// Save-slot index.
         slot: usize,
     },
+    /// Record a finished run's high score under `name`, then return to the
+    /// start menu.
+    ///
+    /// Emitted by the high-score name-entry screen on game over once the player
+    /// has entered a name.
+    RecordHighScore {
+        /// Player-entered high-score name.
+        name: String,
+        /// Final score to record.
+        score: i32,
+    },
     /// Exit the application.
     Quit,
 }
