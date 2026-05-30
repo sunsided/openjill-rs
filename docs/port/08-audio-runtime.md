@@ -84,11 +84,15 @@ impl VclFile {
 }
 ```
 
-Offsets are absolute; bounds-check each (`offset + length <= file_len`) and
-reject overlap with the table region gracefully (skip + log, do not panic). The
-existing text parsing and `from_bytes`/`text_entries` API are unchanged. VCL is
-read-only (no writer needed), so the unknown auxiliary block at offset 640 is
-ignored, not preserved.
+Offsets are absolute; bounds-check each (`offset + length <= file_len`). Keeping
+`openjill-data` **log-free** (see the "Parser error model" in
+`docs/port/02-original-data-parsers.md`): a structurally invalid VCL still fails
+`from_bytes` with a typed error, but an individual sound slot that is empty
+(`length == 0`) **or** out of range / overlapping the table degrades to `None`
+silently - the caller (the audio backend) decides whether to log a missing
+sound, not the parser. The existing text parsing and `from_bytes` /
+`text_entries` API are unchanged. VCL is read-only (no writer needed), so the
+unknown auxiliary block at offset 640 is ignored, not preserved.
 
 ### 3. `SoundEvent` API (`openjill-core`)
 
