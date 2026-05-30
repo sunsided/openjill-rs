@@ -11,14 +11,37 @@
 //! `data/original/JILL1` path is present, so CI without the copyrighted bytes
 //! still passes.
 
+use openjill_core::layout::{GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
 use openjill_core::{ActiveInput, InputCommand, RenderCommand, ScreenTransition};
 use openjill_data::DataDirectory;
 use openjill_data::episode;
 use openjill_game::orchestrator::GameOrchestrator;
+use openjill_game::screens::level_screen::EPISODE_1_SKY_COLOR;
 use std::path::{Path, PathBuf};
 
 /// Environment variable that lets a developer override the data directory.
 const DATA_DIR_ENV: &str = "OPENJILL_DATA_DIR";
+
+/// Returns `true` when `commands` contain the game-area sky `FillRect` that a
+/// `LevelScreen` (a level or the world map) emits at the top of every frame.
+///
+/// The orchestrator always prepends the static status bar, so a non-empty frame
+/// alone proves nothing; this game-area-sized sky fill is emitted only by an
+/// active level/map render, so it distinguishes a real level/map from a
+/// start-menu fallback after a failed transition.
+fn has_game_area_sky(commands: &[RenderCommand]) -> bool {
+    commands.iter().any(|command| {
+        matches!(
+            command,
+            RenderCommand::FillRect { x, y, width, height, color }
+                if *x == GAME_AREA_X
+                    && *y == GAME_AREA_Y
+                    && *width == GAME_AREA_W
+                    && *height == GAME_AREA_H
+                    && *color == EPISODE_1_SKY_COLOR
+        )
+    })
+}
 
 /// Resolves the data directory from `OPENJILL_DATA_DIR` or the workspace-relative
 /// fallback path. Returns `None` when neither location is available.
@@ -68,12 +91,15 @@ fn boots_and_runs_episode_1_from_original_data() {
         assert!(!commands.is_empty(), "start menu must render a frame");
     }
 
-    // Confirm the default selection ("play") to enter the world map.
+    // Confirm the default selection ("play") to enter the world map; the map
+    // must render its game area (proving PLAY -> Map, not a menu fallback).
     orchestrator.tick(&input(InputCommand::ThrowItem));
+    let mut saw_map_sky = false;
     for _ in 0..30 {
         let commands = orchestrator.tick(&ActiveInput::new());
-        assert!(!commands.is_empty(), "world map must render a frame");
+        saw_map_sky |= has_game_area_sky(&commands);
     }
+    assert!(saw_map_sky, "world map must render its game-area frame");
 
     // Enter level 1 directly (deterministic; map navigation is out of scope for
     // a smoke test) and run it, alternating walking right with idle ticks.
@@ -83,13 +109,10 @@ fn boots_and_runs_episode_1_from_original_data() {
     });
     let walk_right = input(InputCommand::MoveRight);
     let idle = ActiveInput::new();
-    let mut saw_blit = false;
+    let mut saw_level_sky = false;
     for tick in 0..300 {
         let commands = orchestrator.tick(if tick % 20 < 10 { &walk_right } else { &idle });
-        assert!(!commands.is_empty(), "level must render a frame");
-        saw_blit |= commands
-            .iter()
-            .any(|command| matches!(command, RenderCommand::Blit { .. }));
+        saw_level_sky |= has_game_area_sky(&commands);
         assert!(
             !orchestrator.is_quitting(),
             "the smoke run must not quit the game"
@@ -97,8 +120,8 @@ fn boots_and_runs_episode_1_from_original_data() {
     }
 
     assert!(
-        saw_blit,
-        "the level should render real content (at least one Blit)"
+        saw_level_sky,
+        "the level must render its game-area frame (not fall back to the menu)"
     );
 }
 
@@ -145,29 +168,31 @@ fn every_episode_1_level_loads_and_ticks() {
 
     // World map first, then every level.
     orchestrator.force_transition(ScreenTransition::Map);
+    let mut saw_map_sky = false;
     for _ in 0..30 {
         let commands = orchestrator.tick(&idle);
-        assert!(!commands.is_empty(), "world map must render a frame");
+        saw_map_sky |= has_game_area_sky(&commands);
         assert!(!orchestrator.is_quitting(), "map run must not quit");
     }
+    assert!(saw_map_sky, "world map must render its game-area frame");
 
     for &(file, number) in EPISODE_1_LEVELS {
         orchestrator.force_transition(ScreenTransition::Level {
             file: String::from(file),
             number,
         });
-        let mut saw_blit = false;
+        let mut saw_sky = false;
         for tick in 0..120 {
             let commands = orchestrator.tick(if tick % 20 < 10 { &walk_right } else { &idle });
-            assert!(!commands.is_empty(), "level {file} must render a frame");
-            saw_blit |= commands
-                .iter()
-                .any(|command| matches!(command, RenderCommand::Blit { .. }));
+            saw_sky |= has_game_area_sky(&commands);
             assert!(
                 !orchestrator.is_quitting(),
                 "level {file} smoke run must not quit"
             );
         }
-        assert!(saw_blit, "level {file} should render real content (a Blit)");
+        assert!(
+            saw_sky,
+            "level {file} must render its game-area frame (not fall back to the menu)"
+        );
     }
 }
