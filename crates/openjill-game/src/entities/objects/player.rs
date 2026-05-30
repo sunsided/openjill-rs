@@ -422,18 +422,20 @@ impl ObjectEntity for PlayerEntity {
             && has_knife
         {
             let dir = if self.info1 < 0 { -1 } else { 1 };
-            let bullet_x = if dir > 0 {
-                self.x + self.w
-            } else {
-                // Left-facing: place the knife's box just left of the player,
-                // sized to the real 10x10 knife sprite (not a full block).
-                self.x - crate::entities::objects::bullet::KNIFE_W
-            };
             dispatcher.send(
                 MessageType::CreateObject,
                 MessagePayload::SpawnAt {
                     object_type: 36,
-                    x: bullet_x,
+                    // Spawn at the player's own position, exactly like the Java
+                    // reference (`createWeapon` does `weapon.setX(player.getX())`).
+                    // The launch phase then slides the knife flush against any
+                    // wall via `moveObjectLeft/Right`.  Offsetting the spawn into
+                    // the *adjacent* cell (`self.x + self.w` / `self.x - KNIFE_W`)
+                    // placed the knife inside a solid block when thrown
+                    // point-blank at a wall, where it wedged and - once the
+                    // follow phase ended - was snapped to rest inside the wall,
+                    // unreachable and permanently lost.
+                    x: self.x,
                     // Java `KniveManager` applies `this.y += initY` (initY = 2)
                     // on launch so the knife leaves the hand slightly lowered.
                     y: self.y + KNIFE_SPAWN_Y_OFFSET,
@@ -1653,6 +1655,54 @@ mod tests {
         assert!(
             !player.can_fire(),
             "player in Climbing state must not be able to fire"
+        );
+    }
+
+    /// Regression: a thrown knife spawns at the player's own `x`, never
+    /// offset into the neighbouring cell. Throwing point-blank at a wall
+    /// previously placed the knife inside the solid block (`self.x + self.w`),
+    /// where it wedged and was eventually lost. Mirrors Java `createWeapon`
+    /// (`weapon.setX(player.getX())`).
+    #[test]
+    fn thrown_knife_spawns_at_player_position_not_inside_adjacent_cell() {
+        let mut player = make_player(64, 32); // info1 = 0 -> faces right
+        let mut runtime = RuntimeState::new();
+        runtime.inventory.push(InventoryObject::Knife);
+
+        let grid = synthetic_grid(8, 4, CellKind::Air);
+        let log: Arc<Mutex<Vec<(MessageType, MessagePayload)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut dispatcher = MessageDispatcher::new();
+        dispatcher.subscribe(MessageType::CreateObject, Box::new(Recorder(log.clone())));
+
+        let mut input = ActiveInput::new();
+        input.insert(InputCommand::ThrowItem);
+        player.update(&input, &runtime, &grid, &mut dispatcher);
+
+        let (spawn_x, spawn_xd) = log
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|(t, p)| match (t, p) {
+                (
+                    MessageType::CreateObject,
+                    MessagePayload::SpawnAt {
+                        object_type: 36,
+                        x,
+                        xd,
+                        ..
+                    },
+                ) => Some((*x, *xd)),
+                _ => None,
+            })
+            .expect("throwing a knife must dispatch a SpawnAt for object type 36");
+
+        assert_eq!(
+            spawn_x, 64,
+            "knife must spawn at the player's x, not offset into the adjacent (possibly solid) cell"
+        );
+        assert!(
+            spawn_xd > 0,
+            "a right-facing throw launches the knife rightward"
         );
     }
 
