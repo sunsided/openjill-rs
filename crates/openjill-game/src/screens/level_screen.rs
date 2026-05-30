@@ -2133,8 +2133,18 @@ impl MessageHandler for StatusInboxHandler {
 /// Takes ownership so the inner `ChangeLevel` payload's `String` moves
 /// directly into the resulting `ScreenTransition::Level` without an
 /// extra clone.
+///
+/// A `ChangeLevel` whose destination is [`MAP_LEVEL`] (the `!` map-return
+/// checkpoint that ends a level) becomes [`ScreenTransition::Map`], not a
+/// `Level` load of `MAP.JN1`: the map must be rebuilt from the orchestrator's
+/// cached live snapshot (preserving the player's map position and the consumed
+/// level entrances), whereas the `Level` arm would reload `MAP.JN1` fresh and
+/// respawn the player at the authored start.
 fn pending_into_transition(request: PendingRequest) -> ScreenTransition {
     match request {
+        PendingRequest::ChangeLevel(payload) if payload.level_number == MAP_LEVEL => {
+            ScreenTransition::Map
+        }
         PendingRequest::ChangeLevel(payload) => ScreenTransition::Level {
             file: payload.level_file,
             number: payload.level_number,

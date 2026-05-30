@@ -1697,4 +1697,63 @@ mod tests {
             "map player position must persist + reflect movement across a level round-trip"
         );
     }
+
+    /// Unit under test: completing a level via its `!` map-return checkpoint
+    /// (a `CheckpointChangeLevel` targeting `MAP_LEVEL`) returns to the map at
+    /// the saved position, not the authored start.
+    ///
+    /// Regression for "finishing a level respawns Jill at the map start": the
+    /// map-return checkpoint produces a `ChangeLevel(MAP_LEVEL)` request, which
+    /// used to route through the orchestrator's `Level` arm and reload
+    /// `MAP.JN1` fresh. It must instead rebuild the map from the cached
+    /// snapshot. Gated on real episode-1 data; self-skips otherwise.
+    #[test]
+    fn level_exit_to_map_preserves_player_position() {
+        use openjill_core::{ChangeLevelPayload, MessagePayload, MessageType};
+        let Some(dir) = real_data_dir() else {
+            eprintln!("skipping level-exit-to-map test; data directory missing");
+            return;
+        };
+        let mut orch = GameOrchestrator::new(DataDirectory::new(dir), &episode::JILL1)
+            .expect("orchestrator must boot from real episode-1 data");
+        let walk_right = {
+            let mut input = ActiveInput::new();
+            input.insert(InputCommand::MoveRight);
+            input
+        };
+
+        // Walk on the map, then enter level 1 (captures the live map snapshot).
+        orch.force_transition(ScreenTransition::Map);
+        orch.tick(&ActiveInput::new());
+        for _ in 0..30 {
+            orch.tick(&walk_right);
+        }
+        orch.force_transition(ScreenTransition::Level {
+            file: String::from("1.JN1"),
+            number: 1,
+        });
+        let captured = map_player_pos(orch.map_jn_bytes.as_deref())
+            .expect("the cached map snapshot must carry a player object");
+        assert_ne!(captured, (96, 40), "player must have moved before entering");
+
+        // Complete the level via the `!` map-return checkpoint, then tick
+        // through the message delay so the orchestrator rebuilds the map.
+        orch.dispatcher_mut().send(
+            MessageType::CheckpointChangeLevel,
+            MessagePayload::ChangeLevel(ChangeLevelPayload {
+                level_file: String::from("MAP.JN1"),
+                level_number: openjill_core::MAP_LEVEL,
+            }),
+        );
+        for _ in 0..120 {
+            orch.tick(&ActiveInput::new());
+        }
+
+        let on_map = map_player_pos(orch.handler.snapshot_jn_bytes(&orch.state).as_deref())
+            .expect("the rebuilt map must carry a player object");
+        assert_eq!(
+            on_map, captured,
+            "returning from a level must restore the saved map position, not reset to the start"
+        );
+    }
 }
