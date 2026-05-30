@@ -282,6 +282,16 @@ impl StartMenuScreen {
             return None;
         }
 
+        // Ctrl+P: play the intro level (the title-screen cheat). Checked before
+        // the confirm key because Ctrl also maps to ThrowItem (confirm), so this
+        // early return keeps the chord from also activating the selected item.
+        if input.contains(&InputCommand::PlayIntro) {
+            return Some(ScreenTransition::Level {
+                file: String::from("INTRO.JN1"),
+                number: 0,
+            });
+        }
+
         let layout = &*MENU_LAYOUT;
         if layout.items.is_empty() {
             return None;
@@ -920,6 +930,29 @@ mod tests {
         input.insert(InputCommand::ThrowItem);
         let result = screen.tick(&input, &mut RuntimeState::new());
         assert_eq!(result.transition, Some(ScreenTransition::Map));
+    }
+
+    /// Unit under test: the `Ctrl+P` intro-play cheat on the base menu.
+    ///
+    /// Preconditions: no overlay; `InputCommand::PlayIntro` (the chord) pressed
+    /// this tick, together with the `ThrowItem` that `Ctrl` also produces.
+    ///
+    /// Invariants asserted: it transitions straight to the playable intro level
+    /// (`INTRO.JN1`), taking priority over the `Ctrl`-as-`ThrowItem` confirm.
+    #[test]
+    fn ctrl_p_plays_the_intro_level() {
+        let mut screen = menu();
+        let mut input = ActiveInput::new();
+        input.insert(InputCommand::PlayIntro);
+        input.insert(InputCommand::ThrowItem);
+        let result = screen.tick(&input, &mut RuntimeState::new());
+        assert_eq!(
+            result.transition,
+            Some(ScreenTransition::Level {
+                file: String::from("INTRO.JN1"),
+                number: 0,
+            })
+        );
     }
 
     /// Unit under test: Escape (`InputCommand::Pause`) quits from the start menu.
