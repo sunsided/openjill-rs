@@ -189,7 +189,7 @@ impl GameApp {
     /// |-----|--------|
     /// | `L` | Force-transition into level 1 of the active episode |
     /// | `K` | Send `CheckpointChangeLevelPrevious` (return to map) |
-    /// | `R` | Send `DieRestartLevel` |
+    /// | `J` | Send `DieRestartLevel` |
     ///
     /// Level files are named `<level_number>.<jn_ext>` on disk where
     /// `jn_ext` is the active episode's JN extension (for example
