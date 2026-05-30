@@ -50,6 +50,14 @@ const LEVEL_MESSAGEBOX_JSON: &str =
 /// expressed through the canonical descriptor rather than a bare literal.
 const EPISODE_SAVE_PREFIX: &str = openjill_data::episode::JILL1.jn_ext;
 
+/// Save slot used by the control-panel SAVE / RESTORE keys until the slot
+/// picker menu lands.
+const QUICK_SAVE_SLOT: usize = 0;
+
+/// Default save name written for a quick-save until the menu's name entry
+/// lands (kept within the 12-byte CFG save-name field).
+const QUICK_SAVE_NAME: &str = "QUICKSAVE";
+
 /// Sky / game-area background color for episode 1 levels, as a VGA palette
 /// index.
 ///
@@ -539,6 +547,11 @@ pub struct LevelScreen {
     noise_key_was_down: bool,
     /// Whether the TURTLE toggle key was held last tick (rising-edge detect).
     turtle_key_was_down: bool,
+    /// Whether the SAVE key was held last tick (rising-edge detect, so one
+    /// press triggers exactly one save).
+    save_key_was_down: bool,
+    /// Whether the RESTORE key was held last tick (rising-edge detect).
+    restore_key_was_down: bool,
     /// Alternating execution gate for turtle (slow-motion) mode; the world
     /// updates only on ticks where this is `true` while turtle mode is on
     /// (Java `AbstractExecutingStdLevel.turtleSwitch`).
@@ -726,6 +739,8 @@ impl LevelScreen {
             status_text_ticks: 0,
             noise_key_was_down: false,
             turtle_key_was_down: false,
+            save_key_was_down: false,
+            restore_key_was_down: false,
             turtle_switch: false,
             trigger_inbox,
             player_move_inbox,
@@ -1568,6 +1583,27 @@ impl ScreenHandler for LevelScreen {
         }
         self.turtle_key_was_down = turtle_down;
 
+        // Control-panel SAVE / RESTORE: on the rising edge, request the
+        // orchestrator to snapshot or restore the quick-save slot. The slot
+        // picker and name entry land with the save/load menu; for now this is
+        // a single quick-save slot.
+        let mut save_load_request: Option<ScreenTransition> = None;
+        let save_down = input.contains(&InputCommand::Save);
+        if save_down && !self.save_key_was_down {
+            save_load_request = Some(ScreenTransition::PerformSave {
+                slot: QUICK_SAVE_SLOT,
+                name: QUICK_SAVE_NAME.to_string(),
+            });
+        }
+        self.save_key_was_down = save_down;
+        let restore_down = input.contains(&InputCommand::Restore);
+        if restore_down && !self.restore_key_was_down {
+            save_load_request = Some(ScreenTransition::PerformLoad {
+                slot: QUICK_SAVE_SLOT,
+            });
+        }
+        self.restore_key_was_down = restore_down;
+
         // Tick order each frame:
         // 1. Update every object entity (player moves, lifts dispatch
         //    PlayerMove, player dispatches CreateObject on fire).
@@ -1664,6 +1700,10 @@ impl ScreenHandler for LevelScreen {
                     self.message_text.clear();
                 }
             }
+        } else if save_load_request.is_some() {
+            // A SAVE / RESTORE request takes priority over Escape; it is only
+            // armed when no level-change message box is pending.
+            transition = save_load_request;
         } else if input.contains(&InputCommand::Pause) {
             transition = Some(ScreenTransition::StartMenu);
         }
@@ -2800,6 +2840,53 @@ mod tests {
         assert!(
             result.transition.is_none(),
             "cleared dispatcher must not deliver previously-queued messages"
+        );
+    }
+
+    /// Unit under test: the control-panel SAVE key emits a one-shot
+    /// [`ScreenTransition::PerformSave`] on its rising edge.
+    ///
+    /// Invariants asserted: the first tick with SAVE held requests a save of
+    /// the quick-save slot; holding the key produces no further request.
+    #[test]
+    fn save_key_edge_emits_perform_save_transition() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let mut state = RuntimeState::new();
+
+        let mut input = ActiveInput::new();
+        input.insert(InputCommand::Save);
+        let result = screen.tick(&input, &mut state);
+        assert!(
+            matches!(
+                result.transition,
+                Some(ScreenTransition::PerformSave { slot: 0, .. })
+            ),
+            "SAVE rising edge must request a save of the quick-save slot"
+        );
+
+        // Held key: no new edge, so no further save request.
+        let held = screen.tick(&input, &mut state);
+        assert!(held.transition.is_none(), "held SAVE key must not re-save");
+    }
+
+    /// Unit under test: the control-panel RESTORE key emits a one-shot
+    /// [`ScreenTransition::PerformLoad`] on its rising edge.
+    #[test]
+    fn restore_key_edge_emits_perform_load_transition() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let mut state = RuntimeState::new();
+
+        let mut input = ActiveInput::new();
+        input.insert(InputCommand::Restore);
+        let result = screen.tick(&input, &mut state);
+        assert!(
+            matches!(
+                result.transition,
+                Some(ScreenTransition::PerformLoad { slot: 0 })
+            ),
+            "RESTORE rising edge must request a load of the quick-save slot"
         );
     }
 

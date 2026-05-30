@@ -59,6 +59,10 @@ pub enum InputCommand {
     ToggleNoise,
     /// Toggle the "TURTLE" slow-motion control-panel option.
     ToggleTurtle,
+    /// Save the current game (control-panel "SAVE" option).
+    Save,
+    /// Restore a saved game (control-panel "RESTORE" option).
+    Restore,
 }
 
 #[derive(Clone, Debug)]

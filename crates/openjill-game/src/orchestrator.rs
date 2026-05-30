@@ -286,43 +286,63 @@ impl GameOrchestrator {
     /// next `Map` transition, and reconstructs the saved screen: the world map
     /// when the saved level number is [`MAP_LEVEL`], otherwise the level.
     /// Health / score / inventory are restored from the reconstructed screen's
-    /// save-data block. `lives` is not part of the DOS save block and is
-    /// carried as-is.
+    /// save-data block; `lives` is not in the DOS save block and is carried
+    /// as-is.
+    ///
+    /// The restore is **transactional**: every fallible step (parsing the
+    /// snapshots, constructing the replacement screen into a fresh dispatcher)
+    /// runs into locals before any field of `self` is mutated, so a corrupt or
+    /// incomplete save leaves the current game fully intact.
     pub fn restore_from_slot(&mut self, slot: usize) -> Result<(), SaveError> {
         let (map_bytes, level_bytes) = self.saves.load_game(slot)?;
         let level_jn = JnFile::from_bytes(level_bytes.clone()).map_err(SaveError::Parse)?;
         let level_number = i32::from(level_jn.save_data().level() as i16);
-        self.dispatcher.clear();
-        self.map_jn_bytes = Some(map_bytes.clone());
 
+        // Build the replacement screen into a fresh dispatcher and recover the
+        // runtime state, all in locals; nothing on `self` is touched yet.
+        let mut new_dispatcher = MessageDispatcher::new();
         if level_number == MAP_LEVEL {
-            // The save was taken on the world map: reconstruct the map and seed
-            // the runtime state from its (live) save-data block.
+            // Saved on the world map: reconstruct the map; its (live) save-data
+            // block carries the runtime state.
             let map_jn = JnFile::from_bytes(map_bytes.clone()).map_err(SaveError::Parse)?;
-            self.apply_save_data(map_jn.save_data());
+            let restored_state = self.runtime_state_from(map_jn.save_data());
             let screen = LevelScreen::from_bytes(
-                map_bytes,
+                map_bytes.clone(),
                 &self.cache,
                 MAP_LEVEL,
-                &mut self.dispatcher,
+                &mut new_dispatcher,
                 EPISODE_1_SKY_COLOR,
             )
             .map_err(SaveError::Parse)?;
-            // Keep the saved level bytes available for a later `Level` entry,
-            // but do not stamp a level filename for the map.
-            self.level_jn_bytes = Some(level_bytes);
+
+            // Commit (infallible): swap in the new dispatcher, state, and screen.
+            self.dispatcher = new_dispatcher;
+            self.state = restored_state;
+            self.map_jn_bytes = Some(map_bytes);
+            // No level context for a map restore (the player re-enters a level
+            // from the map, which loads it fresh).
+            self.level_jn_bytes = None;
+            self.level_jn_file = None;
+            self.level_jn_number = None;
+            self.level_entry_state = Some(self.state.clone());
             self.handler = Box::new(screen);
         } else {
-            self.apply_save_data(level_jn.save_data());
+            let restored_state = self.runtime_state_from(level_jn.save_data());
             let screen = LevelScreen::from_bytes(
                 level_bytes,
                 &self.cache,
                 level_number,
-                &mut self.dispatcher,
+                &mut new_dispatcher,
                 EPISODE_1_SKY_COLOR,
             )
             .map_err(SaveError::Parse)?;
-            self.level_jn_bytes = screen.level_jn_bytes();
+            let level_jn_bytes = screen.level_jn_bytes();
+
+            // Commit (infallible).
+            self.dispatcher = new_dispatcher;
+            self.state = restored_state;
+            self.map_jn_bytes = Some(map_bytes);
+            self.level_jn_bytes = level_jn_bytes;
             self.level_jn_file = Some(self.episode.level_jn(level_number));
             self.level_jn_number = Some(level_number);
             self.level_entry_state = Some(self.state.clone());
@@ -331,17 +351,19 @@ impl GameOrchestrator {
         Ok(())
     }
 
-    /// Seeds [`RuntimeState`] (level / health / score / inventory) from a saved
-    /// JN save-data block.
-    fn apply_save_data(&mut self, save_data: &JnSaveData) {
-        self.state.level = i32::from(save_data.level() as i16);
-        self.state.health = i32::from(save_data.health());
-        self.state.score = save_data.score() as i32;
-        self.state.inventory = save_data
+    /// Builds a fresh [`RuntimeState`] from a saved JN save-data block,
+    /// carrying the current `lives` (which the DOS save block omits).
+    fn runtime_state_from(&self, save_data: &JnSaveData) -> RuntimeState {
+        let mut state = self.state.clone();
+        state.level = i32::from(save_data.level() as i16);
+        state.health = i32::from(save_data.health());
+        state.score = save_data.score() as i32;
+        state.inventory = save_data
             .inventory()
             .iter()
             .filter_map(|&code| InventoryObject::from_index(code))
             .collect();
+        state
     }
 
     /// Applies a screen transition returned by the active handler.
@@ -396,6 +418,20 @@ impl GameOrchestrator {
             }
             ScreenTransition::Quit => {
                 self.quitting = true;
+            }
+            ScreenTransition::PerformSave { slot, name } => {
+                // Snapshot the still-active screen into the slot; the handler is
+                // intentionally not swapped so play resumes on the next tick.
+                if let Err(err) = self.save_to_slot(slot, &name) {
+                    eprintln!("openjill-game: save to slot {slot} failed: {err}");
+                }
+            }
+            ScreenTransition::PerformLoad { slot } => {
+                // `restore_from_slot` reconstructs the saved screen on success;
+                // on failure the current screen is left untouched.
+                if let Err(err) = self.restore_from_slot(slot) {
+                    eprintln!("openjill-game: restore from slot {slot} failed: {err}");
+                }
             }
             ScreenTransition::Map => {
                 self.dispatcher.clear();
@@ -899,6 +935,31 @@ mod tests {
         );
         assert_eq!(orchestrator.state.level, 1);
         assert_eq!(orchestrator.level_jn_number, Some(1));
+    }
+
+    /// Unit under test: [`GameOrchestrator::restore_from_slot`] is transactional.
+    ///
+    /// Preconditions: a slot holds a save whose level bytes do not parse as a
+    /// JN file; the orchestrator carries some runtime state.
+    ///
+    /// Invariant asserted: the restore returns [`SaveError::Parse`] and leaves
+    /// the runtime state untouched (no partial mutation of `self`).
+    #[test]
+    fn restore_from_corrupt_slot_leaves_game_intact() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        orchestrator.state.health = 7;
+        orchestrator.state.score = 555;
+        orchestrator
+            .saves
+            .save_game(1, "BAD", b"not a jn map", b"not a jn level")
+            .expect("writing a (garbage) save succeeds");
+
+        let result = orchestrator.restore_from_slot(1);
+
+        assert!(matches!(result, Err(SaveError::Parse(_))));
+        assert_eq!(orchestrator.state.health, 7, "state must be untouched");
+        assert_eq!(orchestrator.state.score, 555, "state must be untouched");
     }
 
     /// Invariants asserted: after the tick, the active handler's

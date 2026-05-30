@@ -53,6 +53,8 @@ static INPUT_COMMAND_KEY_MAP: &[(KeyCode, InputCommand)] = &[
     (KeyCode::KeyQ, InputCommand::Quit),
     (KeyCode::KeyN, InputCommand::ToggleNoise),
     (KeyCode::KeyT, InputCommand::ToggleTurtle),
+    (KeyCode::KeyS, InputCommand::Save),
+    (KeyCode::KeyR, InputCommand::Restore),
 ];
 
 /// Runs the game event loop for the configured data directory and episode.
@@ -187,7 +189,7 @@ impl GameApp {
     /// |-----|--------|
     /// | `L` | Force-transition into level 1 of the active episode |
     /// | `K` | Send `CheckpointChangeLevelPrevious` (return to map) |
-    /// | `R` | Send `DieRestartLevel` |
+    /// | `J` | Send `DieRestartLevel` |
     ///
     /// Level files are named `<level_number>.<jn_ext>` on disk where
     /// `jn_ext` is the active episode's JN extension (for example
@@ -195,9 +197,10 @@ impl GameApp {
     /// [`GameOrchestrator::force_transition`] directly: the dispatcher route
     /// requires a subscriber, and [`crate::screens::map_screen::MapScreen`]
     /// does not subscribe to `CheckpointChangeLevel`, so a queued message
-    /// would never fire a transition. `K` and `R` use the dispatcher because
+    /// would never fire a transition. `K` and `J` use the dispatcher because
     /// they target [`crate::screens::level_screen::LevelScreen`], which
-    /// subscribes for both.
+    /// subscribes for both. (`R` is a gameplay key - control-panel RESTORE -
+    /// so the debug restart moved to `J`.)
     #[cfg(debug_assertions)]
     fn handle_debug_hotkey(&mut self, key_code: KeyCode) {
         let Some(orch) = self.orchestrator.as_mut() else {
@@ -219,7 +222,7 @@ impl GameApp {
                 );
                 eprintln!("openjill-game: debug: dispatched CheckpointChangeLevelPrevious");
             }
-            KeyCode::KeyR => {
+            KeyCode::KeyJ => {
                 orch.dispatcher_mut().send(
                     openjill_core::MessageType::DieRestartLevel,
                     openjill_core::MessagePayload::None,
