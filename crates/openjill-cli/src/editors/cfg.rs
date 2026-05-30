@@ -480,15 +480,18 @@ mod view {
         use super::CfgViewApp;
         use std::path::{Path, PathBuf};
 
-        /// Resolves the test data directory from `OPENJILL_DATA_DIR` or the
-        /// workspace-relative default, returning `None` when neither exists so
-        /// the GUI runtime tests self-skip without the copyrighted bytes.
-        fn data_dir() -> Option<PathBuf> {
-            if let Some(path) = std::env::var_os("OPENJILL_DATA_DIR") {
-                return Some(PathBuf::from(path));
-            }
-            let default = Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1");
-            default.is_dir().then_some(default)
+        /// Returns the test data directory only when it exists and contains
+        /// every `required` file, resolving it from `OPENJILL_DATA_DIR` or the
+        /// workspace-relative default. Returns `None` (so the GUI runtime tests
+        /// self-skip) when the directory is missing or the install is partial -
+        /// including when `OPENJILL_DATA_DIR` points at a wrong directory -
+        /// rather than failing on absent or misconfigured data.
+        fn data_dir_with(required: &[&str]) -> Option<PathBuf> {
+            let dir = match std::env::var_os("OPENJILL_DATA_DIR") {
+                Some(path) => PathBuf::from(path),
+                None => Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1"),
+            };
+            (dir.is_dir() && required.iter().all(|name| dir.join(name).is_file())).then_some(dir)
         }
 
         /// Unit under test: `CfgViewApp` constructed against a real `JILL1.CFG`.
@@ -499,8 +502,8 @@ mod view {
         /// without data.
         #[test]
         fn cfg_view_app_loads_real_file() {
-            let Some(dir) = data_dir() else {
-                eprintln!("skipping CfgViewApp runtime test; data directory missing");
+            let Some(dir) = data_dir_with(&["JILL1.CFG"]) else {
+                eprintln!("skipping CfgViewApp runtime test; JILL1.CFG missing");
                 return;
             };
             let app = CfgViewApp::new(&dir, Some(dir.join("JILL1.CFG")));

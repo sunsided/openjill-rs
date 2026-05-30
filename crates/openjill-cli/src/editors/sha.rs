@@ -522,15 +522,18 @@ mod edit {
         use super::ShaEditApp;
         use std::path::{Path, PathBuf};
 
-        /// Resolves the test data directory from `OPENJILL_DATA_DIR` or the
-        /// workspace-relative default, returning `None` when neither exists so
-        /// the GUI runtime tests self-skip without the copyrighted bytes.
-        fn data_dir() -> Option<PathBuf> {
-            if let Some(path) = std::env::var_os("OPENJILL_DATA_DIR") {
-                return Some(PathBuf::from(path));
-            }
-            let default = Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1");
-            default.is_dir().then_some(default)
+        /// Returns the test data directory only when it exists and contains
+        /// every `required` file, resolving it from `OPENJILL_DATA_DIR` or the
+        /// workspace-relative default. Returns `None` (so the GUI runtime tests
+        /// self-skip) when the directory is missing or the install is partial -
+        /// including when `OPENJILL_DATA_DIR` points at a wrong directory -
+        /// rather than failing on absent or misconfigured data.
+        fn data_dir_with(required: &[&str]) -> Option<PathBuf> {
+            let dir = match std::env::var_os("OPENJILL_DATA_DIR") {
+                Some(path) => PathBuf::from(path),
+                None => Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1"),
+            };
+            (dir.is_dir() && required.iter().all(|name| dir.join(name).is_file())).then_some(dir)
         }
 
         /// Unit under test: `ShaEditApp` constructed against a real `JILL1.SHA`.
@@ -541,8 +544,8 @@ mod edit {
         /// path works end to end against the original data. Skips without data.
         #[test]
         fn sha_edit_app_loads_real_file() {
-            let Some(dir) = data_dir() else {
-                eprintln!("skipping ShaEditApp runtime test; data directory missing");
+            let Some(dir) = data_dir_with(&["JILL1.SHA"]) else {
+                eprintln!("skipping ShaEditApp runtime test; JILL1.SHA missing");
                 return;
             };
             let app = ShaEditApp::new(&dir, Some(dir.join("JILL1.SHA")));
