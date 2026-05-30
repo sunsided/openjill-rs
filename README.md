@@ -128,7 +128,8 @@ It currently opens on a blank board with these controls:
 
 In **object mode** the cursor + arrows move over the object layer: `A` adds an
 object (type its name, Space confirms), `D` deletes the object under the cursor,
-`K` selects it.
+`K` selects it, `M` moves the selected object to the cursor, `P` pastes a copy
+of it at the cursor.
 
 Saved boards go to a writable per-user directory (never the read-only original
 data). A few original editor commands (move / paste / modify objects, load tile
