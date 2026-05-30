@@ -5,7 +5,7 @@ use openjill_core::{
     ActiveInput, InventoryObject, MAP_LEVEL, MessageDispatcher, RenderCommand, RuntimeState,
     ScreenHandler, ScreenTransition,
 };
-use openjill_data::cfg::{CfgHighScore, CfgSaveSlot};
+use openjill_data::cfg::{CfgFile, CfgHighScore, CfgSaveSlot};
 use openjill_data::episode::Episode;
 use openjill_data::jn::{JnFile, JnReadError, JnSaveData};
 use openjill_data::{DataDirectory, DataDirectoryError};
@@ -19,13 +19,22 @@ use crate::screens::intro_screens::{
 use crate::screens::level_screen::{EPISODE_1_SKY_COLOR, LevelScreen};
 use crate::screens::start_menu::StartMenuScreen;
 
-/// Constructs a fresh [`StartMenuScreen`] from the given asset cache.
-fn make_start_menu(cache: &AssetCache) -> StartMenuScreen {
+/// Placeholder high-score name recorded on game over until the arcade-style
+/// name entry lands (kept within the 10-byte CFG high-score name field).
+const GAME_OVER_NAME: &str = "JILL";
+
+/// Constructs a fresh [`StartMenuScreen`] from the given asset cache and the
+/// runtime config.
+///
+/// `cfg` is the live runtime config (from the [`SaveStore`]) so the start
+/// menu's high-score panel and load-game overlay reflect recorded scores and
+/// saved games rather than the original shipped episode CFG (e.g. `JILL1.CFG`).
+fn make_start_menu(cache: &AssetCache, cfg: &CfgFile) -> StartMenuScreen {
     StartMenuScreen::new(
         cache.intro_jn.clone(),
         cache.dma.clone(),
         cache.vcl.clone(),
-        cache.cfg.clone(),
+        cfg.clone(),
         &cache.sha,
     )
 }
@@ -162,7 +171,7 @@ impl GameOrchestrator {
         // Open the writable runtime store before moving `data_dir` into `Self`;
         // this seeds the per-user config copy from the original on first launch.
         let saves = SaveStore::open(&data_dir, episode)?;
-        let handler: Box<dyn ScreenHandler> = Box::new(make_start_menu(&cache));
+        let handler: Box<dyn ScreenHandler> = Box::new(make_start_menu(&cache, saves.cfg()));
         Ok(Self {
             cache,
             state: RuntimeState::new(),
@@ -386,7 +395,7 @@ impl GameOrchestrator {
         match transition {
             ScreenTransition::StartMenu => {
                 self.dispatcher.clear();
-                self.handler = Box::new(make_start_menu(&self.cache));
+                self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
             }
             ScreenTransition::Story => {
                 self.dispatcher.clear();
@@ -465,7 +474,7 @@ impl GameOrchestrator {
                         eprintln!(
                             "openjill-game: failed to load {map_file} ({err}); falling back to start menu"
                         );
-                        self.handler = Box::new(make_start_menu(&self.cache));
+                        self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
                     }
                 }
             }
@@ -510,41 +519,48 @@ impl GameOrchestrator {
                         eprintln!(
                             "openjill-game: failed to load level {file} ({err}); falling back to start menu"
                         );
-                        self.handler = Box::new(make_start_menu(&self.cache));
+                        self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
                     }
                 }
             }
             ScreenTransition::RestartLevel => {
-                self.dispatcher.clear();
-                let Some(bytes) = self.level_jn_bytes.clone() else {
+                // A death consumes one life. When the last one is spent the run
+                // is over; otherwise the level restarts from its entry state.
+                self.state.lives -= 1;
+                if self.state.lives <= 0 {
+                    self.game_over();
+                } else if let Some(bytes) = self.level_jn_bytes.clone() {
+                    self.dispatcher.clear();
+                    let level_number = self.level_jn_number.unwrap_or(0);
+                    match LevelScreen::from_bytes(
+                        bytes,
+                        &self.cache,
+                        level_number,
+                        &mut self.dispatcher,
+                        EPISODE_1_SKY_COLOR,
+                    ) {
+                        Ok(screen) => {
+                            if let Some(entry) = &self.level_entry_state {
+                                self.state.health = entry.health;
+                                self.state.inventory = entry.inventory.clone();
+                            }
+                            self.handler = Box::new(screen);
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "openjill-game: failed to restart level ({err}); falling back to start menu"
+                            );
+                            self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
+                        }
+                    }
+                } else {
                     eprintln!(
                         "openjill-game: RestartLevel requested without cached level bytes; falling back to start menu"
                     );
-                    self.handler = Box::new(make_start_menu(&self.cache));
-                    return;
-                };
-                let level_number = self.level_jn_number.unwrap_or(0);
-                match LevelScreen::from_bytes(
-                    bytes,
-                    &self.cache,
-                    level_number,
-                    &mut self.dispatcher,
-                    EPISODE_1_SKY_COLOR,
-                ) {
-                    Ok(screen) => {
-                        if let Some(entry) = &self.level_entry_state {
-                            self.state.lives = self.state.lives.saturating_sub(1);
-                            self.state.health = entry.health;
-                            self.state.inventory = entry.inventory.clone();
-                        }
-                        self.handler = Box::new(screen);
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "openjill-game: failed to restart level ({err}); falling back to start menu"
-                        );
-                        self.handler = Box::new(make_start_menu(&self.cache));
-                    }
+                    // Clear the dispatcher before the swap so no stale level
+                    // subscribers or pending messages survive into the menu.
+                    self.dispatcher.clear();
+                    self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
                 }
             }
         }
@@ -552,6 +568,28 @@ impl GameOrchestrator {
         // Refresh the (possibly new) handler's save-slot labels: a transition
         // may have built a new screen, and a `PerformSave` changed the names.
         self.push_save_slot_names();
+    }
+
+    /// Ends the current run: records the final score in the high-score table
+    /// (best-effort), resets the runtime state and cached level/map bytes for a
+    /// fresh game, and returns to the start menu.
+    ///
+    /// The high score is recorded under a placeholder name for now; the
+    /// arcade-style name entry replaces it in a follow-up.
+    fn game_over(&mut self) {
+        if self.state.score > 0
+            && let Err(err) = self.record_high_score(GAME_OVER_NAME, self.state.score)
+        {
+            eprintln!("openjill-game: failed to record high score: {err}");
+        }
+        self.state = RuntimeState::new();
+        self.map_jn_bytes = None;
+        self.level_jn_bytes = None;
+        self.level_jn_file = None;
+        self.level_jn_number = None;
+        self.level_entry_state = None;
+        self.dispatcher.clear();
+        self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
     }
 
     /// Pushes the current CFG save-slot names into the active handler so an
@@ -1109,6 +1147,47 @@ mod tests {
 
         assert_eq!(orchestrator.level_jn_number, Some(1));
         assert_eq!(orchestrator.handler.level_jn_bytes(), cached_bytes);
+    }
+
+    /// Unit under test: a death with the last life spent triggers game over -
+    /// the final score is recorded in the high-score table, the runtime state
+    /// resets, and play returns to the start menu.
+    ///
+    /// Preconditions: the orchestrator has entered a level (so restart has
+    /// cached bytes and an entry-state snapshot) and carries a score; the
+    /// runtime starts with three lives.
+    #[test]
+    fn game_over_after_lives_exhausted_records_score_and_resets() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::Level {
+            file: String::from("1.JN1"),
+            number: 1,
+        }));
+        let mut orchestrator = orchestrator_with_handler(handler);
+        seed_level_cache(&mut orchestrator, "1.JN1", 1);
+        orchestrator.tick(&ActiveInput::default());
+        orchestrator.state.score = 500;
+
+        // Three deaths exhaust the three starting lives (3 -> 2 -> 1 -> 0); the
+        // third is game over.
+        for _ in 0..3 {
+            orchestrator.dispatcher_mut().send(
+                openjill_core::MessageType::DieRestartLevel,
+                openjill_core::MessagePayload::None,
+            );
+            drive_message_box_countdown(&mut orchestrator);
+        }
+
+        assert_eq!(
+            orchestrator.high_scores()[0].score(),
+            500,
+            "final score must be recorded in the high-score table"
+        );
+        assert_eq!(orchestrator.state.lives, 3, "runtime state must reset");
+        assert_eq!(orchestrator.state.score, 0, "runtime state must reset");
+        assert!(
+            orchestrator.level_jn_number.is_none(),
+            "level caches must clear on game over"
+        );
     }
 
     /// Unit under test: [`GameOrchestrator::save_to_slot`] reports
