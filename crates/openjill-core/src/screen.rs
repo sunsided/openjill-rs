@@ -139,4 +139,12 @@ pub trait ScreenHandler {
     fn is_world_map(&self) -> bool {
         false
     }
+
+    /// Supplies the current save-slot names so an in-screen save / load menu
+    /// can label its slots.
+    ///
+    /// The orchestrator pushes the runtime config's save-slot names after every
+    /// screen transition and after each save. Only `LevelScreen` (which hosts
+    /// the control-panel slot picker) overrides this; other screens ignore it.
+    fn set_save_slot_names(&mut self, _names: Vec<String>) {}
 }

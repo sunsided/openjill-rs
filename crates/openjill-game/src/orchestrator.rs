@@ -548,6 +548,22 @@ impl GameOrchestrator {
                 }
             }
         }
+
+        // Refresh the (possibly new) handler's save-slot labels: a transition
+        // may have built a new screen, and a `PerformSave` changed the names.
+        self.push_save_slot_names();
+    }
+
+    /// Pushes the current CFG save-slot names into the active handler so an
+    /// in-screen save / load menu can label its slots.
+    fn push_save_slot_names(&mut self) {
+        let names: Vec<String> = self
+            .saves
+            .save_slots()
+            .iter()
+            .map(|slot| slot.name().to_string())
+            .collect();
+        self.handler.set_save_slot_names(names);
     }
 }
 

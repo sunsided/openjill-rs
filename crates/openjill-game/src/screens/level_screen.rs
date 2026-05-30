@@ -580,6 +580,10 @@ pub struct LevelScreen {
     /// Whether any menu-navigation key was held last tick, debouncing the
     /// slot-picker so one key press moves / confirms exactly once.
     menu_nav_was_active: bool,
+    /// Current save-slot names pushed by the orchestrator, shown in the
+    /// slot-picker.  Empty until the orchestrator supplies them; a blank or
+    /// missing entry renders as an empty slot.
+    save_slot_names: Vec<String>,
     /// Alternating execution gate for turtle (slow-motion) mode; the world
     /// updates only on ticks where this is `true` while turtle mode is on
     /// (Java `AbstractExecutingStdLevel.turtleSwitch`).
@@ -771,6 +775,7 @@ impl LevelScreen {
             restore_key_was_down: false,
             control_menu: None,
             menu_nav_was_active: false,
+            save_slot_names: Vec::new(),
             turtle_switch: false,
             trigger_inbox,
             player_move_inbox,
@@ -1757,7 +1762,7 @@ impl ScreenHandler for LevelScreen {
             commands.extend(render_message_box(&self.message_text));
         }
         if let Some(menu) = self.control_menu {
-            commands.extend(render_control_menu(menu));
+            commands.extend(render_control_menu(menu, &self.save_slot_names));
         }
 
         self.drain_entity_dispatcher();
@@ -1840,6 +1845,11 @@ impl ScreenHandler for LevelScreen {
     /// Returns `true` when this screen is acting as the world map.
     fn is_world_map(&self) -> bool {
         self.level_number == MAP_LEVEL
+    }
+
+    /// Stores the save-slot names for the slot-picker overlay.
+    fn set_save_slot_names(&mut self, names: Vec<String>) {
+        self.save_slot_names = names;
     }
 }
 
@@ -2214,9 +2224,9 @@ fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
 ///
 /// Reuses the level message-box frame, listing the six save slots with a `>`
 /// cursor on the highlighted one under a `SAVE GAME` / `RESTORE GAME` title.
-/// Slot names are not shown yet (the orchestrator's CFG slot names are not
-/// plumbed into the level screen); slots are addressed by number for now.
-fn render_control_menu(menu: ControlMenu) -> Vec<RenderCommand> {
+/// Each slot shows its CFG name from `names` (by index), or `[EMPTY]` when the
+/// name is blank or missing.
+fn render_control_menu(menu: ControlMenu, names: &[String]) -> Vec<RenderCommand> {
     let title = match menu.kind {
         ControlMenuKind::Save => "SAVE GAME",
         ControlMenuKind::Load => "RESTORE GAME",
@@ -2225,7 +2235,11 @@ fn render_control_menu(menu: ControlMenu) -> Vec<RenderCommand> {
     lines.push(title.to_string());
     for slot in 0..SAVE_SLOT_COUNT {
         let marker = if slot == menu.cursor { ">" } else { " " };
-        lines.push(format!("{marker} SLOT {}", slot + 1));
+        let label = match names.get(slot) {
+            Some(name) if !name.trim().is_empty() => name.as_str(),
+            _ => "[EMPTY]",
+        };
+        lines.push(format!("{marker} {}: {label}", slot + 1));
     }
     render_message_box(&lines)
 }
@@ -3025,6 +3039,45 @@ mod tests {
         assert!(
             transition.is_none(),
             "Escape must cancel the menu, not save or quit to the start menu"
+        );
+    }
+
+    /// Unit under test: [`render_control_menu`] labels each slot with its CFG
+    /// name (or `[EMPTY]` for a blank / missing name) and marks the cursor.
+    #[test]
+    fn control_menu_renders_slot_names_and_empty_labels() {
+        // Slot 0 named, slot 1 blank, slots 2..=5 missing.
+        let names = vec![String::from("HERO"), String::new()];
+        let menu = super::ControlMenu {
+            kind: super::ControlMenuKind::Save,
+            cursor: 0,
+        };
+        let texts: Vec<String> = super::render_control_menu(menu, &names)
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                RenderCommand::DrawText { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+
+        assert!(texts.iter().any(|t| t == "SAVE GAME"));
+        assert!(
+            texts.iter().any(|t| t.contains("1: HERO")),
+            "named slot must show its name: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("2: [EMPTY]")),
+            "blank-name slot must show [EMPTY]: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("6: [EMPTY]")),
+            "missing slot must show [EMPTY]: {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.starts_with('>') && t.contains("HERO")),
+            "cursor must mark the highlighted slot: {texts:?}"
         );
     }
 
