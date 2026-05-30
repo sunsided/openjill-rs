@@ -1,18 +1,19 @@
-//! `openjill-vcl-extract` — CLI that dumps `*.VCL` text entries.
+//! `openjill-vcl-extract` — CLI that dumps `*.VCL` text entries and sounds.
 //!
 //! Built on the `openjill-data` parser and the `openjill-export::vcl`
-//! formatters. Dumps all text entries (text or JSON) or a single entry.
+//! formatters. Dumps all text entries (text or JSON) or a single entry, or
+//! extracts every non-empty sound to a 16-bit WAV with `--wav <DIR>`.
 
 #![forbid(unsafe_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use openjill_data::vcl::VclFile;
-use openjill_export::vcl::{entries_to_json, entries_to_text, escape_text_payload};
+use openjill_export::vcl::{entries_to_json, entries_to_text, escape_text_payload, sound_to_wav};
 
-/// Dumps the text entries of a Jill `*.VCL` file.
+/// Dumps the text entries (and optionally the sounds) of a Jill `*.VCL` file.
 #[derive(Debug, Parser)]
 #[command(name = "openjill-vcl-extract", version, about)]
 struct Cli {
@@ -28,6 +29,10 @@ struct Cli {
     /// Dump only a single entry by index.
     #[arg(long)]
     entry: Option<usize>,
+    /// Extract every non-empty sound to a 16-bit WAV in this directory
+    /// (`sound-NN.wav`), instead of dumping text.
+    #[arg(long, value_name = "DIR")]
+    wav: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -36,6 +41,10 @@ fn main() -> Result<()> {
         .with_context(|| format!("failed to read VCL file {}", cli.file.display()))?;
     let vcl = VclFile::from_bytes(bytes)
         .with_context(|| format!("failed to parse VCL file {}", cli.file.display()))?;
+
+    if let Some(dir) = &cli.wav {
+        return extract_sounds(&vcl, dir);
+    }
 
     let rendered = match cli.entry {
         Some(index) => render_single(&vcl, index, cli.json)?,
@@ -47,6 +56,31 @@ fn main() -> Result<()> {
             .with_context(|| format!("failed to write {}", path.display()))?,
         None => print!("{rendered}"),
     }
+    Ok(())
+}
+
+/// Writes every non-empty sound to `dir/sound-NN.wav` and prints a summary.
+fn extract_sounds(vcl: &VclFile, dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("failed to create output directory {}", dir.display()))?;
+
+    let mut count = 0;
+    for (index, slot) in vcl.sounds().iter().enumerate() {
+        let Some(sound) = slot else {
+            continue;
+        };
+        let path = dir.join(format!("sound-{index:02}.wav"));
+        std::fs::write(&path, sound_to_wav(sound))
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        println!(
+            "{} ({} samples @ {} Hz)",
+            path.display(),
+            sound.pcm().len(),
+            sound.frequency()
+        );
+        count += 1;
+    }
+    println!("wrote {count} sound(s) to {}", dir.display());
     Ok(())
 }
 
@@ -107,5 +141,13 @@ mod tests {
         let cli = Cli::try_parse_from(["vcl", "-f", "x.vcl"]).expect("args parse");
         assert_eq!(cli.entry, None);
         assert!(!cli.json);
+        assert_eq!(cli.wav, None);
+    }
+
+    #[test]
+    fn parses_wav_output_directory() {
+        let cli =
+            Cli::try_parse_from(["vcl", "-f", "x.vcl", "--wav", "out/sounds"]).expect("args parse");
+        assert_eq!(cli.wav, Some(std::path::PathBuf::from("out/sounds")));
     }
 }
