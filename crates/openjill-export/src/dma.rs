@@ -11,8 +11,8 @@ use std::fmt::Write;
 /// (`docs/port/00-format-reference.md`, DMA `iFlags` table).
 const FLAG_NAMES: &[(u16, &str)] = &[
     (0x0001, "PLAYERTHRU"),
-    (0x0002, "NOTSTAIR"),
-    (0x0004, "NOTVINE"),
+    (0x0002, "STAIR"),
+    (0x0004, "VINE"),
     (0x0008, "MSGTOUCH"),
     (0x0010, "MSGDRAW"),
     (0x0020, "MSGUPDATE"),
@@ -171,7 +171,7 @@ mod tests {
 
         check!(lines.next() == Some("map_code,tileset,tile,flags,flag_names"));
         check!(lines.next() == Some("258,8,3,57,PLAYERTHRU|MSGTOUCH|MSGDRAW|MSGUPDATE"));
-        check!(lines.next() == Some("772,2,64,6,NOTSTAIR|NOTVINE"));
+        check!(lines.next() == Some("772,2,64,6,STAIR|VINE"));
         check!(lines.next().is_none());
     }
 
@@ -215,7 +215,7 @@ mod tests {
     ///
     /// Entry #1 uses map code `0x0102` and flags `0x0039`
     /// (`PLAYERTHRU|MSGTOUCH|MSGDRAW|MSGUPDATE`); entry #2 uses map code
-    /// `0x0304` and flags `0x0006` (`NOTSTAIR|NOTVINE`).
+    /// `0x0304` and flags `0x0006` (`STAIR|VINE`).
     fn fixture_dma() -> DmaFile {
         let mut bytes = Vec::new();
         bytes.extend(0x0102u16.to_le_bytes());
