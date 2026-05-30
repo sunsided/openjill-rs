@@ -114,15 +114,17 @@ Two hidden commands from the original game work on the **title menu**:
 by Malvineous; see the [ModdingWiki](https://moddingwiki.shikadi.net/wiki/Using_the_official_Jill_of_the_Jungle_level_editor)).
 It currently opens on a blank board with these controls:
 
-| Key(s)          | Action                                |
-|-----------------|---------------------------------------|
-| Arrow keys      | Move the tile cursor                  |
-| Tab / Backspace | Next / previous tile in the palette   |
-| Space / Shift   | Paint the selected tile at the cursor |
-| Escape          | Return to the title menu              |
+| Key(s)          | Action                                  |
+|-----------------|-----------------------------------------|
+| Arrow keys      | Move the tile cursor                    |
+| Tab / Backspace | Next / previous tile in the palette     |
+| Space / Shift   | Paint the selected tile at the cursor   |
+| `K`             | Pick the tile under the cursor          |
+| `Z` / `N`       | Clear to a new blank board              |
+| Escape          | Return to the title menu                |
 
-More of the original editor's commands (pick tile, flood fill, new board,
-object placement, load / save) are in progress - see issue #210.
+More of the original editor's commands (flood fill, object placement,
+load / save, load tile by name) are in progress - see issue #210.
 
 ## Saving and high scores
 
