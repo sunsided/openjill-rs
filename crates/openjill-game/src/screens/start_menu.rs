@@ -180,6 +180,12 @@ pub struct StartMenuScreen {
     /// vertical stacking and the per-tile bottom-anchor for row 3 stay in
     /// sync with the actual SHA tileset 24 dimensions.
     portrait_tiles: [(i32, i32, u16); 16],
+    /// Highlighted save slot in the load-game overlay (`0`-based).
+    load_cursor: usize,
+    /// Whether a load-overlay navigation key was held last tick, debouncing the
+    /// overlay so one key press moves / confirms exactly once (and the key that
+    /// opened the overlay does not immediately confirm a load).
+    load_nav_was_active: bool,
 }
 
 impl StartMenuScreen {
@@ -198,6 +204,8 @@ impl StartMenuScreen {
             overlay: Overlay::None,
             cursor_index: 0,
             portrait_tiles,
+            load_cursor: 0,
+            load_nav_was_active: false,
         }
     }
 }
@@ -241,9 +249,32 @@ impl StartMenuScreen {
             return Some(ScreenTransition::Quit);
         }
 
-        // Load-game overlay is modal: no navigation or confirm while it is open.
+        // Load-game overlay: navigate the save slots and confirm to load.
+        // Debounced so one key press acts once and the key that opened the
+        // overlay does not immediately confirm a load.
         if self.overlay == Overlay::LoadGame {
-            return None;
+            let slot_count = self.cfg.save_slots().len().max(1);
+            let up =
+                input.contains(&InputCommand::Up) || input.contains(&InputCommand::PrevInventory);
+            let down =
+                input.contains(&InputCommand::Duck) || input.contains(&InputCommand::NextInventory);
+            let confirm =
+                input.contains(&InputCommand::ThrowItem) || input.contains(&InputCommand::Jump);
+            let active = up || down || confirm;
+            let mut transition = None;
+            if active && !self.load_nav_was_active {
+                if confirm {
+                    let slot = self.load_cursor;
+                    self.overlay = Overlay::None;
+                    transition = Some(ScreenTransition::PerformLoad { slot });
+                } else if down {
+                    self.load_cursor = (self.load_cursor + 1) % slot_count;
+                } else if up {
+                    self.load_cursor = (self.load_cursor + slot_count - 1) % slot_count;
+                }
+            }
+            self.load_nav_was_active = active;
+            return transition;
         }
 
         let layout = &*MENU_LAYOUT;
@@ -280,6 +311,10 @@ impl StartMenuScreen {
             0 => Some(ScreenTransition::Map),
             1 => {
                 self.overlay = Overlay::LoadGame;
+                self.load_cursor = 0;
+                // Treat the confirm key that opened the overlay as already
+                // active, so it must be released before it can confirm a load.
+                self.load_nav_was_active = true;
                 None
             }
             2 => Some(ScreenTransition::Story),
@@ -544,11 +579,18 @@ impl StartMenuScreen {
             font: FontSize::Big,
         });
         for (index, slot) in self.cfg.save_slots().iter().enumerate() {
+            let marker = if index == self.load_cursor { ">" } else { " " };
+            let name = if slot.name().trim().is_empty() {
+                "[EMPTY]"
+            } else {
+                slot.name()
+            };
             commands.push(RenderCommand::DrawText {
-                text: format!("{} {}", index + 1, slot.name()),
+                text: format!("{marker} {} {name}", index + 1),
                 x: 132,
                 y: 56 + index as i32 * 12,
-                color_index: 3,
+                // Highlight the selected slot (brighter) vs the rest.
+                color_index: if index == self.load_cursor { 6 } else { 3 },
                 font: FontSize::Small,
             });
         }
@@ -917,6 +959,82 @@ mod tests {
         // Second Escape quits.
         let quit = screen.tick(&esc, &mut RuntimeState::new());
         assert_eq!(quit.transition, Some(ScreenTransition::Quit));
+    }
+
+    /// Opens the load-game overlay (navigate to item 1, confirm) and releases
+    /// the keys so the overlay debounce is reset for the next press.
+    fn open_load_overlay(screen: &mut StartMenuScreen) {
+        let mut down = ActiveInput::new();
+        down.insert(InputCommand::Duck);
+        screen.tick(&down, &mut RuntimeState::new());
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+        assert_eq!(
+            screen.tick(&confirm, &mut RuntimeState::new()).transition,
+            None,
+            "opening the load overlay must not transition"
+        );
+        // Release: reset the overlay debounce so a held confirm key does not
+        // immediately load slot 0.
+        screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
+    }
+
+    /// Unit under test: confirming in the load-game overlay emits a
+    /// [`ScreenTransition::PerformLoad`] for the highlighted slot.
+    #[test]
+    fn load_overlay_confirm_emits_perform_load() {
+        let mut screen = menu();
+        open_load_overlay(&mut screen);
+
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+        let result = screen.tick(&confirm, &mut RuntimeState::new());
+        assert_eq!(
+            result.transition,
+            Some(ScreenTransition::PerformLoad { slot: 0 })
+        );
+    }
+
+    /// Unit under test: down moves the load-overlay cursor before confirm.
+    #[test]
+    fn load_overlay_down_then_confirm_loads_that_slot() {
+        let mut screen = menu();
+        open_load_overlay(&mut screen);
+
+        let mut down = ActiveInput::new();
+        down.insert(InputCommand::Duck);
+        screen.tick(&down, &mut RuntimeState::new()); // cursor 0 -> 1
+        screen.tick(&ActiveInput::new(), &mut RuntimeState::new()); // release
+
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+        let result = screen.tick(&confirm, &mut RuntimeState::new());
+        assert_eq!(
+            result.transition,
+            Some(ScreenTransition::PerformLoad { slot: 1 })
+        );
+    }
+
+    /// Unit under test: ArrowUp (`InputCommand::Up`) moves the load-overlay
+    /// cursor up, wrapping from the first slot to the last.
+    #[test]
+    fn load_overlay_arrow_up_wraps_to_last_slot() {
+        let mut screen = menu();
+        open_load_overlay(&mut screen);
+
+        let mut up = ActiveInput::new();
+        up.insert(InputCommand::Up);
+        screen.tick(&up, &mut RuntimeState::new()); // cursor 0 -> last (wrap)
+        screen.tick(&ActiveInput::new(), &mut RuntimeState::new()); // release
+
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+        let result = screen.tick(&confirm, &mut RuntimeState::new());
+        // zero_cfg carries six save slots, so wrapping up from 0 lands on 5.
+        assert_eq!(
+            result.transition,
+            Some(ScreenTransition::PerformLoad { slot: 5 })
+        );
     }
 
     /// Unit under test: `StartMenuScreen::tick` — `InputCommand::Duck` navigates
