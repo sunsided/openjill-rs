@@ -304,6 +304,13 @@ impl GameOrchestrator {
         std::mem::take(&mut self.sound_events)
     }
 
+    /// Returns whether in-game sound is enabled (the NOISE toggle).
+    ///
+    /// The host mutes the audio backend when this is `false`.
+    pub fn noise_enabled(&self) -> bool {
+        self.state.noise_enabled
+    }
+
     /// Sets the printable characters typed since the previous tick, for text
     /// entry (save / high-score names).
     ///
@@ -1573,5 +1580,17 @@ mod tests {
 
         assert_eq!(orchestrator.high_scores()[0].name(), "ACE");
         assert_eq!(orchestrator.high_scores()[0].score(), 4242);
+    }
+
+    /// Unit under test: `noise_enabled` reflects the runtime NOISE toggle, which
+    /// the host uses to mute the audio backend.
+    #[test]
+    fn noise_enabled_reflects_runtime_state() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+
+        assert!(orchestrator.noise_enabled(), "noise defaults on");
+        orchestrator.state.noise_enabled = false;
+        assert!(!orchestrator.noise_enabled());
     }
 }
