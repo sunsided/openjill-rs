@@ -83,10 +83,13 @@ impl HighScoreEntryScreen {
 
 impl ScreenHandler for HighScoreEntryScreen {
     fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult {
-        // Append typed characters (single-tick channel), capped by UTF-8 byte
-        // length so the name fits the byte-sized CFG field.
+        // Append typed characters (single-tick channel). Only printable ASCII
+        // is accepted - the CFG high-score name field stores printable ASCII,
+        // so other characters would be stripped on persist (leaving an
+        // apparently-non-empty name that saves blank). The field is byte-sized;
+        // ASCII chars are one byte each, so `NAME_MAX` is the character cap too.
         for ch in &state.text_input {
-            if self.name.len() + ch.len_utf8() <= NAME_MAX {
+            if (ch.is_ascii_graphic() || *ch == ' ') && self.name.len() < NAME_MAX {
                 self.name.push(*ch);
             }
         }
@@ -152,6 +155,26 @@ mod tests {
                 assert_eq!(score, 4242);
             }
             other => panic!("expected RecordHighScore, got {other:?}"),
+        }
+    }
+
+    /// Unit under test: an entry of only non-ASCII characters (which the CFG
+    /// strips on persist) is treated as empty and records the default name.
+    #[test]
+    fn non_ascii_only_entry_records_default_name() {
+        let mut screen = HighScoreEntryScreen::new(50);
+        let mut state = RuntimeState::new();
+
+        screen.tick(&ActiveInput::new(), &mut state); // reset debounce
+        state.text_input = vec!['é', '€']; // non-ASCII: filtered out
+        screen.tick(&ActiveInput::new(), &mut state);
+        state.text_input.clear();
+
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+        match screen.tick(&confirm, &mut state).transition {
+            Some(ScreenTransition::RecordHighScore { name, .. }) => assert_eq!(name, "JILL"),
+            other => panic!("expected default-name RecordHighScore, got {other:?}"),
         }
     }
 

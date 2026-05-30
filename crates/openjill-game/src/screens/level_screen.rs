@@ -1593,10 +1593,11 @@ impl LevelScreen {
             && let Some(name) = self.control_menu.as_mut().and_then(|m| m.name.as_mut())
         {
             for ch in text_input {
-                // The CFG save-name field is byte-sized; cap by UTF-8 byte
-                // length so a multi-byte char cannot overflow / be truncated
-                // mid-codepoint when written into the field.
-                if name.len() + ch.len_utf8() <= SAVE_NAME_MAX {
+                // Only printable ASCII is accepted: the CFG save-name field
+                // stores printable ASCII, so other characters would be stripped
+                // on persist. ASCII chars are one byte each, so SAVE_NAME_MAX is
+                // both the byte and character cap.
+                if (ch.is_ascii_graphic() || *ch == ' ') && name.len() < SAVE_NAME_MAX {
                     name.push(*ch);
                 }
             }
