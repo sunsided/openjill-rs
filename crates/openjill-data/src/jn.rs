@@ -446,6 +446,16 @@ impl JnFile {
         Self::parse(&mut reader)
     }
 
+    /// Builds an empty editable board: a 128x64 all-zero background, no objects,
+    /// an empty string stack, and a zero-filled save-data block.
+    ///
+    /// This is the level editor's "new board" starting point (epic #210). The
+    /// result round-trips through [`to_bytes`](Self::to_bytes).
+    pub fn blank() -> Self {
+        let size = BACKGROUND_CELL_COUNT * 2 + 2 + SAVE_DATA_LEN;
+        Self::from_bytes(vec![0u8; size]).expect("a zero-filled JN buffer must parse")
+    }
+
     /// Returns the parsed background layer.
     pub fn background(&self) -> &JnBackgroundLayer {
         &self.background
@@ -1171,6 +1181,21 @@ mod tests {
         check!(jn.remove_object(1).is_none());
         check!(jn.remove_object(99).is_none());
         check!(jn.objects().len() == 1);
+    }
+
+    /// Unit under test: [`JnFile::blank`].
+    ///
+    /// Invariant: a fresh board is 128x64, all-zero, object-free, and round-trips
+    /// through `to_bytes`.
+    #[test]
+    fn blank_is_an_empty_editable_board() {
+        let jn = JnFile::blank();
+        check!(jn.background().width() == 128);
+        check!(jn.background().height() == 64);
+        check!(jn.background().map_codes().iter().all(|&code| code == 0));
+        check!(jn.objects().is_empty());
+        let reparsed = JnFile::from_bytes(jn.to_bytes()).expect("blank must round-trip");
+        check!(reparsed == jn);
     }
 
     /// Builds the fixed zero-filled background fixture.

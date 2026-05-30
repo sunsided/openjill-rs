@@ -67,6 +67,10 @@ pub enum InputCommand {
     /// title-screen cheat). Produced only as a modifier chord and consumed only
     /// by the start menu.
     PlayIntro,
+    /// Enter the level editor from the title screen (the original `Ctrl+E`
+    /// title-screen cheat). Produced only as a modifier chord and consumed only
+    /// by the start menu.
+    EnterEditor,
 }
 
 #[derive(Clone, Debug)]

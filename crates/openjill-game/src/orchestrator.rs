@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::asset_cache::{AssetCache, AssetError};
 use crate::saves::{SaveStore, SaveStoreError};
+use crate::screens::editor_screen::EditorScreen;
 use crate::screens::high_score_entry::HighScoreEntryScreen;
 use crate::screens::intro_screens::{
     credits_screen, noisemaker_screen, ordering_info_screen, story_screen,
@@ -56,6 +57,9 @@ fn transition_resets_input(transition: &ScreenTransition) -> bool {
             | ScreenTransition::Credits
             | ScreenTransition::OrderingInfo
             | ScreenTransition::Noisemaker
+            // The editor is entered via the Ctrl+E chord, so the held Ctrl/E
+            // must not bleed into the editor's first tick as a paint/move.
+            | ScreenTransition::Editor
             // RecordHighScore resets to the start menu via reset_to_start_menu,
             // so a held confirm key would bleed into it the same way.
             | ScreenTransition::RecordHighScore { .. }
@@ -528,6 +532,10 @@ impl GameOrchestrator {
                     self.cache.intro_jn.clone(),
                     self.cache.dma.clone(),
                 ));
+            }
+            ScreenTransition::Editor => {
+                self.dispatcher.clear();
+                self.handler = Box::new(EditorScreen::new(JnFile::blank(), self.cache.dma.clone()));
             }
             ScreenTransition::Quit => {
                 self.quitting = true;

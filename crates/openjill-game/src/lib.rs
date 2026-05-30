@@ -166,11 +166,12 @@ impl GameApp {
     /// Returns `true` for keys that are tracked in the pressed-keys set despite
     /// having no standalone command binding, because they form a modifier chord.
     ///
-    /// Currently just `P`, the second key of the `Ctrl+P` intro-play title-screen
-    /// cheat ([`active_commands`](Self::active_commands) emits
-    /// [`InputCommand::PlayIntro`] only when `Ctrl` is also held).
+    /// `P` and `E`, the second keys of the `Ctrl+P` intro-play and `Ctrl+E`
+    /// level-editor title-screen cheats ([`active_commands`](Self::active_commands)
+    /// emits [`InputCommand::PlayIntro`] / [`InputCommand::EnterEditor`] only when
+    /// `Ctrl` is also held).
     const fn is_chord_key(key_code: KeyCode) -> bool {
-        matches!(key_code, KeyCode::KeyP)
+        matches!(key_code, KeyCode::KeyP | KeyCode::KeyE)
     }
 
     /// Applies one key press or release to the pressed-keys set.
@@ -212,6 +213,9 @@ impl GameApp {
             || pressed_keys.contains(&KeyCode::ControlRight);
         if ctrl_held && pressed_keys.contains(&KeyCode::KeyP) {
             commands.insert(InputCommand::PlayIntro);
+        }
+        if ctrl_held && pressed_keys.contains(&KeyCode::KeyE) {
+            commands.insert(InputCommand::EnterEditor);
         }
 
         commands
@@ -623,6 +627,28 @@ mod tests {
         assert_eq!(
             GameApp::active_commands(&pressed),
             BTreeSet::from([InputCommand::ThrowItem])
+        );
+    }
+
+    /// Unit under test: `GameApp::active_commands` resolves the `Ctrl+E` chord.
+    ///
+    /// Preconditions: the chord-component key `E` is held with and without
+    /// `Ctrl`.
+    ///
+    /// Invariants asserted: `E` alone produces no command; with `Ctrl` held the
+    /// set gains [`InputCommand::EnterEditor`] alongside Ctrl's `ThrowItem`.
+    #[test]
+    fn active_commands_resolves_ctrl_e_editor_chord() {
+        let mut pressed = BTreeSet::new();
+
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::KeyE, ElementState::Pressed);
+        assert!(pressed.contains(&KeyCode::KeyE));
+        assert_eq!(GameApp::active_commands(&pressed), BTreeSet::new());
+
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ControlRight, ElementState::Pressed);
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::ThrowItem, InputCommand::EnterEditor])
         );
     }
 

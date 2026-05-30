@@ -97,6 +97,8 @@ pub enum ScreenTransition {
         /// Final score to record.
         score: i32,
     },
+    /// Open the in-game level editor (the `Ctrl+E` title-screen cheat).
+    Editor,
     /// Exit the application.
     Quit,
 }
