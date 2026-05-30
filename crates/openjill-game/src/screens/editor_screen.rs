@@ -443,8 +443,9 @@ impl EditorScreen {
     }
 
     /// Handles input while in object mode: Escape leaves object mode, arrows
-    /// move the cursor, and `A`/`D`/`K` add / delete / select an object. `A`
-    /// opens the add-object name prompt.
+    /// move the cursor, and the letter commands act on objects - `A` add (opens
+    /// the name prompt), `D` delete under cursor, `K` select under cursor, `M`
+    /// move the selection to the cursor, `P` paste a copy at the cursor.
     fn update_object(&mut self, pressed: &ActiveInput, typed: &[char]) {
         if pressed.contains(&InputCommand::Pause) {
             self.object_mode = false;
