@@ -1,6 +1,5 @@
 //! DMA table export utilities.
 
-use crate::Row;
 use openjill_data::dma::DmaFile;
 use std::fmt::Write;
 
@@ -24,11 +23,6 @@ const FLAG_NAMES: &[(u16, &str)] = &[
     (0x2000, "WATER"),
     (0x4000, "WEAPON"),
 ];
-
-/// Converts parsed `JILL.DMA` metadata into tabular export rows.
-pub fn file_to_rows(_file: &DmaFile) -> Vec<Row> {
-    unimplemented!("DMA export wiring lands in a follow-up issue")
-}
 
 /// Exports parsed `JILL.DMA` entries into CSV with one row per entry.
 ///

@@ -1,17 +1,7 @@
 //! CFG export utilities.
 
-use crate::Row;
 use openjill_data::cfg::CfgFile;
 use std::fmt::Write;
-
-/// Converts parsed `JILL1.CFG` content into tabular export rows.
-///
-/// **Note:** this function is not yet implemented and will panic at runtime.
-/// It is retained as an internal placeholder for a future follow-up issue.
-#[allow(dead_code)]
-pub(crate) fn file_to_rows(_file: &CfgFile) -> Vec<Row> {
-    unimplemented!("CFG export wiring lands in a follow-up issue")
-}
 
 /// Exports parsed `JILL1.CFG` high-score entries into a human-readable aligned text table.
 ///
