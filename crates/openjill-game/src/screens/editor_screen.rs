@@ -14,12 +14,13 @@
 //! | Tab / Backspace | Next / previous palette tile |
 //! | Space / Shift | Paint the selected tile at the cursor |
 //! | `K` | Pick the tile under the cursor as the selected tile |
+//! | `H` | Flood-fill the cursor row with the selected tile |
 //! | `Z` / `N` | Clear to a new blank board |
 //! | Escape | Return to the start menu |
 //!
-//! The remaining DOS editor commands (`L`/`S` load/save, `H` flood-fill, `O`
-//! object mode, `Enter` load-by-name, Tab continuous-draw, Shift half-screen
-//! jumps) land in later epic-#210 sub-issues.
+//! The remaining DOS editor commands (`L`/`S` load/save, `O` object mode,
+//! `Enter` load-by-name, Tab continuous-draw, Shift half-screen jumps) land in
+//! later epic-#210 sub-issues.
 
 use crate::screens::intro_background::render_intro_background;
 use openjill_core::layout::{BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
@@ -28,7 +29,7 @@ use openjill_core::{
     ActiveInput, InputCommand, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
 };
 use openjill_data::dma::DmaFile;
-use openjill_data::jn::{BACKGROUND_HEIGHT, BACKGROUND_WIDTH, JnFile};
+use openjill_data::jn::{BACKGROUND_HEIGHT, BACKGROUND_MAP_CODE_MASK, BACKGROUND_WIDTH, JnFile};
 
 /// Number of whole tile columns the game area shows.
 const VISIBLE_TILES_X: usize = GAME_AREA_W as usize / BLOCK_SIZE_I as usize;
@@ -140,6 +141,47 @@ impl EditorScreen {
         }
     }
 
+    /// Fills the cursor's row horizontally (the `H` command): replaces the run
+    /// of cells equal to the cursor cell's current code with the selected tile,
+    /// extending left and right while the code matches. A no-op when nothing is
+    /// selected or the cell already holds the selected code.
+    fn flood_fill_row(&mut self) {
+        let Some(index) = self.selected_entry else {
+            return;
+        };
+        let Some(entry) = self.dma.entries().get(index) else {
+            return;
+        };
+        let new_code = entry.map_code() & BACKGROUND_MAP_CODE_MASK;
+        let row = self.cursor_y;
+        let target = self
+            .board
+            .background()
+            .map_code(self.cursor_x, row)
+            .unwrap_or(0);
+        if target == new_code {
+            return;
+        }
+        // Right from the cursor.
+        let mut x = self.cursor_x;
+        while self.board.background().map_code(x, row) == Some(target) {
+            self.board.set_background_code(x, row, new_code);
+            x += 1;
+            if x >= BACKGROUND_WIDTH {
+                break;
+            }
+        }
+        // Left from the cursor.
+        let mut x = self.cursor_x;
+        while x > 0 {
+            x -= 1;
+            if self.board.background().map_code(x, row) != Some(target) {
+                break;
+            }
+            self.board.set_background_code(x, row, new_code);
+        }
+    }
+
     /// Replaces the board with a fresh blank one and resets the cursor/camera
     /// (the `Z` clear / `N` new-board commands).
     fn clear_board(&mut self) {
@@ -152,7 +194,8 @@ impl EditorScreen {
 
     /// Applies the editor's letter-key commands from this tick's typed
     /// characters ([`RuntimeState::text_input`]): `K` picks the tile under the
-    /// cursor, `Z`/`N` clear to a new blank board. Case-insensitive. Returns
+    /// cursor, `H` flood-fills the cursor row, `Z`/`N` clear to a new blank
+    /// board. Case-insensitive. Returns
     /// `true` when at least one command ran (so the caller can suppress paint -
     /// an uppercase command is typed with Shift, which also maps to the paint
     /// key).
@@ -161,6 +204,7 @@ impl EditorScreen {
         for ch in typed {
             match ch.to_ascii_lowercase() {
                 'k' => self.pick_tile(),
+                'h' => self.flood_fill_row(),
                 'z' | 'n' => self.clear_board(),
                 _ => continue,
             }
@@ -295,7 +339,7 @@ fn clamp_step(value: usize, delta: isize, len: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{EditorScreen, VISIBLE_TILES_X};
+    use super::{BACKGROUND_WIDTH, EditorScreen, VISIBLE_TILES_X};
     use openjill_core::runtime::RuntimeState;
     use openjill_core::{ActiveInput, InputCommand, ScreenHandler, ScreenTransition};
     use openjill_data::dma::DmaFile;
@@ -466,6 +510,36 @@ mod tests {
             reparsed.background().map_code(0, 0),
             Some(0x0A),
             "paint must be suppressed, leaving the cell unchanged"
+        );
+    }
+
+    /// Unit under test: the `H` command flood-fills the cursor's row.
+    ///
+    /// On a blank board the whole row shares code 0, so filling at any cell
+    /// replaces the entire row with the selected tile; other rows are untouched.
+    #[test]
+    fn h_flood_fills_the_cursor_row() {
+        let mut screen = EditorScreen::new(JnFile::blank(), dma_with_codes(&[0x0A]));
+        for _ in 0..3 {
+            press(&mut screen, InputCommand::MoveRight);
+        }
+        for _ in 0..2 {
+            press(&mut screen, InputCommand::Duck); // row 2
+        }
+        type_char(&mut screen, 'h');
+
+        let reparsed = JnFile::from_bytes(screen.board.to_bytes()).expect("board round-trips");
+        for x in 0..BACKGROUND_WIDTH {
+            assert_eq!(
+                reparsed.background().map_code(x, 2),
+                Some(0x0A),
+                "row cell {x} must be filled"
+            );
+        }
+        assert_eq!(
+            reparsed.background().map_code(0, 1),
+            Some(0),
+            "other rows untouched"
         );
     }
 
