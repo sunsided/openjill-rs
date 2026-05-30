@@ -5,5 +5,6 @@
 //! and `openjill-export` converters.
 
 pub mod cfg;
+pub mod jn;
 pub mod sha;
 pub mod vcl;
