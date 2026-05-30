@@ -158,6 +158,9 @@ static MENU_LAYOUT: LazyLock<MenuLayout> = LazyLock::new(parse_menu_layout);
 pub struct StartMenuScreen {
     /// Parsed `INTRO.JN1` for background rendering.
     intro: JnFile,
+    /// Active episode's intro-level JN filename (e.g. `INTRO.JN1`), used by the
+    /// `Ctrl+P` cheat to play the intro level on the correct episode.
+    intro_file: String,
     /// Parsed `JILL.DMA` for map-code to tile lookup.
     dma: DmaFile,
     /// Parsed `JILL1.VCL` for the info-box overlay text.
@@ -194,11 +197,20 @@ impl StartMenuScreen {
     /// Creates the start menu screen from pre-loaded episode data.
     ///
     /// `sha` is consumed only to derive the Jill-portrait tile layout; the
-    /// caller retains ownership of the file.
-    pub fn new(intro: JnFile, dma: DmaFile, vcl: VclFile, cfg: CfgFile, sha: &ShaFile) -> Self {
+    /// caller retains ownership of the file. `intro_file` is the active episode's
+    /// intro-level JN filename ([`Episode::intro_jn`](openjill_data::episode::Episode::intro_jn)).
+    pub fn new(
+        intro: JnFile,
+        intro_file: String,
+        dma: DmaFile,
+        vcl: VclFile,
+        cfg: CfgFile,
+        sha: &ShaFile,
+    ) -> Self {
         let portrait_tiles = compute_portrait_tiles(sha);
         Self {
             intro,
+            intro_file,
             dma,
             vcl,
             cfg,
@@ -280,6 +292,16 @@ impl StartMenuScreen {
                 self.load_cursor = (self.load_cursor + 1) % slot_count;
             }
             return None;
+        }
+
+        // Ctrl+P: play the intro level (the title-screen cheat). Checked before
+        // the confirm key because Ctrl also maps to ThrowItem (confirm), so this
+        // early return keeps the chord from also activating the selected item.
+        if input.contains(&InputCommand::PlayIntro) {
+            return Some(ScreenTransition::Level {
+                file: self.intro_file.clone(),
+                number: 0,
+            });
         }
 
         let layout = &*MENU_LAYOUT;
@@ -890,7 +912,14 @@ mod tests {
 
     /// Creates a `StartMenuScreen` with all-zero synthetic fixtures.
     fn menu() -> StartMenuScreen {
-        StartMenuScreen::new(zero_jn(), empty_dma(), zero_vcl(), zero_cfg(), &zero_sha())
+        StartMenuScreen::new(
+            zero_jn(),
+            String::from("INTRO.JN1"),
+            empty_dma(),
+            zero_vcl(),
+            zero_cfg(),
+            &zero_sha(),
+        )
     }
 
     /// Presses one input for a single tick, then releases it with an empty
@@ -920,6 +949,29 @@ mod tests {
         input.insert(InputCommand::ThrowItem);
         let result = screen.tick(&input, &mut RuntimeState::new());
         assert_eq!(result.transition, Some(ScreenTransition::Map));
+    }
+
+    /// Unit under test: the `Ctrl+P` intro-play cheat on the base menu.
+    ///
+    /// Preconditions: no overlay; `InputCommand::PlayIntro` (the chord) pressed
+    /// this tick, together with the `ThrowItem` that `Ctrl` also produces.
+    ///
+    /// Invariants asserted: it transitions straight to the playable intro level
+    /// (`INTRO.JN1`), taking priority over the `Ctrl`-as-`ThrowItem` confirm.
+    #[test]
+    fn ctrl_p_plays_the_intro_level() {
+        let mut screen = menu();
+        let mut input = ActiveInput::new();
+        input.insert(InputCommand::PlayIntro);
+        input.insert(InputCommand::ThrowItem);
+        let result = screen.tick(&input, &mut RuntimeState::new());
+        assert_eq!(
+            result.transition,
+            Some(ScreenTransition::Level {
+                file: String::from("INTRO.JN1"),
+                number: 0,
+            })
+        );
     }
 
     /// Unit under test: Escape (`InputCommand::Pause`) quits from the start menu.
@@ -1160,7 +1212,14 @@ mod tests {
     #[test]
     fn info_box_splits_text_on_newlines() {
         let vcl = vcl_with_entry_zero("LINE 1\nLINE 2\nLINE 3");
-        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg(), &zero_sha());
+        let mut screen = StartMenuScreen::new(
+            zero_jn(),
+            String::from("INTRO.JN1"),
+            empty_dma(),
+            vcl,
+            zero_cfg(),
+            &zero_sha(),
+        );
 
         let commands = open_info_box_overlay(&mut screen);
         let lines = info_box_lines(&commands);
@@ -1195,7 +1254,14 @@ mod tests {
     fn info_box_clips_lines_beyond_max() {
         let lines_in: Vec<String> = (0..20).map(|i| format!("L{i}")).collect();
         let vcl = vcl_with_entry_zero(&lines_in.join("\n"));
-        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg(), &zero_sha());
+        let mut screen = StartMenuScreen::new(
+            zero_jn(),
+            String::from("INTRO.JN1"),
+            empty_dma(),
+            vcl,
+            zero_cfg(),
+            &zero_sha(),
+        );
 
         let commands = open_info_box_overlay(&mut screen);
         let lines_out = info_box_lines(&commands);
@@ -1221,7 +1287,14 @@ mod tests {
     #[test]
     fn info_box_single_line_unchanged() {
         let vcl = vcl_with_entry_zero("ONLY LINE");
-        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg(), &zero_sha());
+        let mut screen = StartMenuScreen::new(
+            zero_jn(),
+            String::from("INTRO.JN1"),
+            empty_dma(),
+            vcl,
+            zero_cfg(),
+            &zero_sha(),
+        );
 
         let commands = open_info_box_overlay(&mut screen);
         let lines = info_box_lines(&commands);

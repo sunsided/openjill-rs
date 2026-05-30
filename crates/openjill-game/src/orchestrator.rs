@@ -26,9 +26,10 @@ use crate::screens::start_menu::StartMenuScreen;
 /// `cfg` is the live runtime config (from the [`SaveStore`]) so the start
 /// menu's high-score panel and load-game overlay reflect recorded scores and
 /// saved games rather than the original shipped episode CFG (e.g. `JILL1.CFG`).
-fn make_start_menu(cache: &AssetCache, cfg: &CfgFile) -> StartMenuScreen {
+fn make_start_menu(cache: &AssetCache, cfg: &CfgFile, episode: &Episode) -> StartMenuScreen {
     StartMenuScreen::new(
         cache.intro_jn.clone(),
+        episode.intro_jn(),
         cache.dma.clone(),
         cache.vcl.clone(),
         cfg.clone(),
@@ -206,7 +207,8 @@ impl GameOrchestrator {
         // Open the writable runtime store before moving `data_dir` into `Self`;
         // this seeds the per-user config copy from the original on first launch.
         let saves = SaveStore::open(&data_dir, episode)?;
-        let handler: Box<dyn ScreenHandler> = Box::new(make_start_menu(&cache, saves.cfg()));
+        let handler: Box<dyn ScreenHandler> =
+            Box::new(make_start_menu(&cache, saves.cfg(), episode));
         Ok(Self {
             cache,
             state: RuntimeState::new(),
@@ -584,7 +586,8 @@ impl GameOrchestrator {
                         eprintln!(
                             "openjill-game: failed to load {map_file} ({err}); falling back to start menu"
                         );
-                        self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
+                        self.handler =
+                            Box::new(make_start_menu(&self.cache, self.saves.cfg(), self.episode));
                     }
                 }
             }
@@ -629,7 +632,8 @@ impl GameOrchestrator {
                         eprintln!(
                             "openjill-game: failed to load level {file} ({err}); falling back to start menu"
                         );
-                        self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
+                        self.handler =
+                            Box::new(make_start_menu(&self.cache, self.saves.cfg(), self.episode));
                     }
                 }
             }
@@ -660,7 +664,11 @@ impl GameOrchestrator {
                             eprintln!(
                                 "openjill-game: failed to restart level ({err}); falling back to start menu"
                             );
-                            self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
+                            self.handler = Box::new(make_start_menu(
+                                &self.cache,
+                                self.saves.cfg(),
+                                self.episode,
+                            ));
                         }
                     }
                 } else {
@@ -670,7 +678,8 @@ impl GameOrchestrator {
                     // Clear the dispatcher before the swap so no stale level
                     // subscribers or pending messages survive into the menu.
                     self.dispatcher.clear();
-                    self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
+                    self.handler =
+                        Box::new(make_start_menu(&self.cache, self.saves.cfg(), self.episode));
                 }
             }
         }
@@ -717,7 +726,7 @@ impl GameOrchestrator {
         self.level_jn_number = None;
         self.level_entry_state = None;
         self.dispatcher.clear();
-        self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
+        self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg(), self.episode));
     }
 
     /// Pushes the current CFG save-slot names into the active handler so an

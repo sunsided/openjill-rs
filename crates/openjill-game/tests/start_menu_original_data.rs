@@ -89,6 +89,7 @@ fn start_menu_constructs_and_renders_with_original_data() {
 
     let mut screen = StartMenuScreen::new(
         cache.intro_jn.clone(),
+        episode::JILL1.intro_jn(),
         cache.dma.clone(),
         cache.vcl.clone(),
         cache.cfg.clone(),
@@ -159,6 +160,7 @@ fn start_menu_constructs_and_renders_with_original_data() {
     // Escape (Pause) from the base menu quits the game.
     let mut screen2 = StartMenuScreen::new(
         cache.intro_jn.clone(),
+        episode::JILL1.intro_jn(),
         cache.dma.clone(),
         cache.vcl.clone(),
         cache.cfg.clone(),

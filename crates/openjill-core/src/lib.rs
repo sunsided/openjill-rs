@@ -63,6 +63,10 @@ pub enum InputCommand {
     Save,
     /// Restore a saved game (control-panel "RESTORE" option).
     Restore,
+    /// Play the intro level from the title screen (the original `Ctrl+P`
+    /// title-screen cheat). Produced only as a modifier chord and consumed only
+    /// by the start menu.
+    PlayIntro,
 }
 
 #[derive(Clone, Debug)]

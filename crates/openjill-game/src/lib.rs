@@ -163,15 +163,27 @@ impl GameApp {
             .find_map(|(mapped_key, command)| (*mapped_key == key_code).then_some(*command))
     }
 
+    /// Returns `true` for keys that are tracked in the pressed-keys set despite
+    /// having no standalone command binding, because they form a modifier chord.
+    ///
+    /// Currently just `P`, the second key of the `Ctrl+P` intro-play title-screen
+    /// cheat ([`active_commands`](Self::active_commands) emits
+    /// [`InputCommand::PlayIntro`] only when `Ctrl` is also held).
+    const fn is_chord_key(key_code: KeyCode) -> bool {
+        matches!(key_code, KeyCode::KeyP)
+    }
+
     /// Applies one key press or release to the pressed-keys set.
     ///
-    /// Unmapped keys are silently ignored and leave the set unchanged.
+    /// Unmapped keys are silently ignored and leave the set unchanged, except for
+    /// chord-component keys ([`is_chord_key`](Self::is_chord_key)), which are
+    /// tracked so modifier chords can be detected.
     fn update_pressed_keys(
         pressed_keys: &mut BTreeSet<KeyCode>,
         key_code: KeyCode,
         state: ElementState,
     ) {
-        if Self::map_key_to_input_command(key_code).is_none() {
+        if Self::map_key_to_input_command(key_code).is_none() && !Self::is_chord_key(key_code) {
             return;
         }
         match state {
@@ -188,11 +200,21 @@ impl GameApp {
     ///
     /// Multiple held keys mapped to the same command collapse to a single entry,
     /// and a command remains active as long as at least one bound key is held.
+    /// Modifier chords are resolved here: `Ctrl+P` adds
+    /// [`InputCommand::PlayIntro`] (the start-menu intro-play cheat).
     fn active_commands(pressed_keys: &BTreeSet<KeyCode>) -> BTreeSet<InputCommand> {
-        pressed_keys
+        let mut commands: BTreeSet<InputCommand> = pressed_keys
             .iter()
             .filter_map(|key| Self::map_key_to_input_command(*key))
-            .collect()
+            .collect();
+
+        let ctrl_held = pressed_keys.contains(&KeyCode::ControlLeft)
+            || pressed_keys.contains(&KeyCode::ControlRight);
+        if ctrl_held && pressed_keys.contains(&KeyCode::KeyP) {
+            commands.insert(InputCommand::PlayIntro);
+        }
+
+        commands
     }
 
     /// Dispatches debug-only level-transition hotkeys (debug builds only).
@@ -568,6 +590,39 @@ mod tests {
         assert_eq!(
             GameApp::active_commands(&pressed),
             BTreeSet::from([InputCommand::Jump])
+        );
+    }
+
+    /// Unit under test: `GameApp::active_commands` resolves the `Ctrl+P` chord.
+    ///
+    /// Preconditions: the chord-component key `P` (tracked despite no standalone
+    /// binding) is held with and without a `Ctrl` key.
+    ///
+    /// Invariants asserted: `P` alone produces no command; with `Ctrl` held the
+    /// set gains [`InputCommand::PlayIntro`] (alongside the `ThrowItem` that
+    /// `Ctrl` itself maps to), and `P` is tracked / released in the set.
+    #[test]
+    fn active_commands_resolves_ctrl_p_intro_chord() {
+        let mut pressed = BTreeSet::new();
+
+        // P alone: tracked, but no standalone command and no chord.
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::KeyP, ElementState::Pressed);
+        assert!(pressed.contains(&KeyCode::KeyP));
+        assert_eq!(GameApp::active_commands(&pressed), BTreeSet::new());
+
+        // Ctrl+P: PlayIntro appears alongside Ctrl's ThrowItem.
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::ControlLeft, ElementState::Pressed);
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::ThrowItem, InputCommand::PlayIntro])
+        );
+
+        // Releasing P drops the chord (Ctrl's ThrowItem remains).
+        GameApp::update_pressed_keys(&mut pressed, KeyCode::KeyP, ElementState::Released);
+        assert!(!pressed.contains(&KeyCode::KeyP));
+        assert_eq!(
+            GameApp::active_commands(&pressed),
+            BTreeSet::from([InputCommand::ThrowItem])
         );
     }
 
