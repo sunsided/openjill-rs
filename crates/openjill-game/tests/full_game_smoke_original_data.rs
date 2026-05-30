@@ -101,3 +101,73 @@ fn boots_and_runs_episode_1_from_original_data() {
         "the level should render real content (at least one Blit)"
     );
 }
+
+/// Episode 1 level JN files shipped with the original data.
+const EPISODE_1_LEVELS: &[(&str, i32)] = &[
+    ("1.JN1", 1),
+    ("2.JN1", 2),
+    ("3.JN1", 3),
+    ("4.JN1", 4),
+    ("6.JN1", 6),
+    ("9.JN1", 9),
+    ("50.JN1", 50),
+];
+
+/// Unit under test: every episode 1 level (and the world map) loads and ticks
+/// from the original data without panicking.
+///
+/// Preconditions: `OPENJILL_DATA_DIR` (or the default `data/original/JILL1`)
+/// holds the episode 1 level files. Skips otherwise.
+///
+/// Invariants asserted: the world map and each level load via `force_transition`,
+/// tick for many frames while walking, each render a frame with real content
+/// (at least one `Blit`), and the run never quits. This broadens the single-level
+/// smoke test to guard asset loading + the tick loop across the whole episode.
+#[test]
+fn every_episode_1_level_loads_and_ticks() {
+    let env_override = std::env::var_os(DATA_DIR_ENV);
+    let data_dir = match resolve_data_dir(env_override.as_deref()) {
+        Some(dir) => dir,
+        None => {
+            eprintln!(
+                "skipping per-level smoke test; {DATA_DIR_ENV} is not set \
+                 and default data directory is missing"
+            );
+            return;
+        }
+    };
+
+    let mut orchestrator = GameOrchestrator::new(DataDirectory::new(data_dir), &episode::JILL1)
+        .expect("orchestrator must boot from original episode 1 data");
+
+    let walk_right = input(InputCommand::MoveRight);
+    let idle = ActiveInput::new();
+
+    // World map first, then every level.
+    orchestrator.force_transition(ScreenTransition::Map);
+    for _ in 0..30 {
+        let commands = orchestrator.tick(&idle);
+        assert!(!commands.is_empty(), "world map must render a frame");
+        assert!(!orchestrator.is_quitting(), "map run must not quit");
+    }
+
+    for &(file, number) in EPISODE_1_LEVELS {
+        orchestrator.force_transition(ScreenTransition::Level {
+            file: String::from(file),
+            number,
+        });
+        let mut saw_blit = false;
+        for tick in 0..120 {
+            let commands = orchestrator.tick(if tick % 20 < 10 { &walk_right } else { &idle });
+            assert!(!commands.is_empty(), "level {file} must render a frame");
+            saw_blit |= commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::Blit { .. }));
+            assert!(
+                !orchestrator.is_quitting(),
+                "level {file} smoke run must not quit"
+            );
+        }
+        assert!(saw_blit, "level {file} should render real content (a Blit)");
+    }
+}
