@@ -26,7 +26,7 @@ use openjill_core::{
     ActiveInput, BACKGROUND_GRID_HEIGHT, BACKGROUND_GRID_WIDTH, BackgroundEntity, BackgroundGrid,
     ChangeLevelPayload, ClipRect, DeathKind, FontSize, InputCommand, InventoryObject, MAP_LEVEL,
     MessageDispatcher, MessageHandler, MessagePayload, MessageType, ObjectEntity, Rect,
-    RenderCommand, ScreenHandler, ScreenTransition, TickResult,
+    RenderCommand, ScreenHandler, ScreenTransition, SoundEvent, TickResult,
 };
 use openjill_data::dma::DmaFile;
 use openjill_data::jn::{JnFile, JnObject, JnReadError};
@@ -467,6 +467,29 @@ impl MessageHandler for CreateObjectHandler {
     }
 }
 
+/// Shared queue of [`SoundEvent`]s dispatched during one tick, populated by
+/// [`SoundHandler`] and drained each tick into the screen's
+/// [`TickResult::sound_events`].
+type SoundInbox = Arc<Mutex<Vec<SoundEvent>>>;
+
+/// Dispatcher handler that records arriving `PlaySound` requests.
+struct SoundHandler {
+    /// Shared inbox the level screen drains every tick.
+    inbox: SoundInbox,
+}
+
+impl MessageHandler for SoundHandler {
+    /// Appends the carried [`SoundEvent`] to the inbox; other payload variants
+    /// are ignored.
+    fn handle(&mut self, _msg_type: MessageType, payload: &MessagePayload) {
+        if let MessagePayload::Sound(event) = payload
+            && let Ok(mut queue) = self.inbox.lock()
+        {
+            queue.push(*event);
+        }
+    }
+}
+
 /// Shared queue of `(cell_x, cell_y)` background-clear requests dispatched
 /// during one tick.
 ///
@@ -630,6 +653,9 @@ pub struct LevelScreen {
     /// Drained each tick by [`Self::spawn_objects`] which appends a new
     /// [`BulletEntity`] to the active object list for each entry.
     create_object_inbox: CreateObjectInbox,
+    /// Shared queue of [`SoundEvent`]s dispatched via `PlaySound` during the
+    /// current tick, drained into the tick's [`TickResult::sound_events`].
+    sound_inbox: SoundInbox,
     /// Shared queue of `(cell_x, cell_y)` background-clear requests dispatched
     /// by door entities when they open.
     ///
@@ -775,6 +801,14 @@ impl LevelScreen {
             }),
         );
 
+        let sound_inbox: SoundInbox = Arc::new(Mutex::new(Vec::new()));
+        entity_dispatcher.subscribe(
+            MessageType::PlaySound,
+            Box::new(SoundHandler {
+                inbox: Arc::clone(&sound_inbox),
+            }),
+        );
+
         Self {
             jn,
             jn_bytes,
@@ -806,6 +840,7 @@ impl LevelScreen {
             trigger_inbox,
             player_move_inbox,
             create_object_inbox,
+            sound_inbox,
             background_clear_inbox,
         }
     }
@@ -1008,6 +1043,15 @@ impl LevelScreen {
             state.invincibility_ticks = openjill_core::PLAYER_INVINCIBILITY_TICKS;
             if state.health == 0 {
                 objects[player_idx].on_kill(1, kind);
+                entity_dispatcher.send(
+                    MessageType::PlaySound,
+                    MessagePayload::Sound(SoundEvent::PlayerDie),
+                );
+            } else {
+                entity_dispatcher.send(
+                    MessageType::PlaySound,
+                    MessagePayload::Sound(SoundEvent::PlayerHurt),
+                );
             }
         }
     }
@@ -1944,10 +1988,18 @@ impl ScreenHandler for LevelScreen {
             transition = menu_transition;
         }
 
+        // Drain the sounds emitted by entities this tick (PlaySound handlers run
+        // synchronously during the update passes above), leaving the inbox empty
+        // for the next tick.
+        let sound_events = {
+            let mut queue = self.sound_inbox.lock().expect("sound inbox mutex poisoned");
+            std::mem::take(&mut *queue)
+        };
+
         TickResult {
             commands,
             transition,
-            sound_events: Vec::new(),
+            sound_events,
         }
     }
 
