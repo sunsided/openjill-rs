@@ -1143,8 +1143,12 @@ mod tests {
             "inventory must reset to the fresh-game default"
         );
         assert!(
-            orchestrator.map_jn_bytes.is_none() && orchestrator.level_jn_number.is_none(),
-            "cached level/map bytes must clear so the next game starts fresh"
+            orchestrator.map_jn_bytes.is_none()
+                && orchestrator.level_jn_bytes.is_none()
+                && orchestrator.level_jn_file.is_none()
+                && orchestrator.level_jn_number.is_none()
+                && orchestrator.level_entry_state.is_none(),
+            "all cached level/map state must clear so the next game starts fresh"
         );
     }
 
