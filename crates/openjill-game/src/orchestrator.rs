@@ -664,7 +664,11 @@ impl GameOrchestrator {
             ScreenTransition::RestartLevel => {
                 // A death consumes one life. When the last one is spent the run
                 // is over; otherwise the level restarts from its entry state.
-                self.state.lives -= 1;
+                // God mode keeps the life count (so a playtest fall-out respawns
+                // indefinitely without burning through lives).
+                if !self.state.invincible {
+                    self.state.lives -= 1;
+                }
                 if self.state.lives <= 0 {
                     self.game_over();
                 } else if let Some(bytes) = self.level_jn_bytes.clone() {
