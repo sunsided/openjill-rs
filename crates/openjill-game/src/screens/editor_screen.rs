@@ -22,9 +22,10 @@
 //!
 //! In **object mode** the cursor + arrows operate on the object layer: `A` adds
 //! an object (type-name prompt), `D` deletes the object under the cursor, `K`
-//! selects it; visible objects are drawn as small markers.
+//! selects it, `M` moves the selected object to the cursor, `P` pastes a copy
+//! of it at the cursor; visible objects are drawn as small markers.
 //!
-//! The remaining DOS editor commands (`P`/`O`/`M` paste/move/modify, `Enter`
+//! The remaining DOS editor commands (`M`-style field modify, `Enter`
 //! load-by-name, Tab continuous-draw, Shift half-screen jumps) land in later
 //! epic-#210 sub-issues.
 
@@ -387,9 +388,64 @@ impl EditorScreen {
         });
     }
 
+    /// The cursor position in object-layer pixels.
+    fn cursor_pixels(&self) -> (u16, u16) {
+        let block = BLOCK_SIZE_I as usize;
+        (
+            (self.cursor_x * block) as u16,
+            (self.cursor_y * block) as u16,
+        )
+    }
+
+    /// Moves the selected object to the cursor (the `M` command). A no-op when
+    /// nothing is selected.
+    fn move_selected_to_cursor(&mut self) {
+        let Some(index) = self.selected_object else {
+            self.status = Some("No object selected".to_string());
+            return;
+        };
+        let (x, y) = self.cursor_pixels();
+        match self.board.object_mut(index) {
+            Some(object) => {
+                object.set_position(x, y);
+                self.status = Some("Moved object".to_string());
+            }
+            None => self.selected_object = None,
+        }
+    }
+
+    /// Pastes a copy of the selected object at the cursor (the `P` command) and
+    /// selects the copy. The copy carries the source's type, size, and live
+    /// state but no string-stack linkage (it is built via [`JnObject::spawned`],
+    /// so `push_object` stays round-trip safe). A no-op when nothing is selected.
+    fn paste_selected_at_cursor(&mut self) {
+        let Some(index) = self.selected_object else {
+            self.status = Some("No object selected".to_string());
+            return;
+        };
+        let Some(source) = self.board.objects().get(index).cloned() else {
+            self.selected_object = None;
+            return;
+        };
+        let (x, y) = self.cursor_pixels();
+        let mut copy =
+            JnObject::spawned(source.object_type(), x, y, source.width(), source.height());
+        copy.set_speed(source.x_speed(), source.y_speed());
+        copy.set_state(source.state());
+        copy.set_sub_state(source.sub_state());
+        copy.set_state_count(source.state_count());
+        copy.set_counter(source.counter());
+        copy.set_flags(source.flags());
+        copy.set_info1(source.info1());
+        copy.set_zap_hold(source.zap_hold());
+        self.selected_object = Some(self.board.push_object(copy));
+        self.status = Some("Pasted object".to_string());
+    }
+
     /// Handles input while in object mode: Escape leaves object mode, arrows
-    /// move the cursor, and `A`/`D`/`K` add / delete / select an object. `A`
-    /// opens the add-object name prompt.
+    /// move the cursor, and the letter commands act on objects - `A` add (opens
+    /// the name prompt), `D` delete under cursor, `K` select under cursor, `M`
+    /// move the selection to the cursor, `P` paste a copy at the cursor.
     fn update_object(&mut self, pressed: &ActiveInput, typed: &[char]) {
         if pressed.contains(&InputCommand::Pause) {
             self.object_mode = false;
@@ -400,6 +456,8 @@ impl EditorScreen {
                 'a' => self.start_prompt(PromptAction::AddObject),
                 'd' => self.delete_object_under_cursor(),
                 'k' => self.select_object_under_cursor(),
+                'm' => self.move_selected_to_cursor(),
+                'p' => self.paste_selected_at_cursor(),
                 _ => {}
             }
         }
@@ -1087,5 +1145,53 @@ mod tests {
         press(&mut screen, InputCommand::Pause); // leave object mode
         type_char(&mut screen, 'n'); // clear the board (tile mode)
         assert_eq!(screen.selected_object, None);
+    }
+
+    /// Unit under test: `M` moves the selected object to the cursor.
+    #[test]
+    fn object_mode_moves_selected_object_to_cursor() {
+        let mut screen = editor(dma_with_codes(&[0x0A]));
+        type_char(&mut screen, 'o');
+        type_char(&mut screen, 'a');
+        type_string(&mut screen, "Apple");
+        confirm_prompt(&mut screen); // object at (0,0)
+        type_char(&mut screen, 'k'); // select it
+
+        press(&mut screen, InputCommand::MoveRight);
+        press(&mut screen, InputCommand::MoveRight);
+        press(&mut screen, InputCommand::MoveRight); // x=3
+        press(&mut screen, InputCommand::Duck); // y=1
+        type_char(&mut screen, 'm');
+
+        assert_eq!(screen.board.objects().len(), 1);
+        let object = &screen.board.objects()[0];
+        assert_eq!(object.x() as usize / 16, 3);
+        assert_eq!(object.y() as usize / 16, 1);
+    }
+
+    /// Unit under test: `P` pastes a copy of the selected object at the cursor
+    /// (string-free), and selects the copy.
+    #[test]
+    fn object_mode_pastes_a_copy_at_cursor() {
+        let mut screen = editor(dma_with_codes(&[0x0A]));
+        type_char(&mut screen, 'o');
+        type_char(&mut screen, 'a');
+        type_string(&mut screen, "Apple");
+        confirm_prompt(&mut screen); // object at (0,0)
+        type_char(&mut screen, 'k'); // select it
+
+        press(&mut screen, InputCommand::MoveRight); // x=1
+        type_char(&mut screen, 'p');
+
+        assert_eq!(screen.board.objects().len(), 2, "paste adds a copy");
+        let copy = &screen.board.objects()[1];
+        assert_eq!(copy.object_type(), 1);
+        assert_eq!(copy.x() as usize / 16, 1);
+        assert_eq!(copy.pointer(), 0, "pasted copy carries no string linkage");
+        assert_eq!(
+            screen.selected_object,
+            Some(1),
+            "selection follows the copy"
+        );
     }
 }

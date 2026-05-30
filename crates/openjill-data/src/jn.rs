@@ -540,6 +540,16 @@ impl JnFile {
         index
     }
 
+    /// Returns a mutable reference to the object at `index` (the level editor's
+    /// "move"/"modify" commands), or `None` when out of range.
+    ///
+    /// Callers may change live state and geometry fields via the [`JnObject`]
+    /// setters. Changing an object's `pointer` between zero and nonzero alters
+    /// the object-to-string linkage and is not supported through this accessor.
+    pub fn object_mut(&mut self, index: usize) -> Option<&mut JnObject> {
+        self.objects.get_mut(index)
+    }
+
     /// Removes and returns the object at `index` (the level editor's "delete
     /// object" command), or `None` when `index` is out of range.
     ///
@@ -1196,6 +1206,28 @@ mod tests {
         check!(jn.objects().is_empty());
         let reparsed = JnFile::from_bytes(jn.to_bytes()).expect("blank must round-trip");
         check!(reparsed == jn);
+    }
+
+    /// Unit under test: [`JnFile::object_mut`] edits an object in place.
+    ///
+    /// Invariant: a mutation through `object_mut` survives a `to_bytes` round
+    /// trip, and an out-of-range index returns `None`.
+    #[test]
+    fn object_mut_edits_in_place_and_round_trips() {
+        let mut bytes = base_background();
+        write_u16(&mut bytes, 1);
+        write_object(&mut bytes, ObjectFixture::sample(5, 1, 2, 0));
+        write_save_data(&mut bytes, 1, 6, &[], 0);
+        let mut jn = JnFile::from_bytes(bytes).expect("JN parse should succeed");
+
+        jn.object_mut(0)
+            .expect("object 0 exists")
+            .set_position(64, 48);
+        check!(jn.object_mut(5).is_none());
+
+        let reparsed = JnFile::from_bytes(jn.to_bytes()).expect("re-parse should succeed");
+        check!(reparsed.objects()[0].x() == 64);
+        check!(reparsed.objects()[0].y() == 48);
     }
 
     /// Builds the fixed zero-filled background fixture.
