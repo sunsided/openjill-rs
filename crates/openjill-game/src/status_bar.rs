@@ -7,12 +7,10 @@ use openjill_core::{FontSize, RenderCommand};
 use std::sync::LazyLock;
 
 /// Embedded JSON describing the static VGA status bar tile layout.
-pub(crate) const STATUS_BAR_JSON: &str =
-    include_str!("../../../OpenJill/src/main/resources/status_bar_vga.json");
+pub(crate) const STATUS_BAR_JSON: &str = include_str!("../resources/status_bar_vga.json");
 
 /// Embedded JSON describing the control area text and key-binding labels.
-pub(crate) const CONTROL_AREA_JSON: &str =
-    include_str!("../../../OpenJill/src/main/resources/control_area.json");
+pub(crate) const CONTROL_AREA_JSON: &str = include_str!("../resources/control_area.json");
 
 /// Cached static VGA status bar commands parsed from [`STATUS_BAR_JSON`].
 static STATUS_BAR_COMMANDS: LazyLock<Vec<RenderCommand>> = LazyLock::new(parse_status_bar_commands);
