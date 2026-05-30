@@ -152,20 +152,34 @@ impl EditorScreen {
 
     /// Applies the editor's letter-key commands from this tick's typed
     /// characters ([`RuntimeState::text_input`]): `K` picks the tile under the
-    /// cursor, `Z`/`N` clear to a new blank board. Case-insensitive.
-    fn handle_text_commands(&mut self, typed: &[char]) {
+    /// cursor, `Z`/`N` clear to a new blank board. Case-insensitive. Returns
+    /// `true` when at least one command ran (so the caller can suppress paint -
+    /// an uppercase command is typed with Shift, which also maps to the paint
+    /// key).
+    fn handle_text_commands(&mut self, typed: &[char]) -> bool {
+        let mut handled = false;
         for ch in typed {
             match ch.to_ascii_lowercase() {
                 'k' => self.pick_tile(),
                 'z' | 'n' => self.clear_board(),
-                _ => {}
+                _ => continue,
             }
+            handled = true;
         }
+        handled
     }
 
     /// Processes the rising-edge input set, returning a transition when the
     /// player exits.
-    fn process_input(&mut self, input: &ActiveInput) -> Option<ScreenTransition> {
+    ///
+    /// `suppress_paint` skips the paint action for this tick; the caller sets it
+    /// when a letter command ran, because an uppercase command is typed with
+    /// Shift, which also maps to the paint key ([`InputCommand::Jump`]).
+    fn process_input(
+        &mut self,
+        input: &ActiveInput,
+        suppress_paint: bool,
+    ) -> Option<ScreenTransition> {
         let pressed: ActiveInput = input.difference(&self.prev_input).copied().collect();
         self.prev_input = input.clone();
         if pressed.is_empty() {
@@ -194,7 +208,7 @@ impl EditorScreen {
         if pressed.contains(&InputCommand::PrevInventory) {
             self.cycle_tile(-1);
         }
-        if pressed.contains(&InputCommand::Jump) {
+        if !suppress_paint && pressed.contains(&InputCommand::Jump) {
             self.place_tile();
         }
 
@@ -259,12 +273,12 @@ impl ScreenHandler for EditorScreen {
     /// Advances the editor one tick: applies input, then renders the board and
     /// cursor.
     fn tick(&mut self, input: &ActiveInput, state: &mut RuntimeState) -> TickResult {
-        let transition = self.process_input(input);
-        // Letter-key commands arrive as typed characters on the per-tick
-        // text-input channel; skip them on the tick we leave the editor.
-        if transition.is_none() {
-            self.handle_text_commands(&state.text_input);
-        }
+        // Letter-key commands (typed characters) run first and take precedence
+        // over paint: an uppercase command (e.g. `K`) is typed with Shift, which
+        // also maps to the paint key, so a paint here would clobber the cell that
+        // `K` is meant to pick. When a command ran, paint is suppressed.
+        let ran_command = self.handle_text_commands(&state.text_input);
+        let transition = self.process_input(input, ran_command);
         let commands = self.render();
         TickResult {
             commands,
@@ -420,6 +434,39 @@ mod tests {
         press(&mut screen, InputCommand::MoveLeft); // back to (0,0)
         type_char(&mut screen, 'k');
         assert_eq!(screen.selected_entry, Some(0));
+    }
+
+    /// Unit under test: uppercase `K` (Shift+K) picks without painting.
+    ///
+    /// Regression: Shift maps to `Jump` (paint), so `Shift+K` arrives as typed
+    /// `K` plus a paint command in the same tick. Letter commands must run first
+    /// and suppress the paint, so `K` picks the cell's existing tile instead of
+    /// the paint clobbering it with the selected tile.
+    #[test]
+    fn uppercase_k_picks_without_painting() {
+        let mut screen = EditorScreen::new(JnFile::blank(), dma_with_codes(&[0x0A, 0x0B]));
+        press(&mut screen, InputCommand::Jump); // paint entry 0 (0x0A) at (0,0)
+        press(&mut screen, InputCommand::NextInventory); // select entry 1 (0x0B)
+        assert_eq!(screen.selected_entry, Some(1));
+
+        // Shift+K at (0,0): typed 'K' plus Jump (Shift) on the same tick.
+        let mut state = RuntimeState::new();
+        state.text_input = vec!['K'];
+        let mut shifted = ActiveInput::new();
+        shifted.insert(InputCommand::Jump);
+        screen.tick(&shifted, &mut state);
+
+        assert_eq!(
+            screen.selected_entry,
+            Some(0),
+            "K picks the cell's own tile"
+        );
+        let reparsed = JnFile::from_bytes(screen.board.to_bytes()).expect("board round-trips");
+        assert_eq!(
+            reparsed.background().map_code(0, 0),
+            Some(0x0A),
+            "paint must be suppressed, leaving the cell unchanged"
+        );
     }
 
     /// Unit under test: the `N`/`Z` command clears to a new blank board and
