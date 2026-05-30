@@ -89,6 +89,10 @@ pub struct GameApp {
     /// bindings correct when one of several keys mapped to the same command is
     /// released while another remains held.
     pressed_keys: BTreeSet<KeyCode>,
+    /// Printable characters typed since the last tick, captured from keyboard
+    /// text events and forwarded to the orchestrator for text entry (save /
+    /// high-score names).  Cleared after each tick.
+    typed_text: Vec<char>,
     /// Game orchestrator that owns the active screen handler.
     ///
     /// `None` when the required asset files are unavailable at startup, in
@@ -132,6 +136,7 @@ impl GameApp {
             palette: startup_assets.palette,
             error: None,
             pressed_keys: BTreeSet::new(),
+            typed_text: Vec::new(),
             orchestrator,
             last_tick: None,
         }
@@ -338,6 +343,15 @@ impl ApplicationHandler for GameApp {
                 event_loop.exit();
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                // Accumulate printable typed characters for text entry; winit
+                // surfaces them in `event.text` (e.g. "a", "A", " ").  Repeats
+                // are included so holding a key keeps typing.
+                if event.state == ElementState::Pressed
+                    && let Some(text) = event.text.as_ref()
+                {
+                    self.typed_text
+                        .extend(text.chars().filter(|ch| !ch.is_control()));
+                }
                 if let PhysicalKey::Code(key_code) = event.physical_key {
                     Self::update_pressed_keys(&mut self.pressed_keys, key_code, event.state);
                     #[cfg(debug_assertions)]
@@ -372,6 +386,8 @@ impl ApplicationHandler for GameApp {
         if should_tick {
             if let Some(orch) = self.orchestrator.as_mut() {
                 let active = Self::active_commands(&self.pressed_keys);
+                orch.set_text_input(&self.typed_text);
+                self.typed_text.clear();
                 orch.tick(&active);
                 if orch.is_quitting() {
                     event_loop.exit();

@@ -54,9 +54,12 @@ const EPISODE_SAVE_PREFIX: &str = openjill_data::episode::JILL1.jn_ext;
 /// the CFG save table, `SAVE_SLOT_COUNT`).
 const SAVE_SLOT_COUNT: usize = 6;
 
-/// Default save name written until the menu's text name-entry lands (kept
-/// within the 12-byte CFG save-name field).
+/// Default save name written when the player confirms a save with an empty
+/// name (kept within the 12-byte CFG save-name field).
 const DEFAULT_SAVE_NAME: &str = "SAVED GAME";
+
+/// Maximum length of a typed save name (the CFG save-name field is 12 bytes).
+const SAVE_NAME_MAX: usize = 12;
 
 /// Whether the in-level control-panel menu is saving or restoring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,13 +74,17 @@ enum ControlMenuKind {
 ///
 /// While present the world is frozen (like the level-change message box) and
 /// the player navigates the six save slots with up/down, confirms with the
-/// throw/jump key, and cancels with Escape.
-#[derive(Clone, Copy, Debug)]
+/// throw/jump key, and cancels with Escape.  Confirming a SAVE slot enters a
+/// name-entry phase ([`ControlMenu::name`] becomes `Some`).
+#[derive(Clone, Debug)]
 struct ControlMenu {
     /// Whether this menu saves or loads.
     kind: ControlMenuKind,
     /// Currently highlighted slot index (`0..SAVE_SLOT_COUNT`).
     cursor: usize,
+    /// `Some` once a SAVE slot is chosen and the player is typing the save
+    /// name; `None` while picking a slot.
+    name: Option<String>,
 }
 
 /// Sky / game-area background color for episode 1 levels, as a VGA palette
@@ -1551,45 +1558,112 @@ impl LevelScreen {
     /// already active, so the SAVE / RESTORE key that opened the menu must be
     /// released before the first slot move or confirm registers.
     fn open_control_menu(&mut self, kind: ControlMenuKind) {
-        self.control_menu = Some(ControlMenu { kind, cursor: 0 });
+        self.control_menu = Some(ControlMenu {
+            kind,
+            cursor: 0,
+            name: None,
+        });
         self.menu_nav_was_active = true;
     }
 
-    /// Drives the open slot-picker overlay for one tick.
+    /// Drives the open save/load overlay for one tick.
     ///
-    /// Up / down move the cursor (wrapping), the throw/jump key confirms and
-    /// returns the matching [`ScreenTransition::PerformSave`] /
-    /// [`ScreenTransition::PerformLoad`], and Escape cancels.  All actions are
-    /// debounced so one key press performs exactly one action.
-    fn update_control_menu(&mut self, input: &ActiveInput) -> Option<ScreenTransition> {
-        let mut menu = self.control_menu?;
+    /// In the **slot-picker** phase, up/down move the cursor (wrapping); the
+    /// throw/jump key confirms - a RESTORE returns
+    /// [`ScreenTransition::PerformLoad`], a SAVE enters the **name-entry**
+    /// phase (prefilled with the slot's existing name). In name entry, typed
+    /// characters (from `text_input`) append to the name, Backspace deletes,
+    /// the throw/jump key confirms the [`ScreenTransition::PerformSave`], and
+    /// Escape cancels. Nav/confirm/backspace are debounced so one key press
+    /// acts once; typed text is already a single-tick channel.
+    fn update_control_menu(
+        &mut self,
+        input: &ActiveInput,
+        text_input: &[char],
+    ) -> Option<ScreenTransition> {
+        self.control_menu.as_ref()?;
+        let in_name_entry = self
+            .control_menu
+            .as_ref()
+            .is_some_and(|menu| menu.name.is_some());
+
+        // Append typed characters during name entry (single-tick channel,
+        // capped at the CFG save-name length).
+        if in_name_entry
+            && let Some(name) = self.control_menu.as_mut().and_then(|m| m.name.as_mut())
+        {
+            for ch in text_input {
+                // The CFG save-name field is byte-sized; cap by UTF-8 byte
+                // length so a multi-byte char cannot overflow / be truncated
+                // mid-codepoint when written into the field.
+                if name.len() + ch.len_utf8() <= SAVE_NAME_MAX {
+                    name.push(*ch);
+                }
+            }
+        }
+
         let up = input.contains(&InputCommand::Up) || input.contains(&InputCommand::PrevInventory);
         let down =
             input.contains(&InputCommand::Duck) || input.contains(&InputCommand::NextInventory);
         let confirm =
             input.contains(&InputCommand::ThrowItem) || input.contains(&InputCommand::Jump);
         let cancel = input.contains(&InputCommand::Pause);
-        let active = up || down || confirm || cancel;
+        let backspace = input.contains(&InputCommand::PrevInventory);
+        let active = up || down || confirm || cancel || backspace;
 
         let mut transition = None;
         if active && !self.menu_nav_was_active {
-            if cancel {
+            if in_name_entry {
+                if cancel {
+                    self.control_menu = None;
+                } else if confirm {
+                    if let Some(menu) = self.control_menu.take() {
+                        let typed = menu.name.unwrap_or_default();
+                        let name = if typed.trim().is_empty() {
+                            DEFAULT_SAVE_NAME.to_string()
+                        } else {
+                            typed
+                        };
+                        transition = Some(ScreenTransition::PerformSave {
+                            slot: menu.cursor,
+                            name,
+                        });
+                    }
+                } else if backspace
+                    && let Some(name) = self.control_menu.as_mut().and_then(|m| m.name.as_mut())
+                {
+                    name.pop();
+                }
+            } else if cancel {
                 self.control_menu = None;
             } else if confirm {
-                transition = Some(match menu.kind {
-                    ControlMenuKind::Save => ScreenTransition::PerformSave {
-                        slot: menu.cursor,
-                        name: DEFAULT_SAVE_NAME.to_string(),
-                    },
-                    ControlMenuKind::Load => ScreenTransition::PerformLoad { slot: menu.cursor },
-                });
-                self.control_menu = None;
-            } else if up {
+                let (kind, cursor) = self
+                    .control_menu
+                    .as_ref()
+                    .map(|m| (m.kind, m.cursor))
+                    .expect("control menu present");
+                match kind {
+                    ControlMenuKind::Load => {
+                        self.control_menu = None;
+                        transition = Some(ScreenTransition::PerformLoad { slot: cursor });
+                    }
+                    ControlMenuKind::Save => {
+                        // Prefill name entry with the slot's existing name.
+                        let prefill = self
+                            .save_slot_names
+                            .get(cursor)
+                            .map(|name| name.trim().to_string())
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_default();
+                        if let Some(menu) = self.control_menu.as_mut() {
+                            menu.name = Some(prefill);
+                        }
+                    }
+                }
+            } else if up && let Some(menu) = self.control_menu.as_mut() {
                 menu.cursor = (menu.cursor + SAVE_SLOT_COUNT - 1) % SAVE_SLOT_COUNT;
-                self.control_menu = Some(menu);
-            } else if down {
+            } else if down && let Some(menu) = self.control_menu.as_mut() {
                 menu.cursor = (menu.cursor + 1) % SAVE_SLOT_COUNT;
-                self.control_menu = Some(menu);
             }
         }
         self.menu_nav_was_active = active;
@@ -1684,7 +1758,7 @@ impl ScreenHandler for LevelScreen {
                 self.open_control_menu(ControlMenuKind::Load);
             }
         } else if self.control_menu.is_some() {
-            menu_transition = self.update_control_menu(input);
+            menu_transition = self.update_control_menu(input, &state.text_input);
         }
         self.save_key_was_down = save_down;
         self.restore_key_was_down = restore_down;
@@ -1761,7 +1835,7 @@ impl ScreenHandler for LevelScreen {
         if self.pending.is_some() {
             commands.extend(render_message_box(&self.message_text));
         }
-        if let Some(menu) = self.control_menu {
+        if let Some(menu) = &self.control_menu {
             commands.extend(render_control_menu(menu, &self.save_slot_names));
         }
 
@@ -2220,13 +2294,25 @@ fn render_message_box(text: &[String]) -> Vec<RenderCommand> {
     commands
 }
 
-/// Renders the in-level save / load slot-picker overlay.
+/// Renders the in-level save / load overlay.
 ///
-/// Reuses the level message-box frame, listing the six save slots with a `>`
-/// cursor on the highlighted one under a `SAVE GAME` / `RESTORE GAME` title.
-/// Each slot shows its CFG name from `names` (by index), or `[EMPTY]` when the
-/// name is blank or missing.
-fn render_control_menu(menu: ControlMenu, names: &[String]) -> Vec<RenderCommand> {
+/// In the slot-picker phase, lists the six save slots with a `>` cursor on the
+/// highlighted one under a `SAVE GAME` / `RESTORE GAME` title; each slot shows
+/// its CFG name from `names` (by index), or `[EMPTY]` when blank or missing.
+/// In the name-entry phase (SAVE only), shows the chosen slot and the typed
+/// name with a trailing `_` caret.
+fn render_control_menu(menu: &ControlMenu, names: &[String]) -> Vec<RenderCommand> {
+    if let Some(name) = &menu.name {
+        let lines = vec![
+            String::from("SAVE GAME"),
+            format!("SLOT {}", menu.cursor + 1),
+            String::new(),
+            String::from("ENTER NAME:"),
+            format!("{name}_"),
+        ];
+        return render_message_box(&lines);
+    }
+
     let title = match menu.kind {
         ControlMenuKind::Save => "SAVE GAME",
         ControlMenuKind::Load => "RESTORE GAME",
@@ -3000,16 +3086,56 @@ mod tests {
         last
     }
 
-    /// Unit under test: the SAVE key opens the slot picker, and confirming the
-    /// default cursor requests a save of slot 0.
+    /// Unit under test: the SAVE key opens the slot picker; confirming a slot
+    /// enters name entry, and confirming the (empty -> default) name saves it.
     #[test]
-    fn save_menu_confirm_requests_save_of_selected_slot() {
-        // Release (reset debounce) then confirm with the throw key.
-        let transition = run_control_menu(InputCommand::Save, &[&[], &[InputCommand::ThrowItem]]);
+    fn save_menu_confirm_then_name_entry_requests_save_of_selected_slot() {
+        let transition = run_control_menu(
+            InputCommand::Save,
+            &[
+                &[],                        // release (reset debounce)
+                &[InputCommand::ThrowItem], // confirm slot 0 -> name entry
+                &[],                        // release
+                &[InputCommand::ThrowItem], // confirm empty name -> save
+            ],
+        );
         assert!(matches!(
             transition,
             Some(ScreenTransition::PerformSave { slot: 0, .. })
         ));
+    }
+
+    /// Unit under test: typed characters in the save name-entry phase build the
+    /// save name passed to [`ScreenTransition::PerformSave`].
+    #[test]
+    fn save_menu_name_entry_saves_with_typed_name() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let mut state = RuntimeState::new();
+
+        let mut save = ActiveInput::new();
+        save.insert(InputCommand::Save);
+        let mut confirm = ActiveInput::new();
+        confirm.insert(InputCommand::ThrowItem);
+
+        screen.tick(&save, &mut state); // open
+        screen.tick(&ActiveInput::new(), &mut state); // release
+        screen.tick(&confirm, &mut state); // confirm slot -> name entry
+        screen.tick(&ActiveInput::new(), &mut state); // release
+
+        // Type "ACE" (the single-tick text channel) on an otherwise idle tick.
+        state.text_input = vec!['A', 'C', 'E'];
+        screen.tick(&ActiveInput::new(), &mut state);
+        state.text_input.clear();
+
+        let result = screen.tick(&confirm, &mut state); // confirm name -> save
+        match result.transition {
+            Some(ScreenTransition::PerformSave { slot, name }) => {
+                assert_eq!(slot, 0);
+                assert_eq!(name, "ACE");
+            }
+            other => panic!("expected PerformSave with typed name, got {other:?}"),
+        }
     }
 
     /// Unit under test: the RESTORE key opens the slot picker, down moves the
@@ -3051,8 +3177,9 @@ mod tests {
         let menu = super::ControlMenu {
             kind: super::ControlMenuKind::Save,
             cursor: 0,
+            name: None,
         };
-        let texts: Vec<String> = super::render_control_menu(menu, &names)
+        let texts: Vec<String> = super::render_control_menu(&menu, &names)
             .into_iter()
             .filter_map(|cmd| match cmd {
                 RenderCommand::DrawText { text, .. } => Some(text),
