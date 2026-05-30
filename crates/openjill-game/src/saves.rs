@@ -197,7 +197,7 @@ impl SaveStore {
 
     /// Returns the working runtime config (the live high-score and save-slot
     /// tables), so the start menu can render the runtime state rather than the
-    /// original shipped `JILL1.CFG`.
+    /// original shipped episode CFG (e.g. `JILL1.CFG`).
     pub fn cfg(&self) -> &CfgFile {
         &self.cfg
     }

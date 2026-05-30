@@ -28,7 +28,7 @@ const GAME_OVER_NAME: &str = "JILL";
 ///
 /// `cfg` is the live runtime config (from the [`SaveStore`]) so the start
 /// menu's high-score panel and load-game overlay reflect recorded scores and
-/// saved games rather than the original shipped `JILL1.CFG`.
+/// saved games rather than the original shipped episode CFG (e.g. `JILL1.CFG`).
 fn make_start_menu(cache: &AssetCache, cfg: &CfgFile) -> StartMenuScreen {
     StartMenuScreen::new(
         cache.intro_jn.clone(),
@@ -557,6 +557,9 @@ impl GameOrchestrator {
                     eprintln!(
                         "openjill-game: RestartLevel requested without cached level bytes; falling back to start menu"
                     );
+                    // Clear the dispatcher before the swap so no stale level
+                    // subscribers or pending messages survive into the menu.
+                    self.dispatcher.clear();
                     self.handler = Box::new(make_start_menu(&self.cache, self.saves.cfg()));
                 }
             }
