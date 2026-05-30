@@ -182,10 +182,13 @@ pub struct StartMenuScreen {
     portrait_tiles: [(i32, i32, u16); 16],
     /// Highlighted save slot in the load-game overlay (`0`-based).
     load_cursor: usize,
-    /// Whether a load-overlay navigation key was held last tick, debouncing the
-    /// overlay so one key press moves / confirms exactly once (and the key that
-    /// opened the overlay does not immediately confirm a load).
-    load_nav_was_active: bool,
+    /// Input set held during the previous tick.  Menu input is latched to the
+    /// per-command rising edge (only keys *newly* pressed this tick act), so one
+    /// key press performs exactly one action: held keys do not repeat, and
+    /// Escape cannot dismiss an overlay and then quit on the same hold.  Keeping
+    /// the full set (rather than a single "any key" flag) lets an independent
+    /// key still register while another is held.
+    prev_input: ActiveInput,
 }
 
 impl StartMenuScreen {
@@ -205,7 +208,7 @@ impl StartMenuScreen {
             cursor_index: 0,
             portrait_tiles,
             load_cursor: 0,
-            load_nav_was_active: false,
+            prev_input: ActiveInput::new(),
         }
     }
 }
@@ -226,11 +229,24 @@ impl ScreenHandler for StartMenuScreen {
 
 impl StartMenuScreen {
     /// Processes the active input set and updates overlay/selection/transition.
+    ///
+    /// Menu input is latched to the **per-command rising edge**: only keys that
+    /// are newly pressed this tick (held last tick = ignored) drive actions.
+    /// This stops a held arrow from scrolling rapidly and stops a held Escape
+    /// from dismissing an overlay and then quitting on the same press, while
+    /// still letting an independent key register when another is held.
     fn process_input(&mut self, input: &ActiveInput) -> Option<ScreenTransition> {
-        // Any key dismisses the info-box overlay without further action,
-        // including Escape — checked before the Quit path so Escape does not
-        // exit the game while the overlay is visible.
-        if self.overlay == Overlay::InfoBox && !input.is_empty() {
+        // Keys newly pressed this tick: the current set minus what was held last
+        // tick.  All command checks below run against this rising-edge set.
+        let pressed: ActiveInput = input.difference(&self.prev_input).copied().collect();
+        self.prev_input = input.clone();
+        if pressed.is_empty() {
+            return None;
+        }
+        let input = &pressed;
+
+        // Any newly pressed key dismisses the info-box overlay.
+        if self.overlay == Overlay::InfoBox {
             self.overlay = Overlay::None;
             return None;
         }
@@ -250,31 +266,21 @@ impl StartMenuScreen {
         }
 
         // Load-game overlay: navigate the save slots and confirm to load.
-        // Debounced so one key press acts once and the key that opened the
-        // overlay does not immediately confirm a load.
         if self.overlay == Overlay::LoadGame {
             let slot_count = self.cfg.save_slots().len().max(1);
-            let up =
-                input.contains(&InputCommand::Up) || input.contains(&InputCommand::PrevInventory);
-            let down =
-                input.contains(&InputCommand::Duck) || input.contains(&InputCommand::NextInventory);
-            let confirm =
-                input.contains(&InputCommand::ThrowItem) || input.contains(&InputCommand::Jump);
-            let active = up || down || confirm;
-            let mut transition = None;
-            if active && !self.load_nav_was_active {
-                if confirm {
-                    let slot = self.load_cursor;
-                    self.overlay = Overlay::None;
-                    transition = Some(ScreenTransition::PerformLoad { slot });
-                } else if down {
-                    self.load_cursor = (self.load_cursor + 1) % slot_count;
-                } else if up {
-                    self.load_cursor = (self.load_cursor + slot_count - 1) % slot_count;
-                }
+            if input.contains(&InputCommand::ThrowItem) || input.contains(&InputCommand::Jump) {
+                let slot = self.load_cursor;
+                self.overlay = Overlay::None;
+                return Some(ScreenTransition::PerformLoad { slot });
             }
-            self.load_nav_was_active = active;
-            return transition;
+            if input.contains(&InputCommand::Up) || input.contains(&InputCommand::PrevInventory) {
+                self.load_cursor = (self.load_cursor + slot_count - 1) % slot_count;
+            } else if input.contains(&InputCommand::Duck)
+                || input.contains(&InputCommand::NextInventory)
+            {
+                self.load_cursor = (self.load_cursor + 1) % slot_count;
+            }
+            return None;
         }
 
         let layout = &*MENU_LAYOUT;
@@ -282,23 +288,22 @@ impl StartMenuScreen {
             return None;
         }
 
-        // Navigate down: Duck (ArrowDown) or NextInventory (Tab).
-        if input.contains(&InputCommand::Duck) || input.contains(&InputCommand::NextInventory) {
-            self.selected = (self.selected + 1) % layout.items.len();
-            return None;
+        // Confirm selection: ThrowItem (Ctrl) or Jump (Space / Alt).
+        if input.contains(&InputCommand::ThrowItem) || input.contains(&InputCommand::Jump) {
+            return self.apply_value(layout.items[self.selected].value);
         }
 
-        // Navigate up: PrevInventory (Backspace).
-        if input.contains(&InputCommand::PrevInventory) {
+        // Navigate up: ArrowUp or Backspace.
+        if input.contains(&InputCommand::Up) || input.contains(&InputCommand::PrevInventory) {
             let len = layout.items.len();
             self.selected = (self.selected + len - 1) % len;
             return None;
         }
 
-        // Confirm selection: ThrowItem (Ctrl) or Jump (Space / Alt / ArrowUp).
-        if input.contains(&InputCommand::ThrowItem) || input.contains(&InputCommand::Jump) {
-            let value = layout.items[self.selected].value;
-            return self.apply_value(value);
+        // Navigate down: ArrowDown or Tab.
+        if input.contains(&InputCommand::Duck) || input.contains(&InputCommand::NextInventory) {
+            self.selected = (self.selected + 1) % layout.items.len();
+            return None;
         }
 
         None
@@ -312,9 +317,6 @@ impl StartMenuScreen {
             1 => {
                 self.overlay = Overlay::LoadGame;
                 self.load_cursor = 0;
-                // Treat the confirm key that opened the overlay as already
-                // active, so it must be released before it can confirm a load.
-                self.load_nav_was_active = true;
                 None
             }
             2 => Some(ScreenTransition::Story),
@@ -892,6 +894,19 @@ mod tests {
         StartMenuScreen::new(zero_jn(), empty_dma(), zero_vcl(), zero_cfg(), &zero_sha())
     }
 
+    /// Presses one input for a single tick, then releases it with an empty
+    /// tick. Menu input is latched to the rising edge (one key press performs
+    /// exactly one action), so every distinct action in a test must be
+    /// followed by a release before the next press registers. Returns the
+    /// transition produced by the press tick.
+    fn press(screen: &mut StartMenuScreen, cmd: InputCommand) -> Option<ScreenTransition> {
+        let mut input = ActiveInput::new();
+        input.insert(cmd);
+        let transition = screen.tick(&input, &mut RuntimeState::new()).transition;
+        screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
+        transition
+    }
+
     /// Unit under test: `StartMenuScreen::tick` — confirms item 0 ("play") via
     /// ThrowItem (Ctrl) after the default selection is already at index 0.
     ///
@@ -922,6 +937,39 @@ mod tests {
         assert_eq!(result.transition, Some(ScreenTransition::Quit));
     }
 
+    /// Unit under test: the per-command rising-edge latch acts on keys newly
+    /// pressed this tick even while an unrelated key is still held.
+    ///
+    /// Preconditions: ArrowDown held for one tick, then Escape pressed while
+    /// ArrowDown is still held.
+    ///
+    /// Invariants asserted: the still-held ArrowDown does not repeat (no extra
+    /// navigation), and the newly pressed Escape registers as `Quit`.
+    #[test]
+    fn held_key_does_not_block_an_independent_key() {
+        let mut screen = menu();
+
+        // Tick 1: ArrowDown held alone.
+        let mut down = ActiveInput::new();
+        down.insert(InputCommand::Duck);
+        assert_eq!(
+            screen.tick(&down, &mut RuntimeState::new()).transition,
+            None
+        );
+
+        // Tick 2: Escape pressed while ArrowDown is still held. ArrowDown is no
+        // longer a rising edge (held last tick), but Escape is new and quits.
+        let mut down_and_esc = ActiveInput::new();
+        down_and_esc.insert(InputCommand::Duck);
+        down_and_esc.insert(InputCommand::Pause);
+        assert_eq!(
+            screen
+                .tick(&down_and_esc, &mut RuntimeState::new())
+                .transition,
+            Some(ScreenTransition::Quit)
+        );
+    }
+
     /// Unit under test: Escape (`InputCommand::Pause`) with an active load-game
     /// overlay dismisses the overlay rather than quitting.
     ///
@@ -933,50 +981,32 @@ mod tests {
     #[test]
     fn escape_dismisses_load_game_overlay_before_quit() {
         let mut screen = menu();
-        // Navigate to item index 1 ("restore").
-        let mut down = ActiveInput::new();
-        down.insert(InputCommand::Duck);
-        screen.tick(&down, &mut RuntimeState::new());
+        open_load_overlay(&mut screen);
 
-        // Confirm to open load-game overlay.
-        let mut confirm = ActiveInput::new();
-        confirm.insert(InputCommand::ThrowItem);
-        let open = screen.tick(&confirm, &mut RuntimeState::new());
+        // First Escape dismisses the overlay without quitting; a held Escape is
+        // latched, so it does not cascade into a quit on the same press.
         assert_eq!(
-            open.transition, None,
-            "opening load-game overlay must not transition"
+            press(&mut screen, InputCommand::Pause),
+            None,
+            "first escape must dismiss overlay, not quit"
         );
 
-        // First Escape dismisses the overlay.
-        let mut esc = ActiveInput::new();
-        esc.insert(InputCommand::Pause);
-        let dismiss = screen.tick(&esc, &mut RuntimeState::new());
+        // A second, distinct Escape press quits.
         assert_eq!(
-            dismiss.transition, None,
-            "first escape must dismiss overlay"
+            press(&mut screen, InputCommand::Pause),
+            Some(ScreenTransition::Quit)
         );
-
-        // Second Escape quits.
-        let quit = screen.tick(&esc, &mut RuntimeState::new());
-        assert_eq!(quit.transition, Some(ScreenTransition::Quit));
     }
 
     /// Opens the load-game overlay (navigate to item 1, confirm) and releases
     /// the keys so the overlay debounce is reset for the next press.
     fn open_load_overlay(screen: &mut StartMenuScreen) {
-        let mut down = ActiveInput::new();
-        down.insert(InputCommand::Duck);
-        screen.tick(&down, &mut RuntimeState::new());
-        let mut confirm = ActiveInput::new();
-        confirm.insert(InputCommand::ThrowItem);
+        press(screen, InputCommand::Duck); // navigate to item 1 ("restore")
         assert_eq!(
-            screen.tick(&confirm, &mut RuntimeState::new()).transition,
+            press(screen, InputCommand::ThrowItem),
             None,
             "opening the load overlay must not transition"
         );
-        // Release: reset the overlay debounce so a held confirm key does not
-        // immediately load slot 0.
-        screen.tick(&ActiveInput::new(), &mut RuntimeState::new());
     }
 
     /// Unit under test: confirming in the load-game overlay emits a
@@ -986,11 +1016,8 @@ mod tests {
         let mut screen = menu();
         open_load_overlay(&mut screen);
 
-        let mut confirm = ActiveInput::new();
-        confirm.insert(InputCommand::ThrowItem);
-        let result = screen.tick(&confirm, &mut RuntimeState::new());
         assert_eq!(
-            result.transition,
+            press(&mut screen, InputCommand::ThrowItem),
             Some(ScreenTransition::PerformLoad { slot: 0 })
         );
     }
@@ -1001,16 +1028,10 @@ mod tests {
         let mut screen = menu();
         open_load_overlay(&mut screen);
 
-        let mut down = ActiveInput::new();
-        down.insert(InputCommand::Duck);
-        screen.tick(&down, &mut RuntimeState::new()); // cursor 0 -> 1
-        screen.tick(&ActiveInput::new(), &mut RuntimeState::new()); // release
+        press(&mut screen, InputCommand::Duck); // cursor 0 -> 1
 
-        let mut confirm = ActiveInput::new();
-        confirm.insert(InputCommand::ThrowItem);
-        let result = screen.tick(&confirm, &mut RuntimeState::new());
         assert_eq!(
-            result.transition,
+            press(&mut screen, InputCommand::ThrowItem),
             Some(ScreenTransition::PerformLoad { slot: 1 })
         );
     }
@@ -1022,17 +1043,11 @@ mod tests {
         let mut screen = menu();
         open_load_overlay(&mut screen);
 
-        let mut up = ActiveInput::new();
-        up.insert(InputCommand::Up);
-        screen.tick(&up, &mut RuntimeState::new()); // cursor 0 -> last (wrap)
-        screen.tick(&ActiveInput::new(), &mut RuntimeState::new()); // release
+        press(&mut screen, InputCommand::Up); // cursor 0 -> last (wrap)
 
-        let mut confirm = ActiveInput::new();
-        confirm.insert(InputCommand::ThrowItem);
-        let result = screen.tick(&confirm, &mut RuntimeState::new());
         // zero_cfg carries six save slots, so wrapping up from 0 lands on 5.
         assert_eq!(
-            result.transition,
+            press(&mut screen, InputCommand::ThrowItem),
             Some(ScreenTransition::PerformLoad { slot: 5 })
         );
     }
@@ -1047,16 +1062,14 @@ mod tests {
     #[test]
     fn navigate_to_story_and_confirm() {
         let mut screen = menu();
-        let mut down = ActiveInput::new();
-        down.insert(InputCommand::Duck);
         // Skip item 0 ("play") and item 1 ("restore").
-        screen.tick(&down, &mut RuntimeState::new());
-        screen.tick(&down, &mut RuntimeState::new());
+        press(&mut screen, InputCommand::Duck);
+        press(&mut screen, InputCommand::Duck);
 
-        let mut confirm = ActiveInput::new();
-        confirm.insert(InputCommand::ThrowItem);
-        let result = screen.tick(&confirm, &mut RuntimeState::new());
-        assert_eq!(result.transition, Some(ScreenTransition::Story));
+        assert_eq!(
+            press(&mut screen, InputCommand::ThrowItem),
+            Some(ScreenTransition::Story)
+        );
     }
 
     /// Unit under test: navigating past the last item wraps to item 0.
@@ -1069,17 +1082,14 @@ mod tests {
     fn selection_wraps_from_last_to_first() {
         let mut screen = menu();
         let item_count = super::MENU_LAYOUT.items.len();
-        let mut down = ActiveInput::new();
-        down.insert(InputCommand::Duck);
-        // Navigate past the end to wrap.
+        // Navigate past the end to wrap back to item 0 ("play").
         for _ in 0..item_count {
-            screen.tick(&down, &mut RuntimeState::new());
+            press(&mut screen, InputCommand::Duck);
         }
-        // Now at item 0 ("play").
-        let mut confirm = ActiveInput::new();
-        confirm.insert(InputCommand::ThrowItem);
-        let result = screen.tick(&confirm, &mut RuntimeState::new());
-        assert_eq!(result.transition, Some(ScreenTransition::Map));
+        assert_eq!(
+            press(&mut screen, InputCommand::ThrowItem),
+            Some(ScreenTransition::Map)
+        );
     }
 
     /// Unit under test: the first tick with no input produces at least one
@@ -1106,14 +1116,15 @@ mod tests {
     /// item (start_menu.json item 3) and confirming it. Returns the tick
     /// commands emitted by the confirm tick (which already include the overlay).
     fn open_info_box_overlay(screen: &mut StartMenuScreen) -> Vec<RenderCommand> {
-        let mut down = ActiveInput::new();
-        down.insert(InputCommand::Duck);
+        // Navigate to item 3 ("instructions").
         for _ in 0..3 {
-            screen.tick(&down, &mut RuntimeState::new());
+            press(screen, InputCommand::Duck);
         }
         let mut confirm = ActiveInput::new();
         confirm.insert(InputCommand::ThrowItem);
-        screen.tick(&confirm, &mut RuntimeState::new()).commands
+        let commands = screen.tick(&confirm, &mut RuntimeState::new()).commands;
+        screen.tick(&ActiveInput::new(), &mut RuntimeState::new()); // release
+        commands
     }
 
     /// Collects info-box `DrawText` commands from a render command list.
