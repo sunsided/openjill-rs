@@ -1,6 +1,6 @@
-//! VCL text-entry export utilities.
+//! VCL text-entry and sound export utilities.
 
-use openjill_data::vcl::VclFile;
+use openjill_data::vcl::{VclFile, VclSound};
 use std::fmt::Write;
 
 /// Uppercase hex digits used when escaping non-printable control characters.
@@ -76,9 +76,46 @@ pub fn file_to_string(file: &VclFile) -> String {
     entries_to_text(file)
 }
 
+/// Encodes a decoded VCL sound as a 16-bit signed mono PCM WAV file.
+///
+/// The VCL payload is 8-bit signed PCM; each sample is scaled to 16-bit
+/// (`sample << 8`) so the result plays in any standard audio editor at the
+/// entry's sample rate. Useful for auditioning the original sounds to map them
+/// to game events.
+pub fn sound_to_wav(sound: &VclSound) -> Vec<u8> {
+    /// PCM sample width emitted into the WAV.
+    const BITS_PER_SAMPLE: u16 = 16;
+    /// Mono output.
+    const CHANNELS: u16 = 1;
+
+    let sample_rate = u32::from(sound.frequency());
+    let block_align = CHANNELS * (BITS_PER_SAMPLE / 8);
+    let byte_rate = sample_rate * u32::from(block_align);
+    let data_len = (sound.pcm().len() * 2) as u32;
+
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt-chunk size
+    out.extend_from_slice(&1u16.to_le_bytes()); // audio format = PCM
+    out.extend_from_slice(&CHANNELS.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for &sample in sound.pcm() {
+        out.extend_from_slice(&(i16::from(sample) << 8).to_le_bytes());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{entries_to_json, entries_to_text, escape_text_payload};
+    use super::{entries_to_json, entries_to_text, escape_text_payload, sound_to_wav};
     use assert2::check;
     use openjill_data::vcl::VclFile;
 
@@ -133,6 +170,39 @@ mod tests {
                 {"index": 39, "payload": "DONE"},
             ])
         );
+    }
+
+    /// Unit under test: [`sound_to_wav`] emits a well-formed 16-bit mono PCM
+    /// WAV with the sound's sample rate and `sample << 8` data.
+    #[test]
+    fn sound_to_wav_writes_16bit_mono_pcm() {
+        let mut bytes = vec![0; table_end() + 3];
+        // Sound slot 1: 3 bytes of PCM at the payload offset, 6000 Hz.
+        let offset = table_end();
+        bytes[4..8].copy_from_slice(&(offset as u32).to_le_bytes()); // offsets[1] @ 1*4
+        bytes[202..204].copy_from_slice(&3u16.to_le_bytes()); // lengths[1] @ 200 + 1*2
+        bytes[302..304].copy_from_slice(&6000u16.to_le_bytes()); // freqs[1] @ 300 + 1*2
+        bytes[offset] = 0u8;
+        bytes[offset + 1] = 127u8;
+        bytes[offset + 2] = 0x80u8; // -128
+        let vcl = VclFile::from_bytes(bytes).expect("fixture should parse");
+        let sound = vcl.sound(1).expect("slot 1 has a sound");
+
+        let wav = sound_to_wav(sound);
+
+        check!(&wav[0..4] == b"RIFF");
+        check!(&wav[8..12] == b"WAVE");
+        check!(&wav[12..16] == b"fmt ");
+        check!(&wav[36..40] == b"data");
+        // 3 samples * 2 bytes = 6 data bytes; whole file = 44 + 6.
+        check!(wav.len() == 50);
+        check!(u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]) == 6000);
+        check!(u16::from_le_bytes([wav[22], wav[23]]) == 1); // mono
+        check!(u16::from_le_bytes([wav[34], wav[35]]) == 16); // bits per sample
+        // First sample 0 -> 0; second 127 -> 127<<8; third -128 -> -128<<8.
+        check!(i16::from_le_bytes([wav[44], wav[45]]) == 0);
+        check!(i16::from_le_bytes([wav[46], wav[47]]) == 127 << 8);
+        check!(i16::from_le_bytes([wav[48], wav[49]]) == -128 << 8);
     }
 
     /// Builds a synthetic `VclFile` fixture with three non-empty text entries
