@@ -16,15 +16,6 @@ pub mod sha;
 /// Export helpers for `*.VCL` text-entry data.
 pub mod vcl;
 
-/// One exported table row for non-image formats.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Row {
-    /// Human-readable row key.
-    pub key: String,
-    /// Human-readable row value.
-    pub value: String,
-}
-
 /// Smoke tests that pin the requested public API signatures.
 #[cfg(test)]
 mod tests {
@@ -37,15 +28,6 @@ mod tests {
     use openjill_data::sha::ShaFile;
     use openjill_data::sha::ShaTileSet;
     use openjill_data::vcl::VclFile;
-
-    /// Unit under test: [`dma::file_to_rows`].
-    ///
-    /// Invariants asserted: the export function keeps accepting a parsed
-    /// `DmaFile` reference and returning `Vec<Row>`.
-    #[test]
-    fn dma_smoke_test_pins_signature() {
-        let _: fn(&DmaFile) -> Vec<super::Row> = dma::file_to_rows;
-    }
 
     /// Unit under test: [`dma::table_to_csv`].
     ///
@@ -90,15 +72,6 @@ mod tests {
     #[test]
     fn vcl_json_smoke_test_pins_signature() {
         let _: fn(&VclFile) -> String = vcl::entries_to_json;
-    }
-
-    /// Unit under test: [`cfg::file_to_rows`].
-    ///
-    /// Invariants asserted: the (not-yet-implemented) internal function keeps
-    /// accepting a parsed `CfgFile` reference and returning `Vec<Row>`.
-    #[test]
-    fn cfg_smoke_test_pins_signature() {
-        let _: fn(&CfgFile) -> Vec<super::Row> = cfg::file_to_rows;
     }
 
     /// Unit under test: [`cfg::scores_to_text`].
