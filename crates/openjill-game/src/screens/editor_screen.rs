@@ -17,12 +17,18 @@
 //! | `H` | Flood-fill the cursor row with the selected tile |
 //! | `Z` / `N` | Clear to a new blank board |
 //! | `S` / `L` | Save / load a board to a writable dir (file-name prompt; Space confirms, Escape cancels) |
+//! | `O` | Enter object mode (Escape leaves it) |
 //! | Escape | Return to the start menu |
 //!
-//! The remaining DOS editor commands (`O` object mode, `Enter` load-by-name,
-//! Tab continuous-draw, Shift half-screen jumps) land in later epic-#210
-//! sub-issues.
+//! In **object mode** the cursor + arrows operate on the object layer: `A` adds
+//! an object (type-name prompt), `D` deletes the object under the cursor, `K`
+//! selects it; visible objects are drawn as small markers.
+//!
+//! The remaining DOS editor commands (`P`/`O`/`M` paste/move/modify, `Enter`
+//! load-by-name, Tab continuous-draw, Shift half-screen jumps) land in later
+//! epic-#210 sub-issues.
 
+use crate::entities::objects::object_type_id;
 use crate::saves::RuntimeDir;
 use crate::screens::intro_background::render_intro_background;
 use openjill_core::layout::{BLOCK_SIZE_I, GAME_AREA_H, GAME_AREA_W, GAME_AREA_X, GAME_AREA_Y};
@@ -31,7 +37,9 @@ use openjill_core::{
     ActiveInput, FontSize, InputCommand, RenderCommand, ScreenHandler, ScreenTransition, TickResult,
 };
 use openjill_data::dma::DmaFile;
-use openjill_data::jn::{BACKGROUND_HEIGHT, BACKGROUND_MAP_CODE_MASK, BACKGROUND_WIDTH, JnFile};
+use openjill_data::jn::{
+    BACKGROUND_HEIGHT, BACKGROUND_MAP_CODE_MASK, BACKGROUND_WIDTH, JnFile, JnObject,
+};
 
 /// Number of whole tile columns the game area shows.
 const VISIBLE_TILES_X: usize = GAME_AREA_W as usize / BLOCK_SIZE_I as usize;
@@ -53,6 +61,8 @@ enum PromptAction {
     Save,
     /// Load a board from the typed file name.
     Load,
+    /// Add an object of the typed type name at the cursor.
+    AddObject,
 }
 
 /// The editor's input mode.
@@ -88,8 +98,13 @@ pub struct EditorScreen {
     /// Input set held during the previous tick, for per-command rising-edge
     /// detection (so one key press performs exactly one action).
     prev_input: ActiveInput,
-    /// Current input mode (normal editing or a save/load name prompt).
+    /// Current input mode (normal editing or a save/load/add-object prompt).
     mode: EditorMode,
+    /// `true` while in object-editing mode (the `O` command); cursor + arrows
+    /// then operate on the object layer instead of painting tiles.
+    object_mode: bool,
+    /// Object index selected by `K` in object mode (into `board.objects()`).
+    selected_object: Option<usize>,
     /// Writable directory boards are saved to / loaded from (atomic writes +
     /// file-name validation). Never the read-only original data directory.
     levels: RuntimeDir,
@@ -113,6 +128,8 @@ impl EditorScreen {
             selected_entry,
             prev_input: ActiveInput::new(),
             mode: EditorMode::Normal,
+            object_mode: false,
+            selected_object: None,
             levels,
             status: None,
         }
@@ -247,6 +264,7 @@ impl EditorScreen {
                 'z' | 'n' => self.clear_board(),
                 's' => self.start_prompt(PromptAction::Save),
                 'l' => self.start_prompt(PromptAction::Load),
+                'o' => self.object_mode = true,
                 _ => continue,
             }
             handled = true;
@@ -263,22 +281,24 @@ impl EditorScreen {
         self.status = None;
     }
 
-    /// Confirms the active prompt: saves or loads the typed file name, then
-    /// returns to normal mode. Reports the result (or an invalid-name error) in
-    /// the status line.
+    /// Confirms the active prompt: saves, loads, or adds an object using the
+    /// typed name, then returns to normal mode. Reports the result in the status
+    /// line. (Save/load file-name safety is enforced by [`RuntimeDir`]; unknown
+    /// object names are reported by [`Self::add_object`].)
     fn confirm_prompt(&mut self) {
         let (action, name) = match &self.mode {
             EditorMode::Prompt { action, buffer } => (*action, buffer.clone()),
             EditorMode::Normal => return,
         };
         self.mode = EditorMode::Normal;
-        if name.is_empty() || name == "." || name == ".." {
-            self.status = Some("Invalid file name".to_string());
+        if name.is_empty() {
+            self.status = Some("Empty name".to_string());
             return;
         }
         match action {
             PromptAction::Save => self.save_to(&name),
             PromptAction::Load => self.load_from(&name),
+            PromptAction::AddObject => self.add_object(&name),
         }
     }
 
@@ -312,6 +332,86 @@ impl EditorScreen {
                 self.status = Some(format!("Loaded {name}"));
             }
             Err(error) => self.status = Some(format!("Load failed: {error}")),
+        }
+    }
+
+    /// Adds an object of type `name` (resolved via the object-type registry) at
+    /// the cursor, sized one block. Reports an unknown name in the status line.
+    fn add_object(&mut self, name: &str) {
+        match object_type_id(name) {
+            Some(type_id) => {
+                let x = (self.cursor_x * BLOCK_SIZE_I as usize) as u16;
+                let y = (self.cursor_y * BLOCK_SIZE_I as usize) as u16;
+                let block = BLOCK_SIZE_I as u16;
+                self.board
+                    .push_object(JnObject::spawned(type_id, x, y, block, block));
+                self.status = Some(format!("Added {name}"));
+            }
+            None => self.status = Some(format!("Unknown object: {name}")),
+        }
+    }
+
+    /// Returns the index of the first object whose tile is under the cursor.
+    fn object_at_cursor(&self) -> Option<usize> {
+        let block = BLOCK_SIZE_I as usize;
+        self.board.objects().iter().position(|object| {
+            object.x() as usize / block == self.cursor_x
+                && object.y() as usize / block == self.cursor_y
+        })
+    }
+
+    /// Deletes the object under the cursor (the `D` command), clearing the
+    /// selection if it pointed at (or past) the removed object.
+    fn delete_object_under_cursor(&mut self) {
+        let Some(index) = self.object_at_cursor() else {
+            self.status = Some("No object here".to_string());
+            return;
+        };
+        self.board.remove_object(index);
+        self.selected_object = match self.selected_object {
+            Some(selected) if selected == index => None,
+            Some(selected) if selected > index => Some(selected - 1),
+            other => other,
+        };
+        self.status = Some("Deleted object".to_string());
+    }
+
+    /// Selects the object under the cursor (the `K` command).
+    fn select_object_under_cursor(&mut self) {
+        self.selected_object = self.object_at_cursor();
+        self.status = Some(match self.selected_object {
+            Some(index) => format!("Selected object #{index}"),
+            None => "No object here".to_string(),
+        });
+    }
+
+    /// Handles input while in object mode: Escape leaves object mode, arrows
+    /// move the cursor, and `A`/`D`/`K` add / delete / select an object. `A`
+    /// opens the add-object name prompt.
+    fn update_object(&mut self, pressed: &ActiveInput, typed: &[char]) {
+        if pressed.contains(&InputCommand::Pause) {
+            self.object_mode = false;
+            return;
+        }
+        for ch in typed {
+            match ch.to_ascii_lowercase() {
+                'a' => self.start_prompt(PromptAction::AddObject),
+                'd' => self.delete_object_under_cursor(),
+                'k' => self.select_object_under_cursor(),
+                _ => {}
+            }
+        }
+        if pressed.contains(&InputCommand::MoveLeft) {
+            self.move_cursor(-1, 0);
+        }
+        if pressed.contains(&InputCommand::MoveRight) {
+            self.move_cursor(1, 0);
+        }
+        if pressed.contains(&InputCommand::Up) {
+            self.move_cursor(0, -1);
+        }
+        if pressed.contains(&InputCommand::Duck) {
+            self.move_cursor(0, 1);
         }
     }
 
@@ -397,6 +497,9 @@ impl EditorScreen {
         let offset_y = -(self.camera_y as i32 * BLOCK_SIZE_I);
         let mut commands = render_intro_background(&self.board, &self.dma, offset_x, offset_y);
         commands.extend(self.cursor_outline());
+        if self.object_mode {
+            commands.extend(self.object_markers());
+        }
         if let Some(text) = self.overlay_text() {
             commands.push(RenderCommand::DrawText {
                 text,
@@ -410,7 +513,7 @@ impl EditorScreen {
     }
 
     /// The text for the prompt/status line: the live prompt when one is open,
-    /// otherwise the last save/load status (if any).
+    /// otherwise the object-mode banner and/or the last status (if any).
     fn overlay_text(&self) -> Option<String> {
         match &self.mode {
             EditorMode::Prompt {
@@ -421,8 +524,48 @@ impl EditorScreen {
                 action: PromptAction::Load,
                 buffer,
             } => Some(format!("Load: {buffer}")),
+            EditorMode::Prompt {
+                action: PromptAction::AddObject,
+                buffer,
+            } => Some(format!("Add object: {buffer}")),
+            EditorMode::Normal if self.object_mode => Some(match &self.status {
+                Some(status) => format!("OBJECT: {status}"),
+                None => "OBJECT MODE".to_string(),
+            }),
             EditorMode::Normal => self.status.clone(),
         }
+    }
+
+    /// Builds 4x4 markers for every object visible in the game area; the
+    /// selected object is highlighted in the cursor color.
+    fn object_markers(&self) -> Vec<RenderCommand> {
+        let cam_x = self.camera_x as i32 * BLOCK_SIZE_I;
+        let cam_y = self.camera_y as i32 * BLOCK_SIZE_I;
+        let mut markers = Vec::new();
+        for (index, object) in self.board.objects().iter().enumerate() {
+            let sx = object.x() as i32 - cam_x + GAME_AREA_X;
+            let sy = object.y() as i32 - cam_y + GAME_AREA_Y;
+            // Keep the whole 4x4 marker inside the (unclipped) game area.
+            if sx >= GAME_AREA_X
+                && sx + 4 <= GAME_AREA_X + GAME_AREA_W as i32
+                && sy >= GAME_AREA_Y
+                && sy + 4 <= GAME_AREA_Y + GAME_AREA_H as i32
+            {
+                let color = if self.selected_object == Some(index) {
+                    CURSOR_COLOR
+                } else {
+                    12
+                };
+                markers.push(RenderCommand::FillRect {
+                    x: sx,
+                    y: sy,
+                    width: 4,
+                    height: 4,
+                    color,
+                });
+            }
+        }
+        markers
     }
 
     /// Builds the four-edge cursor outline at the cursor's on-screen tile.
@@ -479,6 +622,9 @@ impl ScreenHandler for EditorScreen {
 
         let transition = if matches!(self.mode, EditorMode::Prompt { .. }) {
             self.update_prompt(&pressed, &state.text_input);
+            None
+        } else if self.object_mode {
+            self.update_object(&pressed, &state.text_input);
             None
         } else {
             // Letter-key commands (typed characters) run first and take
@@ -866,5 +1012,59 @@ mod tests {
 
         type_char(&mut screen, ' '); // a typed Space confirms
         assert!(matches!(screen.mode, super::EditorMode::Normal));
+    }
+
+    /// Unit under test: object mode adds (`A`) then deletes (`D`) an object.
+    #[test]
+    fn object_mode_adds_then_deletes_an_object() {
+        let mut screen = editor(dma_with_codes(&[0x0A]));
+        type_char(&mut screen, 'o'); // enter object mode
+        assert!(screen.object_mode);
+
+        press(&mut screen, InputCommand::MoveRight);
+        press(&mut screen, InputCommand::MoveRight); // x=2
+        press(&mut screen, InputCommand::Duck); // y=1
+
+        type_char(&mut screen, 'a'); // open add-object prompt
+        type_string(&mut screen, "Apple");
+        confirm_prompt(&mut screen); // typed Space confirms
+
+        assert_eq!(screen.board.objects().len(), 1);
+        let object = &screen.board.objects()[0];
+        assert_eq!(object.object_type(), 1, "Apple is type 1");
+        assert_eq!(object.x() as usize / 16, 2);
+        assert_eq!(object.y() as usize / 16, 1);
+
+        type_char(&mut screen, 'd'); // delete the object under the cursor
+        assert!(screen.board.objects().is_empty());
+    }
+
+    /// Unit under test: adding an unknown object name is rejected (no object).
+    #[test]
+    fn object_mode_rejects_unknown_object_name() {
+        let mut screen = editor(dma_with_codes(&[0x0A]));
+        type_char(&mut screen, 'o');
+        type_char(&mut screen, 'a');
+        type_string(&mut screen, "Nope");
+        confirm_prompt(&mut screen);
+        assert!(screen.board.objects().is_empty());
+    }
+
+    /// Unit under test: Escape leaves object mode before it exits the editor.
+    #[test]
+    fn escape_leaves_object_mode_before_exiting() {
+        let mut screen = editor(dma_with_codes(&[0x0A]));
+        type_char(&mut screen, 'o');
+        assert!(screen.object_mode);
+
+        // First Escape leaves object mode (no transition).
+        assert_eq!(press(&mut screen, InputCommand::Pause), None);
+        assert!(!screen.object_mode);
+
+        // A second Escape exits to the start menu.
+        assert_eq!(
+            press(&mut screen, InputCommand::Pause),
+            Some(ScreenTransition::StartMenu)
+        );
     }
 }
