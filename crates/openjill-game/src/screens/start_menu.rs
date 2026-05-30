@@ -158,6 +158,9 @@ static MENU_LAYOUT: LazyLock<MenuLayout> = LazyLock::new(parse_menu_layout);
 pub struct StartMenuScreen {
     /// Parsed `INTRO.JN1` for background rendering.
     intro: JnFile,
+    /// Active episode's intro-level JN filename (e.g. `INTRO.JN1`), used by the
+    /// `Ctrl+P` cheat to play the intro level on the correct episode.
+    intro_file: String,
     /// Parsed `JILL.DMA` for map-code to tile lookup.
     dma: DmaFile,
     /// Parsed `JILL1.VCL` for the info-box overlay text.
@@ -194,11 +197,20 @@ impl StartMenuScreen {
     /// Creates the start menu screen from pre-loaded episode data.
     ///
     /// `sha` is consumed only to derive the Jill-portrait tile layout; the
-    /// caller retains ownership of the file.
-    pub fn new(intro: JnFile, dma: DmaFile, vcl: VclFile, cfg: CfgFile, sha: &ShaFile) -> Self {
+    /// caller retains ownership of the file. `intro_file` is the active episode's
+    /// intro-level JN filename ([`Episode::intro_jn`](openjill_data::episode::Episode::intro_jn)).
+    pub fn new(
+        intro: JnFile,
+        intro_file: String,
+        dma: DmaFile,
+        vcl: VclFile,
+        cfg: CfgFile,
+        sha: &ShaFile,
+    ) -> Self {
         let portrait_tiles = compute_portrait_tiles(sha);
         Self {
             intro,
+            intro_file,
             dma,
             vcl,
             cfg,
@@ -287,7 +299,7 @@ impl StartMenuScreen {
         // early return keeps the chord from also activating the selected item.
         if input.contains(&InputCommand::PlayIntro) {
             return Some(ScreenTransition::Level {
-                file: String::from("INTRO.JN1"),
+                file: self.intro_file.clone(),
                 number: 0,
             });
         }
@@ -900,7 +912,14 @@ mod tests {
 
     /// Creates a `StartMenuScreen` with all-zero synthetic fixtures.
     fn menu() -> StartMenuScreen {
-        StartMenuScreen::new(zero_jn(), empty_dma(), zero_vcl(), zero_cfg(), &zero_sha())
+        StartMenuScreen::new(
+            zero_jn(),
+            String::from("INTRO.JN1"),
+            empty_dma(),
+            zero_vcl(),
+            zero_cfg(),
+            &zero_sha(),
+        )
     }
 
     /// Presses one input for a single tick, then releases it with an empty
@@ -1193,7 +1212,14 @@ mod tests {
     #[test]
     fn info_box_splits_text_on_newlines() {
         let vcl = vcl_with_entry_zero("LINE 1\nLINE 2\nLINE 3");
-        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg(), &zero_sha());
+        let mut screen = StartMenuScreen::new(
+            zero_jn(),
+            String::from("INTRO.JN1"),
+            empty_dma(),
+            vcl,
+            zero_cfg(),
+            &zero_sha(),
+        );
 
         let commands = open_info_box_overlay(&mut screen);
         let lines = info_box_lines(&commands);
@@ -1228,7 +1254,14 @@ mod tests {
     fn info_box_clips_lines_beyond_max() {
         let lines_in: Vec<String> = (0..20).map(|i| format!("L{i}")).collect();
         let vcl = vcl_with_entry_zero(&lines_in.join("\n"));
-        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg(), &zero_sha());
+        let mut screen = StartMenuScreen::new(
+            zero_jn(),
+            String::from("INTRO.JN1"),
+            empty_dma(),
+            vcl,
+            zero_cfg(),
+            &zero_sha(),
+        );
 
         let commands = open_info_box_overlay(&mut screen);
         let lines_out = info_box_lines(&commands);
@@ -1254,7 +1287,14 @@ mod tests {
     #[test]
     fn info_box_single_line_unchanged() {
         let vcl = vcl_with_entry_zero("ONLY LINE");
-        let mut screen = StartMenuScreen::new(zero_jn(), empty_dma(), vcl, zero_cfg(), &zero_sha());
+        let mut screen = StartMenuScreen::new(
+            zero_jn(),
+            String::from("INTRO.JN1"),
+            empty_dma(),
+            vcl,
+            zero_cfg(),
+            &zero_sha(),
+        );
 
         let commands = open_info_box_overlay(&mut screen);
         let lines = info_box_lines(&commands);
