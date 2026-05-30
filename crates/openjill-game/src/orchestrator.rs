@@ -489,7 +489,18 @@ impl GameOrchestrator {
     ///
     /// [`map_jn_bytes`]: GameOrchestrator::map_jn_bytes
     fn apply_transition(&mut self, transition: ScreenTransition) {
-        if let Some(bytes) = self.handler.map_jn_bytes() {
+        // Capture the outgoing screen's JN bytes before swapping. For the world
+        // map, capture a *live* snapshot (current player position + the already
+        // -used level entrances dropped, since a fired checkpoint snapshots to
+        // `None`) so progress survives the trip into and back out of a level.
+        // Re-using the authored MAP.JN1 bytes would respawn Jill at the start
+        // every time, stranding her at the first level.
+        let captured_map = if self.handler.is_world_map() {
+            self.handler.snapshot_jn_bytes(&self.state)
+        } else {
+            self.handler.map_jn_bytes()
+        };
+        if let Some(bytes) = captured_map {
             self.map_jn_bytes = Some(bytes);
         }
         if let Some(bytes) = self.handler.level_jn_bytes() {
@@ -1614,5 +1625,76 @@ mod tests {
         assert!(orchestrator.noise_enabled(), "noise defaults on");
         orchestrator.state.noise_enabled = false;
         assert!(!orchestrator.noise_enabled());
+    }
+
+    /// Resolves the episode-1 data directory from `OPENJILL_DATA_DIR` or the
+    /// workspace default, returning `None` (so the test self-skips) when absent.
+    fn real_data_dir() -> Option<std::path::PathBuf> {
+        if let Some(path) = std::env::var_os("OPENJILL_DATA_DIR") {
+            return Some(std::path::PathBuf::from(path));
+        }
+        let default = std::path::Path::new(env!("CARGO_WORKSPACE_DIR")).join("data/original/JILL1");
+        default.is_dir().then_some(default)
+    }
+
+    /// Parses cached map bytes and returns the type-0 (player) object position.
+    fn map_player_pos(bytes: Option<&[u8]>) -> Option<(u16, u16)> {
+        let jn = JnFile::from_bytes(bytes?.to_vec()).ok()?;
+        jn.objects()
+            .iter()
+            .find(|object| object.object_type() == 0)
+            .map(|object| (object.x(), object.y()))
+    }
+
+    /// Unit under test: the world map's player position persists across a level
+    /// round-trip (regression for "completing a level respawns Jill at the map
+    /// start, stranding her at the first level").
+    ///
+    /// Preconditions: real episode-1 data (`OPENJILL_DATA_DIR` or the default);
+    /// self-skips otherwise.
+    ///
+    /// Invariant: after walking on the map and round-tripping through a level,
+    /// the snapshot the orchestrator caches for the map reflects the moved
+    /// position - not the authored `MAP.JN1` start it would reset to if the
+    /// original bytes were re-used.
+    #[test]
+    fn world_map_player_position_persists_across_a_level_round_trip() {
+        let Some(dir) = real_data_dir() else {
+            eprintln!("skipping map-persistence test; data directory missing");
+            return;
+        };
+        let mut orch = GameOrchestrator::new(DataDirectory::new(dir), &episode::JILL1)
+            .expect("orchestrator must boot from real episode-1 data");
+        let walk_right = {
+            let mut input = ActiveInput::new();
+            input.insert(InputCommand::MoveRight);
+            input
+        };
+        let to_level = || ScreenTransition::Level {
+            file: String::from("1.JN1"),
+            number: 1,
+        };
+
+        // Enter the map, then capture the initial player position via the
+        // snapshot taken when leaving for a level.
+        orch.force_transition(ScreenTransition::Map);
+        orch.tick(&ActiveInput::new());
+        orch.force_transition(to_level());
+        let start = map_player_pos(orch.map_jn_bytes.as_deref())
+            .expect("the cached map snapshot must carry a player object");
+
+        // Return to the map, walk for many ticks, then capture again.
+        orch.force_transition(ScreenTransition::Map);
+        for _ in 0..40 {
+            orch.tick(&walk_right);
+        }
+        orch.force_transition(to_level());
+        let moved = map_player_pos(orch.map_jn_bytes.as_deref())
+            .expect("the cached map snapshot must carry a player object");
+
+        assert_ne!(
+            moved, start,
+            "map player position must persist + reflect movement across a level round-trip"
+        );
     }
 }
