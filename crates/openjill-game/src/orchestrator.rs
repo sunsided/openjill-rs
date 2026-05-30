@@ -221,10 +221,25 @@ impl GameOrchestrator {
         if let Some(transition) = result.transition {
             self.apply_transition(transition);
         }
+        // The typed-text channel is single-tick: clear it once the handler has
+        // had its chance to consume it for text entry.
+        self.state.text_input.clear();
         let mut commands = crate::status_bar::status_bar_commands();
         commands.extend(result.commands);
         self.last_commands = commands.clone();
         commands
+    }
+
+    /// Sets the printable characters typed since the previous tick, for text
+    /// entry (save / high-score names).
+    ///
+    /// The host calls this before [`tick`], which clears the buffer after the
+    /// active screen has consumed it.
+    ///
+    /// [`tick`]: GameOrchestrator::tick
+    pub fn set_text_input(&mut self, text: &[char]) {
+        self.state.text_input.clear();
+        self.state.text_input.extend_from_slice(text);
     }
 
     /// Returns `true` when the active handler has requested

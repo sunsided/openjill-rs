@@ -102,6 +102,14 @@ pub struct RuntimeState {
     /// "TURTLE" slow-motion toggle; `true` = turtle mode on.  Shown by the
     /// control-panel turtle indicator and flipped by the TURTLE key.
     pub turtle_enabled: bool,
+    /// Printable characters typed this tick, for text entry (save / high-score
+    /// names).
+    ///
+    /// Transient per-frame channel: the host populates it from keyboard text
+    /// events before each tick and the orchestrator clears it after, so it is
+    /// **not** part of saved game state even though it lives on `RuntimeState`
+    /// (which is already `&mut` in every `ScreenHandler::tick`).
+    pub text_input: Vec<char>,
 }
 
 /// Player-side damage cooldown applied after a successful enemy hit.
@@ -127,6 +135,7 @@ impl RuntimeState {
             invincibility_ticks: 0,
             noise_enabled: true,
             turtle_enabled: false,
+            text_input: Vec::new(),
         }
     }
 }
