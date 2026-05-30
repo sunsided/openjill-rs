@@ -55,6 +55,9 @@ fn transition_resets_input(transition: &ScreenTransition) -> bool {
             | ScreenTransition::Credits
             | ScreenTransition::OrderingInfo
             | ScreenTransition::Noisemaker
+            // RecordHighScore resets to the start menu via reset_to_start_menu,
+            // so a held confirm key would bleed into it the same way.
+            | ScreenTransition::RecordHighScore { .. }
     )
 }
 
@@ -262,7 +265,11 @@ impl GameOrchestrator {
 
         let result = self.handler.tick(effective_input, &mut self.state);
         if let Some(transition) = result.transition {
-            let guard_input = transition_resets_input(&transition);
+            // Only arm the guard when keys are actually held: a screen that
+            // auto-advances on a timer (e.g. the intro -> start menu) transitions
+            // with empty input, and arming then would swallow the user's first
+            // fresh key press on the new screen.
+            let guard_input = !input.is_empty() && transition_resets_input(&transition);
             self.apply_transition(transition);
             if guard_input {
                 self.suppress_input_until_release = true;
@@ -942,11 +949,30 @@ mod tests {
         let mut orchestrator = orchestrator_with_handler(handler);
         assert!(!orchestrator.suppress_input_until_release);
 
-        orchestrator.tick(&ActiveInput::new());
+        // A key held when the menu transition fires is what must be guarded.
+        let mut held = ActiveInput::new();
+        held.insert(InputCommand::ThrowItem);
+        orchestrator.tick(&held);
 
         assert!(
             orchestrator.suppress_input_until_release,
-            "transitioning to the start menu must arm the held-key suppression guard"
+            "transitioning to the start menu with a key held must arm the suppression guard"
+        );
+    }
+
+    /// Unit under test: a menu transition produced with no keys held does NOT
+    /// arm the guard, so a screen that auto-advances on its timer (e.g. the
+    /// intro) does not swallow the user's first fresh key press afterward.
+    #[test]
+    fn menu_transition_with_no_keys_held_does_not_arm_guard() {
+        let handler = Box::new(OneShotTransitionHandler::new(ScreenTransition::StartMenu));
+        let mut orchestrator = orchestrator_with_handler(handler);
+
+        orchestrator.tick(&ActiveInput::new());
+
+        assert!(
+            !orchestrator.suppress_input_until_release,
+            "a transition with empty input has nothing to suppress"
         );
     }
 
@@ -965,7 +991,10 @@ mod tests {
         orchestrator.state.lives = 3;
         seed_level_cache(&mut orchestrator, "1.JN1", 1);
 
-        orchestrator.tick(&ActiveInput::new());
+        // A movement key is held across the transition; it must still carry.
+        let mut held = ActiveInput::new();
+        held.insert(InputCommand::MoveRight);
+        orchestrator.tick(&held);
 
         assert!(
             !orchestrator.suppress_input_until_release,
