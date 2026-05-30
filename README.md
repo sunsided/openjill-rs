@@ -122,10 +122,12 @@ It currently opens on a blank board with these controls:
 | `K`             | Pick the tile under the cursor          |
 | `H`             | Flood-fill the cursor row               |
 | `Z` / `N`       | Clear to a new blank board              |
+| `S` / `L`       | Save / load a board (type a file name, Space confirms, Escape cancels) |
 | Escape          | Return to the title menu                |
 
-More of the original editor's commands (object placement, load / save, load
-tile by name) are in progress - see issue #210.
+Saved boards go to a writable per-user directory (never the read-only original
+data). More of the original editor's commands (object placement, load tile by
+name) are in progress - see issue #210.
 
 ## Saving and high scores
 

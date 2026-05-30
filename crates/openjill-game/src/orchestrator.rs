@@ -535,7 +535,12 @@ impl GameOrchestrator {
             }
             ScreenTransition::Editor => {
                 self.dispatcher.clear();
-                self.handler = Box::new(EditorScreen::new(JnFile::blank(), self.cache.dma.clone()));
+                let save_dir = self.saves.dir_path().join("levels");
+                self.handler = Box::new(EditorScreen::new(
+                    JnFile::blank(),
+                    self.cache.dma.clone(),
+                    save_dir,
+                ));
             }
             ScreenTransition::Quit => {
                 self.quitting = true;
