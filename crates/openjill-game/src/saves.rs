@@ -202,6 +202,12 @@ impl SaveStore {
         &self.cfg
     }
 
+    /// Returns the per-episode writable directory path (e.g. for the level
+    /// editor's save / load location). May not exist on disk yet.
+    pub fn dir_path(&self) -> &Path {
+        self.runtime.path()
+    }
+
     /// Returns the current high-score table.
     pub fn high_scores(&self) -> &[CfgHighScore] {
         self.cfg.high_scores()

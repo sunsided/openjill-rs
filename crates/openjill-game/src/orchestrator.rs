@@ -12,7 +12,7 @@ use openjill_data::{DataDirectory, DataDirectoryError};
 use thiserror::Error;
 
 use crate::asset_cache::{AssetCache, AssetError};
-use crate::saves::{SaveStore, SaveStoreError};
+use crate::saves::{RuntimeDir, SaveStore, SaveStoreError};
 use crate::screens::editor_screen::EditorScreen;
 use crate::screens::high_score_entry::HighScoreEntryScreen;
 use crate::screens::intro_screens::{
@@ -535,7 +535,12 @@ impl GameOrchestrator {
             }
             ScreenTransition::Editor => {
                 self.dispatcher.clear();
-                self.handler = Box::new(EditorScreen::new(JnFile::blank(), self.cache.dma.clone()));
+                let levels = RuntimeDir::with_root(self.saves.dir_path().join("levels"));
+                self.handler = Box::new(EditorScreen::new(
+                    JnFile::blank(),
+                    self.cache.dma.clone(),
+                    levels,
+                ));
             }
             ScreenTransition::Quit => {
                 self.quitting = true;
