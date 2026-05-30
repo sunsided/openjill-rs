@@ -10,8 +10,6 @@ members = [
     "tools/openjill-ui-demo",
     "tools/openjill-jn-extract",
     "tools/openjill-jn-view",
-    "tools/openjill-cfg-extract",
-    "tools/openjill-cfg-view",
     "crates/openjill-export",
 ]
 resolver = "3"

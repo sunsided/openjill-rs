@@ -155,14 +155,14 @@ tasks:
     vars:
       DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
     cmds:
-      - cargo run -p openjill-cfg-extract -- --file {{.DATA_DIR}}/JILL1.CFG {{.CLI_ARGS}}
+      - cargo run --bin openjill -- cfg extract --file {{.DATA_DIR}}/JILL1.CFG {{.CLI_ARGS}}
 
   data:cfg:view:
     desc: Open the read-only CFG inspector GUI (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1; pass flags via --)
     vars:
       DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
     cmds:
-      - cargo run -p openjill-cfg-view -- --file {{.DATA_DIR}}/JILL1.CFG {{.CLI_ARGS}}
+      - cargo run --bin openjill -- cfg view --file {{.DATA_DIR}}/JILL1.CFG {{.CLI_ARGS}}
 
   data:extract:all:
     desc: Run every per-format extractor into OUT (default extract/; DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1, JN defaults to 1.JN1)
@@ -176,7 +176,7 @@ tasks:
       - cargo run -p openjill-jn-extract -- --file {{.DATA_DIR}}/{{.JN}} --out {{.OUT}}/{{.JN}}.png
       - cargo run --bin openjill -- dma extract --file {{.DATA_DIR}}/JILL.DMA --csv --out {{.OUT}}/dma.csv
       - cargo run --bin openjill -- vcl extract --file {{.DATA_DIR}}/JILL1.VCL --out {{.OUT}}/vcl.txt
-      - cargo run -p openjill-cfg-extract -- --file {{.DATA_DIR}}/JILL1.CFG --out {{.OUT}}/cfg.txt
+      - cargo run --bin openjill -- cfg extract --file {{.DATA_DIR}}/JILL1.CFG --out {{.OUT}}/cfg.txt
 
   data:run:
     internal: true
