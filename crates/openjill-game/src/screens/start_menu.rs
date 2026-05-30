@@ -944,11 +944,11 @@ mod tests {
     }
 
     /// Unit under test: `StartMenuScreen::tick` — confirms item 0 ("play") via
-    /// ThrowItem (Ctrl) after the default selection is already at index 0.
+    /// Jump (Space) with the default selection already at index 0.
     ///
     /// Preconditions: fresh screen with `selected = 0` (default).
     ///
-    /// Invariants asserted: ThrowItem confirm on item value 0 returns
+    /// Invariants asserted: a Jump confirm on item value 0 returns
     /// `ScreenTransition::Map`.
     #[test]
     fn confirm_play_item_transitions_to_map() {
