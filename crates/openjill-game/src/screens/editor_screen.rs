@@ -246,6 +246,7 @@ impl EditorScreen {
         self.cursor_y = 0;
         self.camera_x = 0;
         self.camera_y = 0;
+        self.selected_object = None;
     }
 
     /// Applies the editor's letter-key commands from this tick's typed
@@ -329,6 +330,7 @@ impl EditorScreen {
                 self.cursor_y = 0;
                 self.camera_x = 0;
                 self.camera_y = 0;
+                self.selected_object = None;
                 self.status = Some(format!("Loaded {name}"));
             }
             Err(error) => self.status = Some(format!("Load failed: {error}")),
@@ -1066,5 +1068,24 @@ mod tests {
             press(&mut screen, InputCommand::Pause),
             Some(ScreenTransition::StartMenu)
         );
+    }
+
+    /// Unit under test: replacing the board clears a stale object selection.
+    ///
+    /// Regression: a `selected_object` index left over a cleared/loaded board
+    /// would index into the new object list and highlight an unrelated object.
+    #[test]
+    fn clearing_the_board_clears_the_object_selection() {
+        let mut screen = editor(dma_with_codes(&[0x0A]));
+        type_char(&mut screen, 'o'); // object mode
+        type_char(&mut screen, 'a');
+        type_string(&mut screen, "Apple");
+        confirm_prompt(&mut screen); // add object at (0,0)
+        type_char(&mut screen, 'k'); // select it
+        assert_eq!(screen.selected_object, Some(0));
+
+        press(&mut screen, InputCommand::Pause); // leave object mode
+        type_char(&mut screen, 'n'); // clear the board (tile mode)
+        assert_eq!(screen.selected_object, None);
     }
 }
