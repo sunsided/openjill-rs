@@ -70,6 +70,26 @@ fn parses_original_jill_vcl_text_entries_when_available() {
             "parsed text entries should be non-empty"
         );
     }
+
+    // JILL1.VCL carries 23 non-empty sounds, all 8-bit signed PCM at 6000 Hz.
+    let non_empty: Vec<&openjill_data::vcl::VclSound> =
+        vcl.sounds().iter().filter_map(Option::as_ref).collect();
+    check!(
+        non_empty.len() == 23,
+        "JILL1.VCL should decode 23 non-empty sounds, got {}",
+        non_empty.len()
+    );
+    for sound in non_empty {
+        check!(
+            sound.frequency() == 6000,
+            "JILL1 sounds are sampled at 6000 Hz, got {}",
+            sound.frequency()
+        );
+        check!(
+            !sound.pcm().is_empty(),
+            "a decoded sound must carry PCM samples"
+        );
+    }
 }
 
 /// Resolves the data directory used by the integration test, preferring an
