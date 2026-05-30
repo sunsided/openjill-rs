@@ -182,11 +182,13 @@ pub struct StartMenuScreen {
     portrait_tiles: [(i32, i32, u16); 16],
     /// Highlighted save slot in the load-game overlay (`0`-based).
     load_cursor: usize,
-    /// Whether any key was held last tick.  Menu input is latched to the rising
-    /// edge so one key press performs exactly one action (held keys do not
-    /// repeat, and Escape cannot dismiss an overlay and then quit on the same
-    /// hold).
-    input_was_active: bool,
+    /// Input set held during the previous tick.  Menu input is latched to the
+    /// per-command rising edge (only keys *newly* pressed this tick act), so one
+    /// key press performs exactly one action: held keys do not repeat, and
+    /// Escape cannot dismiss an overlay and then quit on the same hold.  Keeping
+    /// the full set (rather than a single "any key" flag) lets an independent
+    /// key still register while another is held.
+    prev_input: ActiveInput,
 }
 
 impl StartMenuScreen {
@@ -206,7 +208,7 @@ impl StartMenuScreen {
             cursor_index: 0,
             portrait_tiles,
             load_cursor: 0,
-            input_was_active: false,
+            prev_input: ActiveInput::new(),
         }
     }
 }
@@ -228,19 +230,22 @@ impl ScreenHandler for StartMenuScreen {
 impl StartMenuScreen {
     /// Processes the active input set and updates overlay/selection/transition.
     ///
-    /// Menu input is latched to the **rising edge**: a key newly held this tick
-    /// performs exactly one action, and keys held from a previous tick are
-    /// ignored.  This stops a held arrow from scrolling rapidly and stops a held
-    /// Escape from dismissing an overlay and then quitting on the same press.
+    /// Menu input is latched to the **per-command rising edge**: only keys that
+    /// are newly pressed this tick (held last tick = ignored) drive actions.
+    /// This stops a held arrow from scrolling rapidly and stops a held Escape
+    /// from dismissing an overlay and then quitting on the same press, while
+    /// still letting an independent key register when another is held.
     fn process_input(&mut self, input: &ActiveInput) -> Option<ScreenTransition> {
-        let active = !input.is_empty();
-        let edge = active && !self.input_was_active;
-        self.input_was_active = active;
-        if !edge {
+        // Keys newly pressed this tick: the current set minus what was held last
+        // tick.  All command checks below run against this rising-edge set.
+        let pressed: ActiveInput = input.difference(&self.prev_input).copied().collect();
+        self.prev_input = input.clone();
+        if pressed.is_empty() {
             return None;
         }
+        let input = &pressed;
 
-        // Any key dismisses the info-box overlay.
+        // Any newly pressed key dismisses the info-box overlay.
         if self.overlay == Overlay::InfoBox {
             self.overlay = Overlay::None;
             return None;
@@ -930,6 +935,39 @@ mod tests {
         input.insert(InputCommand::Pause);
         let result = screen.tick(&input, &mut RuntimeState::new());
         assert_eq!(result.transition, Some(ScreenTransition::Quit));
+    }
+
+    /// Unit under test: the per-command rising-edge latch acts on keys newly
+    /// pressed this tick even while an unrelated key is still held.
+    ///
+    /// Preconditions: ArrowDown held for one tick, then Escape pressed while
+    /// ArrowDown is still held.
+    ///
+    /// Invariants asserted: the still-held ArrowDown does not repeat (no extra
+    /// navigation), and the newly pressed Escape registers as `Quit`.
+    #[test]
+    fn held_key_does_not_block_an_independent_key() {
+        let mut screen = menu();
+
+        // Tick 1: ArrowDown held alone.
+        let mut down = ActiveInput::new();
+        down.insert(InputCommand::Duck);
+        assert_eq!(
+            screen.tick(&down, &mut RuntimeState::new()).transition,
+            None
+        );
+
+        // Tick 2: Escape pressed while ArrowDown is still held. ArrowDown is no
+        // longer a rising edge (held last tick), but Escape is new and quits.
+        let mut down_and_esc = ActiveInput::new();
+        down_and_esc.insert(InputCommand::Duck);
+        down_and_esc.insert(InputCommand::Pause);
+        assert_eq!(
+            screen
+                .tick(&down_and_esc, &mut RuntimeState::new())
+                .transition,
+            Some(ScreenTransition::Quit)
+        );
     }
 
     /// Unit under test: Escape (`InputCommand::Pause`) with an active load-game
