@@ -110,7 +110,7 @@ tasks:
     vars:
       DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
     cmds:
-      - cargo run -p openjill-sha-edit -- --file {{.DATA_DIR}}/JILL1.SHA {{.CLI_ARGS}}
+      - cargo run --bin openjill -- sha edit --file {{.DATA_DIR}}/JILL1.SHA {{.CLI_ARGS}}
 
   data:jn:extract:
     desc: Render a JN map to PNG (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1, JN defaults to 1.JN1; pass flags via --)
