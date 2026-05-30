@@ -86,6 +86,12 @@ enum Command {
         #[command(subcommand)]
         action: editors::vcl::Action,
     },
+    /// CFG high-score / save-slot tools (`openjill cfg <action>`).
+    #[cfg(feature = "editor")]
+    Cfg {
+        #[command(subcommand)]
+        action: editors::cfg::Action,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -233,6 +239,8 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Sha { action } => editors::sha::run(action),
         #[cfg(feature = "editor")]
         Command::Vcl { action } => editors::vcl::run(action),
+        #[cfg(feature = "editor")]
+        Command::Cfg { action } => editors::cfg::run(action),
     }
 }
 
@@ -1715,6 +1723,23 @@ mod tests {
         ])
         .expect("vcl extract command should parse");
         check!(matches!(cli.command, Command::Vcl { .. }));
+    }
+
+    #[cfg(feature = "editor")]
+    #[test]
+    fn accepts_cfg_extract_command() {
+        let cli =
+            Cli::try_parse_from(["openjill", "cfg", "extract", "--file", "x.cfg", "-e", "jn1"])
+                .expect("cfg extract command should parse");
+        check!(matches!(cli.command, Command::Cfg { .. }));
+    }
+
+    #[cfg(feature = "editor-ui")]
+    #[test]
+    fn accepts_cfg_view_command() {
+        let cli = Cli::try_parse_from(["openjill", "cfg", "view", "--file", "x.cfg"])
+            .expect("cfg view command should parse");
+        check!(matches!(cli.command, Command::Cfg { .. }));
     }
 
     /// Unit under test: `verify_data_directory` success path and deterministic checksums.
