@@ -605,6 +605,8 @@ pub struct LevelScreen {
     noise_key_was_down: bool,
     /// Whether the TURTLE toggle key was held last tick (rising-edge detect).
     turtle_key_was_down: bool,
+    /// Whether the god-mode toggle key was held last tick (rising-edge detect).
+    god_key_was_down: bool,
     /// Whether the SAVE key was held last tick (rising-edge detect, so one
     /// press opens the menu exactly once).
     save_key_was_down: bool,
@@ -828,6 +830,7 @@ impl LevelScreen {
             status_text_ticks: 0,
             noise_key_was_down: false,
             turtle_key_was_down: false,
+            god_key_was_down: false,
             save_key_was_down: false,
             restore_key_was_down: false,
             pause_key_was_down: false,
@@ -1037,6 +1040,7 @@ impl LevelScreen {
         }
         if let Some(kind) = pending_kill
             && state.invincibility_ticks == 0
+            && !state.invincible
         {
             state.health = (state.health - 1).max(0);
             state.invincibility_ticks = openjill_core::PLAYER_INVINCIBILITY_TICKS;
@@ -1457,6 +1461,18 @@ impl LevelScreen {
             });
         }
 
+        // Playtest god-mode indicator, drawn in the game-area corner so the
+        // player can see the cheat is active.
+        if state.invincible {
+            commands.push(RenderCommand::DrawText {
+                text: "GOD".to_string(),
+                x: GAME_AREA_X + 2,
+                y: GAME_AREA_Y + 2,
+                color_index: 4,
+                font: FontSize::Small,
+            });
+        }
+
         // Health bar: end-cap + one segment tile per health point.
         // Erase the whole bar region first so lost health points don't ghost.
         // Clamp the right edge to the inventory area width so the FillRect
@@ -1829,6 +1845,12 @@ impl ScreenHandler for LevelScreen {
             state.turtle_enabled = !state.turtle_enabled;
         }
         self.turtle_key_was_down = turtle_down;
+        // Playtest god-mode (G): port-added invincibility cheat.
+        let god_down = input.contains(&InputCommand::ToggleGodMode);
+        if god_down && !self.god_key_was_down {
+            state.invincible = !state.invincible;
+        }
+        self.god_key_was_down = god_down;
 
         // Control-panel SAVE / RESTORE: open the slot-picker overlay on the
         // rising edge (only when no menu and no level-change box are already
@@ -4029,6 +4051,31 @@ mod tests {
         screen.tick(&held, &mut state);
         assert!(state.noise_enabled);
         assert!(!state.turtle_enabled);
+    }
+
+    /// Unit under test: the god-mode key toggles [`RuntimeState::invincible`] on
+    /// the rising key edge (once per press, like the NOISE / TURTLE toggles).
+    #[test]
+    fn god_mode_key_toggles_invincible_on_press_edge() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let mut state = RuntimeState::new();
+        assert!(!state.invincible, "god mode starts off");
+
+        let mut held = ActiveInput::new();
+        held.insert(InputCommand::ToggleGodMode);
+
+        screen.tick(&held, &mut state);
+        assert!(state.invincible, "first press turns god mode on");
+
+        // Holding must not keep flipping.
+        screen.tick(&held, &mut state);
+        assert!(state.invincible);
+
+        // Release then press again toggles it back off.
+        screen.tick(&ActiveInput::new(), &mut state);
+        screen.tick(&held, &mut state);
+        assert!(!state.invincible);
     }
 
     /// Unit under test: [`MessageType::InventoryItem`] appends the carried

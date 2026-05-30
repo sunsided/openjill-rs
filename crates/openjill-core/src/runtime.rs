@@ -102,6 +102,10 @@ pub struct RuntimeState {
     /// "TURTLE" slow-motion toggle; `true` = turtle mode on.  Shown by the
     /// control-panel turtle indicator and flipped by the TURTLE key.
     pub turtle_enabled: bool,
+    /// Playtest invincibility ("god mode") toggle; `true` = the player takes no
+    /// damage and cannot die. Flipped by the god-mode key. Not part of the
+    /// original game; a port-added playtest cheat carried across screens.
+    pub invincible: bool,
     /// Printable characters typed this tick, for text entry (save / high-score
     /// names).
     ///
@@ -135,6 +139,7 @@ impl RuntimeState {
             invincibility_ticks: 0,
             noise_enabled: true,
             turtle_enabled: false,
+            invincible: false,
             text_input: Vec::new(),
         }
     }

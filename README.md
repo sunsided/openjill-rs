@@ -97,6 +97,7 @@ Opens the game window. (With the project [Taskfile](https://taskfile.dev),
 | `S` / `R`              | Save / restore game                 |
 | `N`                    | Toggle sound on / off               |
 | `T`                    | Toggle turtle (slow-motion) mode    |
+| `G`                    | Toggle invincibility ("god mode", a playtest cheat) |
 | `Q`                    | Quit                                |
 
 ## Title-screen cheats
