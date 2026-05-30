@@ -598,6 +598,12 @@ pub struct LevelScreen {
     /// Whether any menu-navigation key was held last tick, debouncing the
     /// slot-picker so one key press moves / confirms exactly once.
     menu_nav_was_active: bool,
+    /// Set while an in-level control menu is open so that, once it closes, the
+    /// player ignores keys still held from the menu interaction until they are
+    /// released.  Without this the confirm key that dismissed the menu bleeds
+    /// into the resumed world - e.g. confirming the exit menu's "no" with Space
+    /// (aliased to Jump) would make the player jump on the next tick.
+    suppress_input_until_release: bool,
     /// Current save-slot names pushed by the orchestrator, shown in the
     /// slot-picker.  Empty until the orchestrator supplies them; a blank or
     /// missing entry renders as an empty slot.
@@ -794,6 +800,7 @@ impl LevelScreen {
             pause_key_was_down: false,
             control_menu: None,
             menu_nav_was_active: false,
+            suppress_input_until_release: false,
             save_slot_names: Vec::new(),
             turtle_switch: false,
             trigger_inbox,
@@ -1806,6 +1813,25 @@ impl ScreenHandler for LevelScreen {
         self.restore_key_was_down = restore_down;
         self.pause_key_was_down = pause_down;
 
+        // While a control menu is open it consumes a key (confirm / cancel /
+        // navigate) that is usually still held when it closes; arm a guard so
+        // the resumed world ignores that key until it is released.  Otherwise
+        // the dismiss key bleeds into gameplay - e.g. confirming the exit
+        // menu's "no" with Space (aliased to Jump) jumps the player.  The guard
+        // disarms once all keys are released, then normal input resumes.
+        if menu_was_open {
+            self.suppress_input_until_release = true;
+        }
+        if self.suppress_input_until_release && input.is_empty() {
+            self.suppress_input_until_release = false;
+        }
+        let suppressed_input = ActiveInput::new();
+        let world_input = if self.suppress_input_until_release {
+            &suppressed_input
+        } else {
+            input
+        };
+
         // Tick order each frame:
         // 1. Update every object entity (player moves, lifts dispatch
         //    PlayerMove, player dispatches CreateObject on fire).
@@ -1850,7 +1876,7 @@ impl ScreenHandler for LevelScreen {
         // the throw/jump press that closes the menu does not also drive the
         // player or advance the world a frame before the save snapshot is taken.
         if self.pending.is_none() && self.control_menu.is_none() && !menu_was_open && run_world {
-            self.update_objects(input, state);
+            self.update_objects(world_input, state);
             self.apply_platform_moves();
             self.dispatch_player_touches(state);
             self.dispatch_projectile_hits();
@@ -3078,6 +3104,55 @@ mod tests {
         assert!(
             screen.control_menu.is_none(),
             "confirming 'no' must close the exit menu and resume play"
+        );
+    }
+
+    /// Regression: dismissing an in-level menu with a key that doubles as a
+    /// gameplay action (Space confirms "no" and also jumps) must not let that
+    /// held key bleed into the resumed world. After the menu closes, the player
+    /// input is suppressed until the key is released.
+    #[test]
+    fn closing_the_exit_menu_suppresses_held_input_until_release() {
+        let bytes = jn_bytes_with_objects(&[]);
+        let (mut screen, _dispatcher) = screen_with_dispatcher(bytes, 1);
+        let mut state = RuntimeState::new();
+
+        let mut esc = ActiveInput::new();
+        esc.insert(InputCommand::Pause);
+        let mut down = ActiveInput::new();
+        down.insert(InputCommand::Duck);
+        let mut jump = ActiveInput::new();
+        jump.insert(InputCommand::Jump);
+
+        screen.tick(&esc, &mut state); // open exit menu
+        screen.tick(&ActiveInput::new(), &mut state); // release
+        screen.tick(&down, &mut state); // cursor yes -> no
+        screen.tick(&ActiveInput::new(), &mut state); // release
+
+        // Confirm "no" with Jump (Space) held: the menu closes and the held
+        // jump must be suppressed rather than bleeding into the resumed world.
+        screen.tick(&jump, &mut state);
+        assert!(
+            screen.control_menu.is_none(),
+            "confirming 'no' closes the exit menu"
+        );
+        assert!(
+            screen.suppress_input_until_release,
+            "a held jump key must be suppressed after the menu closes"
+        );
+
+        // While the key stays held the guard remains armed.
+        screen.tick(&jump, &mut state);
+        assert!(
+            screen.suppress_input_until_release,
+            "guard stays armed while the key is held"
+        );
+
+        // Releasing the key disarms the guard so normal input resumes.
+        screen.tick(&ActiveInput::new(), &mut state);
+        assert!(
+            !screen.suppress_input_until_release,
+            "guard disarms once the key is released"
         );
     }
 
