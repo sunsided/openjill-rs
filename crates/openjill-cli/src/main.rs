@@ -92,6 +92,12 @@ enum Command {
         #[command(subcommand)]
         action: editors::cfg::Action,
     },
+    /// JN map tools (`openjill jn <action>`).
+    #[cfg(feature = "editor")]
+    Jn {
+        #[command(subcommand)]
+        action: editors::jn::Action,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -241,6 +247,8 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Vcl { action } => editors::vcl::run(action),
         #[cfg(feature = "editor")]
         Command::Cfg { action } => editors::cfg::run(action),
+        #[cfg(feature = "editor")]
+        Command::Jn { action } => editors::jn::run(action),
     }
 }
 
@@ -1740,6 +1748,23 @@ mod tests {
         let cli = Cli::try_parse_from(["openjill", "cfg", "view", "--file", "x.cfg"])
             .expect("cfg view command should parse");
         check!(matches!(cli.command, Command::Cfg { .. }));
+    }
+
+    #[cfg(feature = "editor")]
+    #[test]
+    fn accepts_jn_extract_command() {
+        let cli =
+            Cli::try_parse_from(["openjill", "jn", "extract", "--file", "1.JN1", "--objects"])
+                .expect("jn extract command should parse");
+        check!(matches!(cli.command, Command::Jn { .. }));
+    }
+
+    #[cfg(feature = "editor-ui")]
+    #[test]
+    fn accepts_jn_view_command() {
+        let cli = Cli::try_parse_from(["openjill", "jn", "view", "--file", "1.JN1"])
+            .expect("jn view command should parse");
+        check!(matches!(cli.command, Command::Jn { .. }));
     }
 
     /// Unit under test: `verify_data_directory` success path and deterministic checksums.

@@ -8,8 +8,6 @@ members = [
     "crates/openjill-audio",
     "crates/openjill-cli",
     "tools/openjill-ui-demo",
-    "tools/openjill-jn-extract",
-    "tools/openjill-jn-view",
     "crates/openjill-export",
 ]
 resolver = "3"
