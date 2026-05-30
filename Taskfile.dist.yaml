@@ -103,7 +103,7 @@ tasks:
     vars:
       DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
     cmds:
-      - cargo run -p openjill-sha-extract -- --file {{.DATA_DIR}}/JILL1.SHA {{.CLI_ARGS}}
+      - cargo run --bin openjill -- sha extract --file {{.DATA_DIR}}/JILL1.SHA {{.CLI_ARGS}}
 
   data:sha:edit:
     desc: Open the read-only SHA viewer GUI (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1; pass flags via --)
@@ -172,7 +172,7 @@ tasks:
       JN: '{{.JN | default "1.JN1"}}'
     cmds:
       - mkdir -p {{.OUT}}/sha
-      - cargo run -p openjill-sha-extract -- --file {{.DATA_DIR}}/JILL1.SHA --out {{.OUT}}/sha
+      - cargo run --bin openjill -- sha extract --file {{.DATA_DIR}}/JILL1.SHA --out {{.OUT}}/sha
       - cargo run -p openjill-jn-extract -- --file {{.DATA_DIR}}/{{.JN}} --out {{.OUT}}/{{.JN}}.png
       - cargo run --bin openjill -- dma extract --file {{.DATA_DIR}}/JILL.DMA --csv --out {{.OUT}}/dma.csv
       - cargo run -p openjill-vcl-extract -- --file {{.DATA_DIR}}/JILL1.VCL --out {{.OUT}}/vcl.txt

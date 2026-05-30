@@ -2295,6 +2295,7 @@ dependencies = [
  "anyhow",
  "assert2",
  "clap",
+ "image",
  "openjill-audio",
  "openjill-core",
  "openjill-data",
@@ -2401,19 +2402,6 @@ dependencies = [
  "openjill-data",
  "openjill-export",
  "openjill-ui",
-]
-
-[[package]]
-name = "openjill-sha-extract"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert2",
- "clap",
- "image",
- "openjill-core",
- "openjill-data",
- "openjill-export",
 ]
 
 [[package]]

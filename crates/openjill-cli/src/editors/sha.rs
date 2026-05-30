@@ -1,25 +1,28 @@
-//! `openjill-sha-extract` — CLI that renders `*.SHA` tilesets to PNG.
+//! `openjill sha` subcommands: render `*.SHA` tilesets to PNG (and dump tables).
 //!
-//! Ports the Java `sha-file-extractor` tool on top of the `openjill-data`
-//! parser and the `openjill-export::sha` renderer. Each surviving tileset is
-//! written as one atlas PNG (`tileset_<index>.png`) using
-//! [`openjill_export::sha::tileset_to_png`].
-
-#![forbid(unsafe_code)]
+//! Ports the former `openjill-sha-extract` tool onto the `openjill-data` parser
+//! and the `openjill-export::sha` renderer. Each surviving tileset is written as
+//! one atlas PNG (`tileset_<index>.png`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{Args, Subcommand};
 use openjill_core::JILL_VGA_PALETTE;
 use openjill_data::sha::{ShaFile, ShaTileSet};
 use openjill_export::sha::{ScreenMode, TileFilter, TilesetColorOutput, tileset_to_png};
 
-/// Renders the tilesets of a Jill `*.SHA` file to PNG images.
-#[derive(Debug, Parser)]
-#[command(name = "openjill-sha-extract", version, about)]
-struct Cli {
+/// Actions for the `openjill sha` subcommand.
+#[derive(Debug, Subcommand)]
+pub enum Action {
+    /// Render tilesets to PNG (or print the header/tileset tables with `--dump`).
+    Extract(ExtractArgs),
+}
+
+/// Arguments for `openjill sha extract`.
+#[derive(Args, Debug)]
+pub struct ExtractArgs {
     /// SHA file to read.
     #[arg(short, long)]
     file: PathBuf,
@@ -46,21 +49,28 @@ struct Cli {
     pictureonly: bool,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let bytes = std::fs::read(&cli.file)
-        .with_context(|| format!("failed to read SHA file {}", cli.file.display()))?;
-    let sha = ShaFile::from_bytes(bytes)
-        .with_context(|| format!("failed to parse SHA file {}", cli.file.display()))?;
+/// Runs `openjill sha <action>`.
+pub fn run(action: Action) -> Result<()> {
+    match action {
+        Action::Extract(args) => extract_command(args),
+    }
+}
 
-    if cli.dump {
+/// Renders the SHA tilesets to PNG, or prints the tables when `--dump` is set.
+fn extract_command(args: ExtractArgs) -> Result<()> {
+    let bytes = std::fs::read(&args.file)
+        .with_context(|| format!("failed to read SHA file {}", args.file.display()))?;
+    let sha = ShaFile::from_bytes(bytes)
+        .with_context(|| format!("failed to parse SHA file {}", args.file.display()))?;
+
+    if args.dump {
         print!("{}", dump_text(&sha));
         return Ok(());
     }
 
-    let out_dir = cli.out.as_deref().unwrap_or_else(|| Path::new("."));
-    let mode = resolve_mode(cli.cga, cli.ega, cli.vga);
-    let filter = resolve_filter(cli.fontonly, cli.pictureonly);
+    let out_dir = args.out.as_deref().unwrap_or_else(|| Path::new("."));
+    let mode = resolve_mode(args.cga, args.ega, args.vga);
+    let filter = resolve_filter(args.fontonly, args.pictureonly);
     let written = extract(&sha, out_dir, mode, filter)?;
     println!(
         "Wrote {written} tileset PNG(s) to {} (mode {mode:?}, fonts={}, pictures={})",
@@ -101,9 +111,9 @@ fn extract(sha: &ShaFile, out_dir: &Path, mode: ScreenMode, filter: TileFilter) 
 
 /// Selects the screen mode from the CGA/EGA/VGA flags.
 ///
-/// Mirrors the Java tool: any explicit flag overrides the VGA default, with
-/// CGA taking precedence over EGA over VGA when several are passed. CGA and
-/// EGA both restrict the export to sub-8-bit tilesets.
+/// Any explicit flag overrides the VGA default, with CGA taking precedence over
+/// EGA over VGA when several are passed. CGA and EGA both restrict the export to
+/// sub-8-bit tilesets.
 fn resolve_mode(cga: bool, ega: bool, _vga: bool) -> ScreenMode {
     if cga {
         ScreenMode::Cga
@@ -137,8 +147,7 @@ fn resolve_filter(fontonly: bool, pictureonly: bool) -> TileFilter {
 
 /// Returns `true` when `tileset` should be included for the given screen mode.
 ///
-/// Matches `openjill_export::sha`: VGA accepts every tileset; CGA and EGA skip
-/// 8-bit (VGA-exclusive) tilesets.
+/// VGA accepts every tileset; CGA and EGA skip 8-bit (VGA-exclusive) tilesets.
 fn tileset_matches_mode(tileset: &ShaTileSet, mode: ScreenMode) -> bool {
     match mode {
         ScreenMode::Vga => true,
