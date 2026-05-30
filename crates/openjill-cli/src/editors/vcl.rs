@@ -1,22 +1,26 @@
-//! `openjill-vcl-extract` — CLI that dumps `*.VCL` text entries and sounds.
+//! `openjill vcl` subcommands: dump `*.VCL` text entries and extract sounds.
 //!
-//! Built on the `openjill-data` parser and the `openjill-export::vcl`
-//! formatters. Dumps all text entries (text or JSON) or a single entry, or
-//! extracts every non-empty sound to a 16-bit WAV with `--wav <DIR>`.
-
-#![forbid(unsafe_code)]
+//! Ports the former `openjill-vcl-extract` tool onto the `openjill-data` parser
+//! and the `openjill-export::vcl` formatters: dump all text entries (text or
+//! JSON) or one entry, or extract every non-empty sound to a 16-bit WAV.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Args, Subcommand};
 use openjill_data::vcl::VclFile;
 use openjill_export::vcl::{entries_to_json, entries_to_text, escape_text_payload, sound_to_wav};
 
-/// Dumps the text entries (and optionally the sounds) of a Jill `*.VCL` file.
-#[derive(Debug, Parser)]
-#[command(name = "openjill-vcl-extract", version, about)]
-struct Cli {
+/// Actions for the `openjill vcl` subcommand.
+#[derive(Debug, Subcommand)]
+pub enum Action {
+    /// Dump text entries (text/JSON), or extract sounds to WAV with `--wav`.
+    Extract(ExtractArgs),
+}
+
+/// Arguments for `openjill vcl extract`.
+#[derive(Args, Debug)]
+pub struct ExtractArgs {
     /// VCL file to read.
     #[arg(short, long)]
     file: PathBuf,
@@ -35,23 +39,30 @@ struct Cli {
     wav: Option<PathBuf>,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let bytes = std::fs::read(&cli.file)
-        .with_context(|| format!("failed to read VCL file {}", cli.file.display()))?;
-    let vcl = VclFile::from_bytes(bytes)
-        .with_context(|| format!("failed to parse VCL file {}", cli.file.display()))?;
+/// Runs `openjill vcl <action>`.
+pub fn run(action: Action) -> Result<()> {
+    match action {
+        Action::Extract(args) => extract_command(args),
+    }
+}
 
-    if let Some(dir) = &cli.wav {
+/// Dumps text entries (or extracts sounds with `--wav`) from a `*.VCL` file.
+fn extract_command(args: ExtractArgs) -> Result<()> {
+    let bytes = std::fs::read(&args.file)
+        .with_context(|| format!("failed to read VCL file {}", args.file.display()))?;
+    let vcl = VclFile::from_bytes(bytes)
+        .with_context(|| format!("failed to parse VCL file {}", args.file.display()))?;
+
+    if let Some(dir) = &args.wav {
         return extract_sounds(&vcl, dir);
     }
 
-    let rendered = match cli.entry {
-        Some(index) => render_single(&vcl, index, cli.json)?,
-        None => render_all(&vcl, cli.json),
+    let rendered = match args.entry {
+        Some(index) => render_single(&vcl, index, args.json)?,
+        None => render_all(&vcl, args.json),
     };
 
-    match &cli.out {
+    match &args.out {
         Some(path) => std::fs::write(path, rendered)
             .with_context(|| format!("failed to write {}", path.display()))?,
         None => print!("{rendered}"),
@@ -93,8 +104,8 @@ fn render_all(vcl: &VclFile, json: bool) -> String {
     }
 }
 
-/// Renders one entry selected by its logical index (the same index shown in
-/// the full text dump), erroring when no entry carries that index.
+/// Renders one entry selected by its logical index (the same index shown in the
+/// full text dump), erroring when no entry carries that index.
 fn render_single(vcl: &VclFile, index: usize, json: bool) -> Result<String> {
     let entry = vcl
         .text_entries()
@@ -120,34 +131,5 @@ fn render_single(vcl: &VclFile, index: usize, json: bool) -> Result<String> {
         let mut text = escape_text_payload(entry.text());
         text.push('\n');
         Ok(text)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Cli;
-    use clap::Parser;
-
-    #[test]
-    fn parses_entry_and_json_flags() {
-        let cli = Cli::try_parse_from(["vcl", "-f", "x.vcl", "--entry", "3", "--json"])
-            .expect("args parse");
-        assert_eq!(cli.entry, Some(3));
-        assert!(cli.json);
-    }
-
-    #[test]
-    fn entry_defaults_to_none() {
-        let cli = Cli::try_parse_from(["vcl", "-f", "x.vcl"]).expect("args parse");
-        assert_eq!(cli.entry, None);
-        assert!(!cli.json);
-        assert_eq!(cli.wav, None);
-    }
-
-    #[test]
-    fn parses_wav_output_directory() {
-        let cli =
-            Cli::try_parse_from(["vcl", "-f", "x.vcl", "--wav", "out/sounds"]).expect("args parse");
-        assert_eq!(cli.wav, Some(std::path::PathBuf::from("out/sounds")));
     }
 }

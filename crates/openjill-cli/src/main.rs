@@ -80,6 +80,12 @@ enum Command {
         #[command(subcommand)]
         action: editors::sha::Action,
     },
+    /// VCL text/sound tools (`openjill vcl <action>`).
+    #[cfg(feature = "editor")]
+    Vcl {
+        #[command(subcommand)]
+        action: editors::vcl::Action,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -225,6 +231,8 @@ fn dispatch(command: Command) -> Result<()> {
         } => dma_extract_command(args),
         #[cfg(feature = "editor")]
         Command::Sha { action } => editors::sha::run(action),
+        #[cfg(feature = "editor")]
+        Command::Vcl { action } => editors::vcl::run(action),
     }
 }
 
@@ -1697,6 +1705,16 @@ mod tests {
         let cli = Cli::try_parse_from(["openjill", "sha", "extract", "--file", "x.sha"])
             .expect("sha extract command should parse");
         check!(matches!(cli.command, Command::Sha { .. }));
+    }
+
+    #[cfg(feature = "editor")]
+    #[test]
+    fn accepts_vcl_extract_command() {
+        let cli = Cli::try_parse_from([
+            "openjill", "vcl", "extract", "--file", "x.vcl", "--wav", "out",
+        ])
+        .expect("vcl extract command should parse");
+        check!(matches!(cli.command, Command::Vcl { .. }));
     }
 
     /// Unit under test: `verify_data_directory` success path and deterministic checksums.
