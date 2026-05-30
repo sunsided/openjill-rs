@@ -99,6 +99,31 @@ Opens the game window. (With the project [Taskfile](https://taskfile.dev),
 | `T`                    | Toggle turtle (slow-motion) mode    |
 | `Q`                    | Quit                                |
 
+## Title-screen cheats
+
+Two hidden commands from the original game work on the **title menu**:
+
+| Key      | Action                            |
+|----------|-----------------------------------|
+| `Ctrl+P` | Play the intro level              |
+| `Ctrl+E` | Open the in-game level editor     |
+
+### Level editor (work in progress)
+
+`Ctrl+E` opens a port of the game's hidden built-in level editor (rediscovered
+by Malvineous; see the [ModdingWiki](https://moddingwiki.shikadi.net/wiki/Using_the_official_Jill_of_the_Jungle_level_editor)).
+It currently opens on a blank board with these controls:
+
+| Key(s)          | Action                                |
+|-----------------|---------------------------------------|
+| Arrow keys      | Move the tile cursor                  |
+| Tab / Backspace | Next / previous tile in the palette   |
+| Space / Shift   | Paint the selected tile at the cursor |
+| Escape          | Return to the title menu              |
+
+More of the original editor's commands (pick tile, flood fill, new board,
+object placement, load / save) are in progress - see issue #210.
+
 ## Saving and high scores
 
 Saves, high scores, and the working config are written to a per-user, writable
