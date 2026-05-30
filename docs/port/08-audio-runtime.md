@@ -42,9 +42,10 @@ rate and let `rodio`/`cpal` resample to the output device rate.
 
 The remaining unknown is **not** the format but the **index -> game-event
 mapping**: which of the 23 sounds is jump, fire, pickup, etc. Neither port
-records this and we are not reverse-engineering the DOS EXE, so it is calibrated
-by ear (extract all 23, listen, assign) and documented with a confidence note
-per mapping. This is bounded (23 candidates) and isolated to one child issue.
+records this. Ear calibration (extract all 23, listen, assign) pinned the four
+**player** cues but could not identify the rest; recovering the remainder needs
+`JILL.EXE` reverse-engineering. See "Sound index -> event mapping (open
+follow-up)" below for the confirmed table and the RE recipe.
 
 ## Inspected modules and crates
 

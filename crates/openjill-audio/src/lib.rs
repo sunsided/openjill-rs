@@ -178,8 +178,8 @@ mod tests {
         assert_eq!(sound.samples, vec![0.0, 0.5, -1.0, 127.0 / 128.0]);
     }
 
-    /// Unit under test: the provisional event mapping resolves the wired cues to
-    /// distinct, valid VCL slots.
+    /// Unit under test: the event mapping resolves the wired (confirmed) player
+    /// cues to distinct, valid VCL slots.
     #[test]
     fn maps_player_events_to_distinct_slots() {
         let slots = [
