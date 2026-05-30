@@ -5,7 +5,7 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Component, Path, PathBuf};
 
-#[cfg(feature = "editors")]
+#[cfg(feature = "editor")]
 use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -23,7 +23,7 @@ use png::{BitDepth, ColorType, Encoder};
 use sha2::{Digest, Sha256};
 
 /// Editor / data-tool subcommand implementations (`openjill <format> <action>`).
-#[cfg(feature = "editors")]
+#[cfg(feature = "editor")]
 mod editors;
 
 /// Environment variable used as a fallback data directory for data utility commands.
@@ -69,13 +69,13 @@ enum Command {
     },
     Dump(DumpArgs),
     /// DMA tile-metadata tools (`openjill dma <action>`).
-    #[cfg(feature = "editors")]
+    #[cfg(feature = "editor")]
     Dma {
         #[command(subcommand)]
         action: DmaAction,
     },
     /// SHA tileset tools (`openjill sha <action>`).
-    #[cfg(feature = "editors")]
+    #[cfg(feature = "editor")]
     Sha {
         #[command(subcommand)]
         action: editors::sha::Action,
@@ -88,7 +88,7 @@ enum DataCommand {
 }
 
 /// Actions for the `openjill dma` editor subcommand.
-#[cfg(feature = "editors")]
+#[cfg(feature = "editor")]
 #[derive(Debug, Subcommand)]
 enum DmaAction {
     /// Dump the `JILL.DMA` tile-metadata table (text, CSV, or JSON).
@@ -96,7 +96,7 @@ enum DmaAction {
 }
 
 /// Arguments for `openjill dma extract`.
-#[cfg(feature = "editors")]
+#[cfg(feature = "editor")]
 #[derive(Args, Debug)]
 struct DmaExtractArgs {
     /// DMA file to read.
@@ -219,11 +219,11 @@ fn dispatch(command: Command) -> Result<()> {
             command: DataCommand::Verify(args),
         } => data_verify_command(args),
         Command::Dump(args) => dump_command(args),
-        #[cfg(feature = "editors")]
+        #[cfg(feature = "editor")]
         Command::Dma {
             action: DmaAction::Extract(args),
         } => dma_extract_command(args),
-        #[cfg(feature = "editors")]
+        #[cfg(feature = "editor")]
         Command::Sha { action } => editors::sha::run(action),
     }
 }
@@ -232,7 +232,7 @@ fn dispatch(command: Command) -> Result<()> {
 ///
 /// Replaces the former standalone `openjill-dma-extract` binary; the
 /// conversions come from `openjill-export::dma`.
-#[cfg(feature = "editors")]
+#[cfg(feature = "editor")]
 fn dma_extract_command(args: DmaExtractArgs) -> Result<()> {
     use openjill_data::dma::DmaFile;
     use openjill_export::dma::{table_to_csv, table_to_text};
@@ -260,7 +260,7 @@ fn dma_extract_command(args: DmaExtractArgs) -> Result<()> {
 
 /// Serialises the DMA entries to a pretty-printed JSON array (round-trippable
 /// numeric `map_code` / `tileset` / `tile` / `flags`).
-#[cfg(feature = "editors")]
+#[cfg(feature = "editor")]
 fn dma_entries_to_json(dma: &openjill_data::dma::DmaFile) -> String {
     let entries: Vec<serde_json::Value> = dma
         .entries()
@@ -1606,7 +1606,7 @@ fn print_file_report(label: &str, file: &FileVerification) {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "editors")]
+    #[cfg(feature = "editor")]
     use super::DmaAction;
     use super::{
         Cli, Command, DataCommand, DataDirArgs, FileVerification, RunArgs, SHA_ATLAS_INDEXED_FILE,
@@ -1669,7 +1669,7 @@ mod tests {
         check!(matches!(cli.command, Command::Dump(_)));
     }
 
-    #[cfg(feature = "editors")]
+    #[cfg(feature = "editor")]
     #[test]
     fn accepts_dma_extract_command() {
         let cli = Cli::try_parse_from(["openjill", "dma", "extract", "--file", "x.dma"])
@@ -1682,7 +1682,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "editors")]
+    #[cfg(feature = "editor")]
     #[test]
     fn dma_extract_rejects_csv_and_json_together() {
         check!(
@@ -1691,7 +1691,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "editors")]
+    #[cfg(feature = "editor")]
     #[test]
     fn accepts_sha_extract_command() {
         let cli = Cli::try_parse_from(["openjill", "sha", "extract", "--file", "x.sha"])

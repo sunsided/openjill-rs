@@ -11,19 +11,26 @@ name = "openjill"
 path = "src/main.rs"
 
 [features]
-# The editor / data-tool subcommands (`openjill <format> <action>`). On by
-# default; disable with `--no-default-features` for a slim game-only binary.
-default = ["editors"]
-editors = ["dep:openjill-export", "dep:image"]
+# Default build includes the full editor suite (CLI tools + GUI viewers).
+# `--no-default-features` builds a slim game-only binary; add `--features editor`
+# for the CLI data tools without the GUI viewers.
+default = ["editor-ui"]
+# CLI editor/data-tool subcommands (`openjill <format> extract`, etc.).
+editor = ["dep:openjill-export", "dep:image"]
+# GUI viewers (`openjill <format> edit|view`); implies `editor`.
+editor-ui = ["editor", "dep:eframe", "dep:egui", "dep:openjill-ui"]
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+eframe = { workspace = true, optional = true }
+egui = { workspace = true, optional = true }
 image = { workspace = true, features = ["png"], optional = true }
 openjill-audio = { path = "../openjill-audio" }
 openjill-core = { path = "../openjill-core" }
 openjill-data = { path = "../openjill-data" }
 openjill-export = { path = "../openjill-export", optional = true }
+openjill-ui = { path = "../openjill-ui", optional = true }
 openjill-game = { path = "../openjill-game" }
 openjill-render = { path = "../openjill-render" }
 png.workspace = true

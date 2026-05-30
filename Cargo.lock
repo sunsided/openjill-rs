@@ -2295,6 +2295,8 @@ dependencies = [
  "anyhow",
  "assert2",
  "clap",
+ "eframe",
+ "egui",
  "image",
  "openjill-audio",
  "openjill-core",
@@ -2302,6 +2304,7 @@ dependencies = [
  "openjill-export",
  "openjill-game",
  "openjill-render",
+ "openjill-ui",
  "png",
  "serde_json",
  "sha2",
@@ -2387,21 +2390,6 @@ dependencies = [
  "thiserror 2.0.18",
  "wgpu",
  "winit",
-]
-
-[[package]]
-name = "openjill-sha-edit"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "eframe",
- "egui",
- "image",
- "openjill-core",
- "openjill-data",
- "openjill-export",
- "openjill-ui",
 ]
 
 [[package]]
