@@ -56,6 +56,7 @@ static INPUT_COMMAND_KEY_MAP: &[(KeyCode, InputCommand)] = &[
     (KeyCode::KeyT, InputCommand::ToggleTurtle),
     (KeyCode::KeyS, InputCommand::Save),
     (KeyCode::KeyR, InputCommand::Restore),
+    (KeyCode::KeyG, InputCommand::ToggleGodMode),
 ];
 
 /// Runs the game event loop for the configured data directory and episode.

@@ -71,6 +71,9 @@ pub enum InputCommand {
     /// title-screen cheat). Produced only as a modifier chord and consumed only
     /// by the start menu.
     EnterEditor,
+    /// Toggle playtest invincibility ("god mode"). A port-added cheat, not in
+    /// the original game.
+    ToggleGodMode,
 }
 
 #[derive(Clone, Debug)]

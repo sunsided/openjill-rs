@@ -270,6 +270,10 @@ pub struct PlayerEntity {
     /// `true` when [`PlayerEntity::on_kill`] has set up the die transition but
     /// the matching die-state update has not yet emitted the bullet burst.
     die_pending: bool,
+    /// Playtest invincibility ("god mode"), synced each tick from
+    /// [`RuntimeState::invincible`]. While `true`, [`PlayerEntity::on_kill`] is
+    /// a no-op, so no damage source can put the player into the die state.
+    invincible: bool,
     /// Ticks remaining before the player may fire again.
     ///
     /// Set to [`FIRE_COOLDOWN_TICKS`] after each shot; decremented once per
@@ -321,9 +325,11 @@ impl PlayerEntity {
             info1: i32::from(item.info1()),
             zaphold: i32::from(item.zap_hold()),
             death_kind,
-            // `die_pending` and `fire_cooldown` are transient ticks-scoped
-            // members with no JN field; they re-derive during play.
+            // `die_pending`, `fire_cooldown`, and `invincible` are transient
+            // ticks-scoped members with no JN field; they re-derive during play
+            // (`invincible` re-syncs from `RuntimeState` on the next update).
             die_pending: false,
+            invincible: false,
             fire_cooldown: 0,
             origin: item.clone(),
         }
@@ -400,6 +406,11 @@ impl ObjectEntity for PlayerEntity {
         backgrounds: &BackgroundGrid,
         dispatcher: &mut MessageDispatcher,
     ) {
+        // Sync the playtest god-mode flag from runtime state so `on_kill`
+        // (called later this tick by enemy/hazard contact) sees the current
+        // value.
+        self.invincible = state.invincible;
+
         if self.zaphold > 0 {
             self.zaphold -= 1;
         }
@@ -524,6 +535,10 @@ impl ObjectEntity for PlayerEntity {
     /// so the actual state mutation and `CreateObject` dispatch run on the
     /// next [`ObjectEntity::update`] call via [`Self::die_pending`].
     fn on_kill(&mut self, _damage: i32, death_kind: DeathKind) {
+        // Playtest god mode: ignore every kill source so the player never dies.
+        if self.invincible {
+            return;
+        }
         if matches!(self.state, PlayerStateKind::Die) {
             return;
         }
@@ -1634,6 +1649,33 @@ mod tests {
         assert!(
             restart_count >= 1,
             "DieRestartLevel must be dispatched after STATECOUNT_MAX_TO_RESTART_GAME ticks; saw {restart_count}"
+        );
+    }
+
+    /// Unit under test: playtest god mode makes `on_kill` a no-op so no kill
+    /// source can put the player into the `Die` state.
+    ///
+    /// Preconditions: `RuntimeState::invincible` is `true` and synced into the
+    /// player via `update`; a kill then arrives.
+    ///
+    /// Invariant asserted: the player is not in `Die` after the kill + update.
+    #[test]
+    fn god_mode_ignores_kills() {
+        let grid = synthetic_grid(8, 8, CellKind::Air);
+        let mut player = make_player(16, 16);
+        let mut runtime = RuntimeState::new();
+        runtime.invincible = true;
+        let mut dispatcher = MessageDispatcher::new();
+
+        // First update syncs the flag; the kill must then be ignored.
+        player.update(&ActiveInput::new(), &runtime, &grid, &mut dispatcher);
+        player.on_kill(1, DeathKind::Enemy);
+        player.update(&ActiveInput::new(), &runtime, &grid, &mut dispatcher);
+
+        assert_ne!(
+            player.state(),
+            PlayerStateKind::Die,
+            "god mode must block the die transition"
         );
     }
 
