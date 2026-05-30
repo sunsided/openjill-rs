@@ -7,6 +7,23 @@ game in a `winit` window rendered through `wgpu`.
 You must bring your own original game data: **no copyrighted assets are shipped
 with this repository.**
 
+## About the game
+
+Jill of the Jungle is a side-scrolling platformer released in 1992 by Epic
+MegaGames (now Epic Games) as a three-episode shareware trilogy: *Jill of the
+Jungle*, *Jill Goes Underground*, and *Jill Saves the Prince*. It was designed
+and programmed by **Tim Sweeney**, Epic's founder and the engineer who went on
+to create the Unreal Engine. Ars Technica frames it as
+["the last game Tim Sweeney designed"](https://arstechnica.com/gaming/2025/11/revisiting-jill-of-the-jungle-the-last-game-tim-sweeney-designed/)
+before he moved to engine and tools work full time.
+
+It is a small but historically notable title: an early Epic shareware release
+(contemporary with ZZT and the studio's first wave of DOS games) that helped
+Epic find its footing in the shareware market it would later dominate, and an
+early work by an engineer whose technology now underpins a large share of modern
+games. It is no *Commander Keen*, but it is far from nothing - and understanding
+exactly how its data formats and engine behave is the point of this port.
+
 ## Status and scope
 
 - **Episode 1** ("Jill of the Jungle") is playable end to end: start menu, world
@@ -129,7 +146,9 @@ game runs silently. Background music (`*.DDT`) is not played; see below.
 - Run the test suite without any game data: `cargo test --workspace`. Real-data
   integration tests self-skip unless `OPENJILL_DATA_DIR` (or the default data
   directory) is present.
-- Per-format extraction and inspection tools live in `tools/`; the
+- Per-format extraction and inspection run as `openjill <format> <action>`
+  subcommands (DMA / SHA / VCL / CFG / JN), built into the same binary under the
+  default `editor` / `editor-ui` features; the
   [Taskfile](Taskfile.dist.yaml) wraps common workflows (`task --list`).
 - Porting design notes and the original-format reference are in
   [`docs/port/`](docs/port/).
