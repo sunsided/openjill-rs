@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use openjill_audio::AudioBackend;
 use openjill_core::{InputCommand, Palette};
 use openjill_data::DataDirectory;
 use openjill_data::episode::Episode;
@@ -98,6 +99,10 @@ pub struct GameApp {
     /// `None` when the required asset files are unavailable at startup, in
     /// which case the event loop continues with no game logic.
     orchestrator: Option<GameOrchestrator>,
+    /// Audio backend that plays the original VCL sounds for the orchestrator's
+    /// emitted [`SoundEvent`]s.  `None` when no orchestrator (and thus no VCL)
+    /// is available; a no-op internally when no audio device is present.
+    audio: Option<AudioBackend>,
     /// Timestamp of the last fired game tick, used to enforce the 55 ms tick
     /// interval regardless of the vsync rate.
     last_tick: Option<Instant>,
@@ -128,6 +133,11 @@ impl GameApp {
                 None
             }
         };
+        // Build the audio backend from the loaded VCL sounds. Opens the default
+        // output device (a silent no-op if none is available).
+        let audio = orchestrator
+            .as_ref()
+            .map(|orch| AudioBackend::new(&orch.cache().vcl));
         Self {
             data_dir,
             episode,
@@ -138,6 +148,7 @@ impl GameApp {
             pressed_keys: BTreeSet::new(),
             typed_text: Vec::new(),
             orchestrator,
+            audio,
             last_tick: None,
         }
     }
@@ -389,6 +400,13 @@ impl ApplicationHandler for GameApp {
                 orch.set_text_input(&self.typed_text);
                 self.typed_text.clear();
                 orch.tick(&active);
+                // Apply the NOISE toggle, then play this tick's sound cues.
+                if let Some(audio) = self.audio.as_mut() {
+                    audio.set_muted(!orch.noise_enabled());
+                    for event in orch.take_sound_events() {
+                        audio.play(event);
+                    }
+                }
                 if orch.is_quitting() {
                     event_loop.exit();
                     return;
