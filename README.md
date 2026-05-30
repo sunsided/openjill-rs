@@ -15,7 +15,7 @@ Jungle*, *Jill Goes Underground*, and *Jill Saves the Prince*. It was designed
 and programmed by **Tim Sweeney**, Epic's founder and the engineer who went on
 to create the Unreal Engine. Ars Technica frames it as
 ["the last game Tim Sweeney designed"](https://arstechnica.com/gaming/2025/11/revisiting-jill-of-the-jungle-the-last-game-tim-sweeney-designed/)
-before he moved to engine and tools work full time.
+before he moved to engine and tools work full-time.
 
 It is a small but historically notable title: an early Epic shareware release
 (contemporary with ZZT and the studio's first wave of DOS games) that helped
@@ -147,9 +147,10 @@ game runs silently. Background music (`*.DDT`) is not played; see below.
   integration tests self-skip unless `OPENJILL_DATA_DIR` (or the default data
   directory) is present.
 - Per-format extraction and inspection run as `openjill <format> <action>`
-  subcommands (DMA / SHA / VCL / CFG / JN), built into the same binary under the
-  default `editor` / `editor-ui` features; the
-  [Taskfile](Taskfile.dist.yaml) wraps common workflows (`task --list`).
+  subcommands (DMA / SHA / VCL / CFG / JN), built into the same binary under its
+  editor features (the default `editor-ui` enables the GUI viewers and implies
+  the CLI-only `editor`); the [Taskfile](Taskfile.dist.yaml) wraps common
+  workflows (`task --list`).
 - Porting design notes and the original-format reference are in
   [`docs/port/`](docs/port/).
 
