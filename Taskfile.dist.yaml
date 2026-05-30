@@ -140,7 +140,7 @@ tasks:
     vars:
       DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
     cmds:
-      - cargo run -p openjill-vcl-extract -- --file {{.DATA_DIR}}/JILL1.VCL {{.CLI_ARGS}}
+      - cargo run --bin openjill -- vcl extract --file {{.DATA_DIR}}/JILL1.VCL {{.CLI_ARGS}}
 
   data:vcl:sounds:
     desc: Extract every JILL1.VCL sound to a 16-bit WAV in OUT (default extract/sounds) for auditioning
@@ -148,7 +148,7 @@ tasks:
       DATA_DIR: '{{.DATA_DIR | default .OPENJILL_DATA_DIR | default "data/original/JILL1"}}'
       OUT: '{{.OUT | default "extract/sounds"}}'
     cmds:
-      - cargo run -p openjill-vcl-extract -- --file {{.DATA_DIR}}/JILL1.VCL --wav {{.OUT}}
+      - cargo run --bin openjill -- vcl extract --file {{.DATA_DIR}}/JILL1.VCL --wav {{.OUT}}
 
   data:cfg:extract:
     desc: Dump JILL1.CFG high scores and save slots (DATA_DIR/OPENJILL_DATA_DIR/data/original/JILL1; pass flags like --scores/--saves/--json via --)
@@ -175,7 +175,7 @@ tasks:
       - cargo run --bin openjill -- sha extract --file {{.DATA_DIR}}/JILL1.SHA --out {{.OUT}}/sha
       - cargo run -p openjill-jn-extract -- --file {{.DATA_DIR}}/{{.JN}} --out {{.OUT}}/{{.JN}}.png
       - cargo run --bin openjill -- dma extract --file {{.DATA_DIR}}/JILL.DMA --csv --out {{.OUT}}/dma.csv
-      - cargo run -p openjill-vcl-extract -- --file {{.DATA_DIR}}/JILL1.VCL --out {{.OUT}}/vcl.txt
+      - cargo run --bin openjill -- vcl extract --file {{.DATA_DIR}}/JILL1.VCL --out {{.OUT}}/vcl.txt
       - cargo run -p openjill-cfg-extract -- --file {{.DATA_DIR}}/JILL1.CFG --out {{.OUT}}/cfg.txt
 
   data:run:

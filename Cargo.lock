@@ -2416,18 +2416,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openjill-vcl-extract"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert2",
- "clap",
- "openjill-data",
- "openjill-export",
- "serde_json",
-]
-
-[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
