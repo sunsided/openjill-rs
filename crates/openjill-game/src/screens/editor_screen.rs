@@ -543,6 +543,47 @@ mod tests {
         );
     }
 
+    /// Unit under test: `H` stops at the first non-matching cell on each side.
+    ///
+    /// Paints boundary tiles (0x0B) at x=2 and x=6 on row 0, then flood-fills the
+    /// blank run between them from x=4: only x=3..=5 change; the boundaries and
+    /// the cells beyond them stay untouched.
+    #[test]
+    fn h_flood_fill_stops_at_non_matching_cells() {
+        let mut screen = EditorScreen::new(JnFile::blank(), dma_with_codes(&[0x0A, 0x0B]));
+        press(&mut screen, InputCommand::NextInventory); // select entry 1 (0x0B)
+        press(&mut screen, InputCommand::MoveRight);
+        press(&mut screen, InputCommand::MoveRight); // x=2
+        press(&mut screen, InputCommand::Jump); // boundary 0x0B at x=2
+        for _ in 0..4 {
+            press(&mut screen, InputCommand::MoveRight); // x=6
+        }
+        press(&mut screen, InputCommand::Jump); // boundary 0x0B at x=6
+
+        press(&mut screen, InputCommand::MoveLeft);
+        press(&mut screen, InputCommand::MoveLeft); // x=4
+        press(&mut screen, InputCommand::PrevInventory); // select entry 0 (0x0A)
+        type_char(&mut screen, 'h');
+
+        let reparsed = JnFile::from_bytes(screen.board.to_bytes()).expect("board round-trips");
+        let row: Vec<Option<u16>> = (0..8)
+            .map(|x| reparsed.background().map_code(x, 0))
+            .collect();
+        assert_eq!(
+            row,
+            vec![
+                Some(0),    // x=0 beyond the left boundary
+                Some(0),    // x=1 beyond the left boundary
+                Some(0x0B), // x=2 left boundary, untouched
+                Some(0x0A), // x=3 filled
+                Some(0x0A), // x=4 filled (cursor)
+                Some(0x0A), // x=5 filled
+                Some(0x0B), // x=6 right boundary, untouched
+                Some(0),    // x=7 beyond the right boundary
+            ]
+        );
+    }
+
     /// Unit under test: the `N`/`Z` command clears to a new blank board and
     /// resets the cursor.
     #[test]
