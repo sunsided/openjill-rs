@@ -195,6 +195,13 @@ impl SaveStore {
         })
     }
 
+    /// Returns the working runtime config (the live high-score and save-slot
+    /// tables), so the start menu can render the runtime state rather than the
+    /// original shipped `JILL1.CFG`.
+    pub fn cfg(&self) -> &CfgFile {
+        &self.cfg
+    }
+
     /// Returns the current high-score table.
     pub fn high_scores(&self) -> &[CfgHighScore] {
         self.cfg.high_scores()
