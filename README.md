@@ -1,59 +1,139 @@
-OpenJill
-========
+# openjill-rs
 
-OpenJill is open source implementation of Jill Trilogy game engine (Jill of the Jungle, Jill goes Underground, Jill save the Prince).
-It's release under Mozilla Public License (see LICENSE file).
+A Rust port of the [OpenJill](http://www.openjill.org) engine for **Jill of the
+Jungle** (Epic MegaGames, 1992). It parses the original game data and runs the
+game in a `winit` window rendered through `wgpu`.
 
-* Official website : http://www.openjill.org
-* Last download : http://www.openjill.org/openjill/wiki/doku.php?id=openjill:download
-* Google+ community : https://plus.google.com/u/0/communities/101394478288995733520
-* Twitter : https://twitter.com/hashtag/OpenJill?src=hash
+You must bring your own original game data: **no copyrighted assets are shipped
+with this repository.**
 
-Sources organization
---------------------
-* abstractfile                : default implementation of abstract file file
-* abstractfile-api            : api of abstract file
-* cfg-file                    : default implementation of cfg file
-* cfg-file-api                : api of cfg file
-* dma-file                    : default implementation of dma file
-* dma-file-api                : api of dma file
-* dma-file-extractor          : tool to extract any information about of DMA file
-* jill_parent                 : jill pom parent file
-* jill_root                   : jill root with pom include all module
-* jn-file                     : default implementation of jn file
-* jn-file-api                 : api of jn file
-* jn-file-extractor           : tool to extract any information of JN or save file
-* LICENSE                     : license file
-* open-jill-object-background : object and background of game
-* OpenJill                    : project include all dependencies and all properties file to create game
-* openjill-core               : default implementation of core game
-* openjill-core-api           : api of core game
-* README.md                   : this file
-* sha-file                    : default implementation of sha file
-* sha-file-api                : api of sha file
-* sha-file-edit               : deprecated
-* sha-file-extractor          : tool to extract any information of sha file
-* simplegame                  : simple game engine
-* vcl-file                    : default implementation of vcl file
-* vcl-file-api                : api of vcl file
+## Status and scope
 
-Build game project
-------------------
+- **Episode 1** ("Jill of the Jungle") is playable end to end: start menu, world
+  map, levels, saving / loading, high scores, and the original sound effects.
+- Episodes 2 and 3 are not yet supported.
+- See [`docs/port/`](docs/port/) for the format reference and per-epic porting
+  notes, and [Known limitations](#known-limitations) below.
 
-First, goto jill_parent folder and run "mvn clean install".
-Then, goto jill_root folder, run "mvn clean install -Plib,game,bundle".
+## Requirements
 
-In OpenJill/targuet folder, you have "openjill-bundle-x.x.x.jar" than is the OpenJill game engine with all denpendencies.
-To run it, copy jar file in original game forlder and lauchn it.
+- A recent Rust toolchain (edition 2024; see `rust-version` in `Cargo.toml`).
+- A GPU / driver that `wgpu` can use (for the windowed `run`).
+- Linux audio build dependency: `libasound2-dev` (and `pkg-config`) for `rodio`
+  / `cpal`. Other platforms need no extra audio packages.
+- Your original Jill of the Jungle **episode 1** data files (see below).
 
-If you remove "bundle" profile, you must provide all dependencies in class path.
+## Original game data
 
-You can also add "dev" profile. In this case, game must be in "../jjungle" folder. This profile is use to develop from EDI.
+Point the tools at a directory containing the original episode-1 files
+(`JILL.DMA`, `JILL1.SHA`, `JILL1.VCL`, `JILL1.CFG`, `INTRO.JN1`, `MAP.JN1`, and
+the level files `1.JN1` ...). The data directory is resolved in this order:
 
-Build tools
------------
+1. `--data-dir <path>` on the command line.
+2. the `OPENJILL_DATA_DIR` environment variable.
+3. the default `data/original/JILL1` relative to the working directory.
 
-To build tools, goto jill_parent folder and run "mvn clean install".
-Then, goto jill_root folder, run "mvn clean install -Plib,tools,bundle".
+The original data is never copied into or committed to this repository.
 
-Goto in each targuet folder tools.
+## Build
+
+```sh
+cargo build --release
+```
+
+The CLI binary is `openjill` (crate `openjill-cli`). Examples below use
+`cargo run --release --bin openjill -- <args>`; a built binary works the same.
+
+## Verify your data
+
+Check that the required episode-1 files are present and parse:
+
+```sh
+cargo run --release --bin openjill -- data verify --data-dir /path/to/JILL1
+```
+
+The report lists each required core file as OK or missing and ends with
+`ok: true` when all are valid. Level `*.JN1` files are also listed as
+informational "discovered" entries, but only the core files determine the
+pass/fail result.
+
+## Run
+
+```sh
+cargo run --release --bin openjill -- run --data-dir /path/to/JILL1
+```
+
+Opens the game window. (With the project [Taskfile](https://taskfile.dev),
+`task data:run` does the same against the default data directory.)
+
+## Controls
+
+| Key(s)                 | Action                              |
+|------------------------|-------------------------------------|
+| Left / Right arrows    | Move                                |
+| Up arrow               | Climb / look up                     |
+| Down arrow             | Duck                                |
+| Space / Shift          | Jump                                |
+| Ctrl / Alt             | Throw knife                         |
+| Tab / Backspace        | Next / previous inventory item      |
+| Escape                 | In a level: open the "really quit?" confirmation. In a menu: dismiss it, or quit from the title menu. |
+| `S` / `R`              | Save / restore game                 |
+| `N`                    | Toggle sound on / off               |
+| `T`                    | Toggle turtle (slow-motion) mode    |
+| `Q`                    | Quit                                |
+
+## Saving and high scores
+
+Saves, high scores, and the working config are written to a per-user, writable
+directory (the original data directory stays read-only). The location resolves
+as:
+
+1. `OPENJILL_STATE_DIR` (explicit override), else
+2. the platform data dir under `openjill/` (e.g. `~/.local/share/openjill/` on
+   Linux, `%APPDATA%\openjill\` on Windows), else
+3. a temporary directory as a last resort,
+
+with a per-episode subdirectory underneath.
+
+## Audio
+
+Sound effects are decoded from the original `*.VCL` data (8-bit PCM) and played
+through `rodio`. Press `N` to mute / unmute. If no audio device is available the
+game runs silently. Background music (`*.DDT`) is not played; see below.
+
+## Known limitations
+
+- **Episodes 2 and 3** are not yet supported (episode 1 only).
+- **Background music** (`*.DDT`, Adlib / OPL2) is not played - a future epic.
+- The **sound-effect-to-event mapping** is only partial: the player cues
+  (jump, fire, hurt, die) are mapped; the rest await reverse-engineering of the
+  original executable (tracked in issue #209).
+- There is **no automated full playthrough**; level-completion correctness is
+  validated by manual playtest plus an integration smoke test.
+- Parity with the Java OpenJill engine is argued **structurally** (round-trip
+  and real-data parser tests, ported reference constants) rather than by a live
+  side-by-side run.
+
+## Troubleshooting
+
+- **`data verify` reports a missing file**: confirm `--data-dir` points at the
+  episode-1 folder and the listed file exists (filenames are matched
+  case-insensitively).
+- **No sound**: ensure an audio device is available; on Linux install
+  `libasound2-dev` before building. Check that sound is not muted (`N`).
+- **The window fails to open**: `wgpu` needs a working GPU / driver; check the
+  console output for the backend error.
+
+## Development
+
+- Run the test suite without any game data: `cargo test --workspace`. Real-data
+  integration tests self-skip unless `OPENJILL_DATA_DIR` (or the default data
+  directory) is present.
+- Per-format extraction and inspection tools live in `tools/`; the
+  [Taskfile](Taskfile.dist.yaml) wraps common workflows (`task --list`).
+- Porting design notes and the original-format reference are in
+  [`docs/port/`](docs/port/).
+
+## License
+
+Mozilla Public License 2.0 (`MPL-2.0`); see [LICENSE](LICENSE).
