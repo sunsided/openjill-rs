@@ -1,5 +1,9 @@
 # openjill-rs
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/sunsided/openjill-rs/main/.readme/openjill.jpg" alt="Jill of the Jungle" width="640">
+</p>
+
 A Rust port of the [OpenJill](http://www.openjill.org) engine for **Jill of the
 Jungle** (Epic MegaGames, 1992). It parses the original game data and runs the
 game in a `winit` window rendered through `wgpu`.
