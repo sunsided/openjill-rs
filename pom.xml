@@ -6,7 +6,7 @@
     <version>1.0.0</version>
     <packaging>pom</packaging>
 
-    <profiles>    
+    <profiles>
         <profile>
             <id>lib</id>
             <modules>
@@ -28,7 +28,7 @@
                 <module>./openjill-cache-manager</module>
             </modules>
         </profile>
-        
+
         <profile>
             <id>tools</id>
             <modules>
@@ -36,7 +36,7 @@
                 <module>./dma-file-extractor</module>-->
                 <module>./jn-file-extractor</module>
             </modules>
-        </profile>    
+        </profile>
 
         <profile>
             <id>game</id>
