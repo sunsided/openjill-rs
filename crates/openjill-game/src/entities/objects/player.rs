@@ -780,11 +780,12 @@ impl PlayerEntity {
         }
 
         // Vine grab while airborne mirrors the Java fall-into-climb branch in
-        // `moveStdPlayerUpDownJumping`.
+        // `moveStdPlayerUpDownJumping`. Either Up or Down grabs (Down keeps
+        // descending), matching the standing grab.
         if moved
             && matches!(self.state, PlayerStateKind::Jumping)
             && is_on_climbable(backgrounds, self.x, self.y, self.w, self.h)
-            && input.contains(&InputCommand::Up)
+            && (input.contains(&InputCommand::Up) || input.contains(&InputCommand::Duck))
         {
             self.enter_climb_from_jump();
         }
@@ -1603,18 +1604,25 @@ mod tests {
     }
 
     /// Unit under test: `Down` input on a vine cell while standing on a floor
-    /// grabs the vine to climb down (descend a pipe / pole).
+    /// grabs the vine into the descending climb state.
     ///
-    /// Preconditions: player on a vine cell with solid floor directly below
-    /// (so the standing branch runs); input set carries [`InputCommand::Duck`].
+    /// Preconditions: player at the column-aligned vine cell `(1, 1)` with a
+    /// solid floor directly below (so the standing branch runs, not the
+    /// fall branch); input set carries [`InputCommand::Duck`].
     ///
-    /// Invariants asserted: state becomes [`PlayerStateKind::Climbing`].
+    /// Invariants asserted: state becomes [`PlayerStateKind::Climbing`] in the
+    /// `CLIMB_SUBSTATE_DOWN` sub-state, with no upward nudge (the descending
+    /// grab must not apply the stand→climb `CLIMB_UP_STEPS[3]` lift, unlike the
+    /// Up-initiated grab). The actual descent is exercised by `tick_climbing`'s
+    /// Down branch elsewhere; here the cell below is solid by design so the grab
+    /// path is isolated from movement.
     #[test]
-    fn down_input_on_vine_grabs_to_climb_down() {
+    fn down_input_on_vine_grabs_into_descending_climb() {
         let mut grid = synthetic_grid(8, 8, CellKind::Air);
         set_cell(&mut grid, 1, 1, CellKind::Vine);
         set_cell(&mut grid, 1, 2, CellKind::Solid); // floor below -> standing branch
         let mut player = make_player(16, 16);
+        let start_y = player.y;
         let runtime = RuntimeState::new();
         let mut dispatcher = MessageDispatcher::new();
         let mut input = ActiveInput::new();
@@ -1626,6 +1634,14 @@ mod tests {
             player.state(),
             PlayerStateKind::Climbing,
             "Down on a vine must grab it to climb down"
+        );
+        assert_eq!(
+            player.sub_state, CLIMB_SUBSTATE_DOWN,
+            "the grab enters the descending sub-state"
+        );
+        assert_eq!(
+            player.y, start_y,
+            "a down-grab must not apply the upward stand->climb nudge"
         );
     }
 
