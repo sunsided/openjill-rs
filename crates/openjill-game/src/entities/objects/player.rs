@@ -274,6 +274,9 @@ pub struct PlayerEntity {
     /// [`RuntimeState::invincible`]. While `true`, [`PlayerEntity::on_kill`] is
     /// a no-op, so no damage source can put the player into the die state.
     invincible: bool,
+    /// Set once the player has fallen out of the bottom of the map and a level
+    /// restart has been dispatched, so the restart fires exactly once.
+    fell_out: bool,
     /// Ticks remaining before the player may fire again.
     ///
     /// Set to [`FIRE_COOLDOWN_TICKS`] after each shot; decremented once per
@@ -330,6 +333,7 @@ impl PlayerEntity {
             // (`invincible` re-syncs from `RuntimeState` on the next update).
             die_pending: false,
             invincible: false,
+            fell_out: false,
             fire_cooldown: 0,
             origin: item.clone(),
         }
@@ -504,6 +508,15 @@ impl ObjectEntity for PlayerEntity {
                 MessageType::PlaySound,
                 MessagePayload::Sound(SoundEvent::PlayerJump),
             );
+        }
+
+        // Fell out of the bottom of the map: restart the level regardless of
+        // god mode. Falling out of bounds is not damage, so it bypasses
+        // `on_kill` (which god mode no-ops); otherwise an invincible player
+        // would fall forever. Fires exactly once.
+        if !self.fell_out && self.y >= backgrounds.height as i32 * BLOCK_SIZE_I {
+            self.fell_out = true;
+            dispatcher.send(MessageType::DieRestartLevel, MessagePayload::None);
         }
     }
 
@@ -1676,6 +1689,41 @@ mod tests {
             player.state(),
             PlayerStateKind::Die,
             "god mode must block the die transition"
+        );
+    }
+
+    /// Unit under test: falling out of the bottom of the map restarts the level
+    /// even under god mode (out-of-bounds bypasses `on_kill`).
+    ///
+    /// Preconditions: an 8-tall grid (bottom at `y = 128`), the player placed at
+    /// that row, `RuntimeState::invincible` true.
+    ///
+    /// Invariant asserted: the update dispatches exactly one `DieRestartLevel`.
+    #[test]
+    fn falling_out_of_map_restarts_even_under_god_mode() {
+        let grid = synthetic_grid(8, 8, CellKind::Air);
+        let mut player = make_player(16, 8 * BLOCK_SIZE_I);
+        let mut runtime = RuntimeState::new();
+        runtime.invincible = true;
+        let buffer: Arc<Mutex<Vec<(MessageType, MessagePayload)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let mut dispatcher = MessageDispatcher::new();
+        dispatcher.subscribe(
+            MessageType::DieRestartLevel,
+            Box::new(Recorder(Arc::clone(&buffer))),
+        );
+
+        player.update(&ActiveInput::new(), &runtime, &grid, &mut dispatcher);
+
+        let restarts = buffer
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| matches!(t, MessageType::DieRestartLevel))
+            .count();
+        assert_eq!(
+            restarts, 1,
+            "falling out of the map must restart the level even under god mode"
         );
     }
 
