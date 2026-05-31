@@ -109,6 +109,23 @@ impl BackgroundEntity for StdBackgroundEntity {
         self.passthrough
     }
 
+    /// Solidity for vertical motion.
+    ///
+    /// A non-passthrough cell blocks both directions. A passthrough **stair**
+    /// cell (tree branches, staircases - `BRANCHNORM`, `TREEBR`, ... carry the
+    /// DMA stair bit with `PLAYERTHRU`) is a one-way floor: it stops a *falling*
+    /// player so they can stand on it, but a *rising* player jumps up through
+    /// it. Any other passthrough cell is open air. Mirrors the original, where
+    /// the player rests on branch / stair tiles while still passing them
+    /// horizontally and on the way up.
+    fn blocks_vertical(&self, player_yd: i32) -> bool {
+        if !self.passthrough {
+            true
+        } else {
+            self.stair && player_yd > 0
+        }
+    }
+
     /// Returns the vine flag derived from the DMA entry.  Mirrors Java
     /// `UtilityObjectEntity.isClimbing`, which consults each cell's `isVine()`
     /// flag; the climbable tiles (VNORM, POLET, VINEBR, …) carry the `is_vine`
@@ -126,5 +143,58 @@ impl BackgroundEntity for StdBackgroundEntity {
     /// construction via [`Self::from_dma_entry`] or [`Self::for_map_code`].
     fn dma_map_code(&self) -> Option<u16> {
         self.map_code
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StdBackgroundEntity;
+    use openjill_core::BackgroundEntity;
+    use openjill_data::dma::DmaFile;
+
+    /// Builds a `StdBackgroundEntity` from a one-entry DMA whose tile carries
+    /// the given DMA `flags` (bit 0 = player-through, bit 1 = stair, bit 2 =
+    /// vine).
+    fn std_cell_with_flags(flags: u16) -> StdBackgroundEntity {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x10u16.to_le_bytes()); // map_code
+        bytes.push(0); // tile
+        bytes.push(7); // tileset
+        bytes.extend_from_slice(&flags.to_le_bytes()); // flags
+        bytes.push(1); // name_len
+        bytes.push(b'T'); // name
+        let dma = DmaFile::from_bytes(bytes).expect("one-entry DMA should parse");
+        StdBackgroundEntity::from_dma_entry(dma.get_by_map_code(0x10).expect("entry exists"))
+    }
+
+    /// Unit under test: a passthrough stair cell (tree branch) is a one-way
+    /// floor - stops a falling player, lets a rising player through - while
+    /// plain passthrough air is open and a solid cell blocks both directions.
+    #[test]
+    fn passthrough_stair_is_a_one_way_floor() {
+        let branch = std_cell_with_flags(0x03); // PLAYERTHRU | STAIR
+        assert!(
+            branch.is_passthrough(),
+            "stair branch is passable horizontally"
+        );
+        assert!(
+            branch.blocks_vertical(1),
+            "a falling player rests on the branch"
+        );
+        assert!(
+            !branch.blocks_vertical(-1),
+            "a rising player jumps up through the branch"
+        );
+
+        let air = std_cell_with_flags(0x01); // PLAYERTHRU only
+        assert!(
+            !air.blocks_vertical(1),
+            "plain passthrough air is not a floor"
+        );
+        assert!(!air.blocks_vertical(-1));
+
+        let solid = std_cell_with_flags(0x00); // solid
+        assert!(solid.blocks_vertical(1), "solid cells block falling");
+        assert!(solid.blocks_vertical(-1), "solid cells block rising");
     }
 }
