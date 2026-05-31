@@ -1083,8 +1083,10 @@ impl PlayerEntity {
 /// Mirrors `UtilityObjectEntity.checkIfFloorUnderObject` from the Java
 /// reference: probe one pixel below the bottom edge and check every cell
 /// covered by the bounding box footprint at that row.  Only cells that report
-/// `blocks_vertical(1)` are treated as floor; passthrough cells never count
-/// even when `is_stair` is set.  Direction-aware cells (`FROOF` / `FFLOOR`)
+/// `blocks_vertical(1)` (block a falling player) are treated as floor: solid
+/// cells qualify, and so do passthrough **stair** cells (tree branches /
+/// staircases) which act as one-way floors a falling player rests on; plain
+/// passthrough air does not.  Direction-aware cells (`FROOF` / `FFLOOR`)
 /// consult [`openjill_core::BackgroundEntity::blocks_vertical`] with a positive
 /// `player_yd` so a falling player lands on `FROOF` but still drops through
 /// `FFLOOR`.
