@@ -659,6 +659,14 @@ impl PlayerEntity {
                 self.enter_climb_from_stand();
                 self.state_count = self.state_count.saturating_add(1);
                 return;
+            } else if input.contains(&InputCommand::Duck)
+                && is_on_climbable(backgrounds, self.x, self.y, self.w, self.h)
+            {
+                // Press Down on a vine / pole to grab it and climb down (e.g.
+                // descending a pipe that runs below the platform).
+                self.enter_climb_descending();
+                self.state_count = self.state_count.saturating_add(1);
+                return;
             } else {
                 self.y_speed = 0;
             }
@@ -672,11 +680,12 @@ impl PlayerEntity {
             self.y_speed = 0;
 
             if is_on_climbable(backgrounds, self.x, self.y, self.w, self.h)
-                && input.contains(&InputCommand::Up)
+                && (input.contains(&InputCommand::Up) || input.contains(&InputCommand::Duck))
             {
                 // Falling onto a vine is an airborne-to-climb transition, so
                 // use the jump-flavored entry (no `CLIMB_UP_STEPS[3]` nudge)
-                // to match the rest of the jump→climb path.
+                // to match the rest of the jump→climb path. Either Up or Down
+                // grabs the vine (Down then continues descending).
                 self.enter_climb_from_jump();
                 self.state_count = self.state_count.saturating_add(1);
                 return;
@@ -921,6 +930,20 @@ impl PlayerEntity {
         self.x_speed = 0;
         self.y_speed = 0;
         self.y += CLIMB_UP_STEPS[3];
+    }
+
+    /// Grabs a climbable from a standing position to climb *down* it (the
+    /// player presses Down on a vine / pole that continues below).
+    ///
+    /// Unlike [`Self::enter_climb_from_stand`] there is no upward nudge - the
+    /// descent integrates on the following ticks via [`Self::tick_climbing`]'s
+    /// Down branch.
+    fn enter_climb_descending(&mut self) {
+        self.state = PlayerStateKind::Climbing;
+        self.sub_state = CLIMB_SUBSTATE_DOWN;
+        self.state_count = 0;
+        self.x_speed = 0;
+        self.y_speed = 0;
     }
 
     /// Enters the `Climbing` state from `Jumping`.
@@ -1577,6 +1600,33 @@ mod tests {
         player.update(&input, &runtime, &grid, &mut dispatcher);
 
         assert_eq!(player.state(), PlayerStateKind::Climbing);
+    }
+
+    /// Unit under test: `Down` input on a vine cell while standing on a floor
+    /// grabs the vine to climb down (descend a pipe / pole).
+    ///
+    /// Preconditions: player on a vine cell with solid floor directly below
+    /// (so the standing branch runs); input set carries [`InputCommand::Duck`].
+    ///
+    /// Invariants asserted: state becomes [`PlayerStateKind::Climbing`].
+    #[test]
+    fn down_input_on_vine_grabs_to_climb_down() {
+        let mut grid = synthetic_grid(8, 8, CellKind::Air);
+        set_cell(&mut grid, 1, 1, CellKind::Vine);
+        set_cell(&mut grid, 1, 2, CellKind::Solid); // floor below -> standing branch
+        let mut player = make_player(16, 16);
+        let runtime = RuntimeState::new();
+        let mut dispatcher = MessageDispatcher::new();
+        let mut input = ActiveInput::new();
+        input.insert(InputCommand::Duck);
+
+        player.update(&input, &runtime, &grid, &mut dispatcher);
+
+        assert_eq!(
+            player.state(),
+            PlayerStateKind::Climbing,
+            "Down on a vine must grab it to climb down"
+        );
     }
 
     /// Unit under test: pressing Jump while in the `Climbing` state
