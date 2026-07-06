@@ -22,7 +22,7 @@ jobs:
       ZIP_PASS: ${{ secrets.ZIP_PASS }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -34,7 +34,7 @@ jobs:
 
       - name: Install Task runner
         if: env.ZIP_LINK != '' && env.ZIP_PASS != ''
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
 
       - name: Install 7z for data extraction
         if: env.ZIP_LINK != '' && env.ZIP_PASS != ''
@@ -62,7 +62,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
